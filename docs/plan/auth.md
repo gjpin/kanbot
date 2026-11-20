@@ -598,7 +598,9 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Phase 3: login through the kanbot backend (sessions)
 
-- [ ] **3.1 Dependencies:** ask the human to approve an AEAD crate
+- [x] **3.1 Dependencies:** (approved: `chacha20poly1305` 0.11.0, used as
+  XChaCha20-Poly1305: its 192-bit nonces are safe to pick at random for any
+  number of encryptions per key, unlike AES-GCM's 96-bit ones) ask the human to approve an AEAD crate
   (`chacha20poly1305` or `aes-gcm`, RustCrypto; check `cargo deny`). Add
   `getrandom`, `sha2` and the tower-http `fs` feature.
 - [ ] **3.2 Configuration:** the phase 3 variables in the configuration table,
@@ -925,7 +927,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [ ] 3.1 … [ ] 3.18
+- Phase 3: [x] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5
