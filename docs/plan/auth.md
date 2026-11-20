@@ -605,7 +605,9 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   `getrandom`, `sha2` and the tower-http `fs` feature.
 - [x] **3.2 Configuration:** the phase 3 variables in the configuration table,
   validated as in 2.2.
-- [ ] **3.3 Migrations:**
+- [x] **3.3 Migrations:** (`nonce` stored as `nonce_hash`; web attempts keep
+  `browser_binding_hash`; a native session's `token_hash` stays NULL until its
+  code is redeemed, so no usable token exists before the PKCE check)
   - `login_attempts`: `id`, `state_hash`, `nonce`, `pkce_verifier` (encrypted),
     `platform` (`web`/`native`), `app_redirect_uri`, `app_code_challenge`,
     `created_at`, `expires_at` (10 minutes), `used_at`.
@@ -927,7 +929,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

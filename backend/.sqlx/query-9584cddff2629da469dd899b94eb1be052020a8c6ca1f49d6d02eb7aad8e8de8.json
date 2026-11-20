@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO login_codes (code_hash, session_id, app_code_challenge, expires_at)\n         VALUES ('code', $1, 'c', now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9584cddff2629da469dd899b94eb1be052020a8c6ca1f49d6d02eb7aad8e8de8"
+}
