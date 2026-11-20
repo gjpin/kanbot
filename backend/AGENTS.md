@@ -58,7 +58,7 @@ backend/
 │   └── <feature>.rs         # HTTP-level integration tests, one file per feature
 ├── examples/dev_token.rs    # `cargo run --example dev-token -- alice`: a local Authelia access token
 ├── benches/                 # criterion benchmarks
-└── fuzz/                    # cargo-fuzz targets
+└── fuzz/                    # cargo-fuzz targets (own crate and lockfile; nightly, run manually; see fuzz/README.md)
 ```
 
 Create `http/extract.rs`, `benches/` and `fuzz/` only when there is something to put in them.
