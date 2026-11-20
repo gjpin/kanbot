@@ -2,11 +2,13 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod base64;
 pub mod cli;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod sessions;
 pub mod state;
 pub mod telemetry;
 pub mod telemetry_relay;

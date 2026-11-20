@@ -603,7 +603,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   number of encryptions per key, unlike AES-GCM's 96-bit ones) ask the human to approve an AEAD crate
   (`chacha20poly1305` or `aes-gcm`, RustCrypto; check `cargo deny`). Add
   `getrandom`, `sha2` and the tower-http `fs` feature.
-- [ ] **3.2 Configuration:** the phase 3 variables in the configuration table,
+- [x] **3.2 Configuration:** the phase 3 variables in the configuration table,
   validated as in 2.2.
 - [ ] **3.3 Migrations:**
   - `login_attempts`: `id`, `state_hash`, `nonce`, `pkce_verifier` (encrypted),
@@ -927,7 +927,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

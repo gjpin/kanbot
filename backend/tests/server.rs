@@ -25,13 +25,20 @@ const UNREACHABLE_DB: &str = "postgres://127.0.0.1:1/kanbot";
 
 /// A valid OIDC configuration whose issuer is unreachable: the server
 /// starts anyway and keeps retrying.
-const OIDC: [(&str, &str); 6] = [
+const OIDC: [(&str, &str); 10] = [
     ("OIDC_ISSUER", "http://127.0.0.1:1"),
     ("OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP", "true"),
     ("OIDC_AUDIENCE", "kanbot-api"),
     ("OIDC_ROLES_CLAIM", "groups"),
     ("OIDC_ADMIN_ROLE", "kanbot-admin"),
     ("OIDC_USER_ROLE", "kanbot-user"),
+    ("OIDC_CLIENT_ID", "kanbot"),
+    ("OIDC_CLIENT_SECRET", "test-secret"),
+    ("PUBLIC_URL", "http://127.0.0.1:3000"),
+    (
+        "SESSION_ENCRYPTION_KEYS",
+        "k1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    ),
 ];
 
 /// The binary, configured only by what the test sets. Telemetry export is
@@ -40,7 +47,7 @@ fn server(listen_addr: SocketAddr, database_url: Option<&str>) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_kanbot-backend"));
     for (name, _) in std::env::vars_os() {
         let name_str = name.to_string_lossy();
-        if ["OTEL_", "OIDC_", "RATE_LIMIT_"]
+        if ["OTEL_", "OIDC_", "RATE_LIMIT_", "SESSION_"]
             .iter()
             .any(|prefix| name_str.starts_with(prefix))
         {
@@ -58,6 +65,7 @@ fn server(listen_addr: SocketAddr, database_url: Option<&str>) -> Command {
         .env_remove("TELEMETRY_RELAY_UPSTREAM")
         .env_remove("MAX_IN_FLIGHT_REQUESTS")
         .env_remove("DATABASE_MAX_CONNECTIONS")
+        .env_remove("WEB_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);

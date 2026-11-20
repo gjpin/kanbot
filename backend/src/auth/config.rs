@@ -60,7 +60,8 @@ pub enum OidcConfigError {
     )]
     ClaimPath(&'static str),
     #[error(
-        "OIDC_AUDIENCE must not be one of OIDC_ALLOWED_CLIENTS: ID tokens would pass as access tokens"
+        "OIDC_AUDIENCE must differ from OIDC_CLIENT_ID and every OIDC_ALLOWED_CLIENTS entry: \
+         ID tokens would pass as access tokens"
     )]
     AudienceIsClient,
     #[error(

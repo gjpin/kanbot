@@ -4,6 +4,7 @@ use std::{
     env::VarError,
     net::SocketAddr,
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+    path::PathBuf,
 };
 
 use axum::http::HeaderValue;
@@ -16,6 +17,7 @@ use crate::{
         client_ip::{InvalidNetwork, TrustedProxies},
         middleware::rate_limit::{RateLimit, RateLimits},
     },
+    sessions::config::{SessionConfig, SessionConfigError},
 };
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:3000";
@@ -57,6 +59,12 @@ pub struct Config {
     /// Database pool size of this instance (`DATABASE_MAX_CONNECTIONS`,
     /// default 10).
     pub database_max_connections: NonZeroU32,
+    /// The login flow and sessions (`OIDC_CLIENT_*`, `PUBLIC_URL`,
+    /// `SESSION_*`).
+    pub sessions: SessionConfig,
+    /// The Flutter web build to serve at `/` (`WEB_DIR`, default off).
+    /// Holds an `index.html`.
+    pub web_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -84,6 +92,10 @@ pub enum ConfigError {
     NotPositive(&'static str),
     #[error(transparent)]
     Oidc(#[from] OidcConfigError),
+    #[error(transparent)]
+    Session(#[from] SessionConfigError),
+    #[error("WEB_DIR {0:?} is not a directory with an index.html")]
+    WebDir(String),
 }
 
 impl Config {
@@ -137,6 +149,20 @@ impl Config {
             .transpose()?;
 
         let oidc = OidcConfig::from_lookup(&lookup)?;
+        let sessions = SessionConfig::from_lookup(&lookup)?;
+        if sessions.client_id == oidc.audience.as_str() {
+            return Err(OidcConfigError::AudienceIsClient.into());
+        }
+        let web_dir = match optional(&lookup, "WEB_DIR")? {
+            Some(raw) if !raw.trim().is_empty() => {
+                let dir = PathBuf::from(raw.trim());
+                if !dir.join("index.html").is_file() {
+                    return Err(ConfigError::WebDir(raw.trim().to_owned()));
+                }
+                Some(dir)
+            }
+            _ => None,
+        };
 
         let rate_limits = RateLimits {
             ip: rate_limit(
@@ -185,6 +211,8 @@ impl Config {
             rate_limits,
             max_in_flight_requests,
             database_max_connections,
+            sessions,
+            web_dir,
         })
     }
 }
@@ -290,12 +318,19 @@ mod tests {
 
     /// The required `OIDC_*` variables, which these tests do not cover
     /// (see `auth::config`).
-    const OIDC: [(&str, &str); 5] = [
+    const OIDC: [(&str, &str); 9] = [
         ("OIDC_ISSUER", "https://auth.example.com"),
         ("OIDC_AUDIENCE", "kanbot-api"),
         ("OIDC_ROLES_CLAIM", "groups"),
         ("OIDC_ADMIN_ROLE", "kanbot-admin"),
         ("OIDC_USER_ROLE", "kanbot-user"),
+        ("OIDC_CLIENT_ID", "kanbot"),
+        ("OIDC_CLIENT_SECRET", "secret"),
+        ("PUBLIC_URL", "https://kanbot.example.com"),
+        (
+            "SESSION_ENCRYPTION_KEYS",
+            "k1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        ),
     ];
 
     fn lookup(vars: &[(&'static str, &str)]) -> impl Fn(&'static str) -> Result<String, VarError> {
@@ -572,6 +607,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn refuses_the_audience_as_the_client_id() {
+        let result = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://db"),
+            ("OIDC_CLIENT_ID", "kanbot-api"),
+        ]));
+        assert!(matches!(
+            result,
+            Err(ConfigError::Oidc(OidcConfigError::AudienceIsClient))
+        ));
+    }
+
+    #[test]
+    fn reads_the_web_dir() {
+        let dir = std::env::temp_dir().join(format!("kanbot-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap().to_owned();
+        let web_dir = |raw: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://db"),
+                ("WEB_DIR", raw),
+            ]))
+            .map(|config| config.web_dir)
+        };
+        assert!(matches!(web_dir(&path), Err(ConfigError::WebDir(p)) if p == path));
+        std::fs::write(dir.join("index.html"), "<!doctype html>").unwrap();
+        assert_eq!(web_dir(&path).unwrap(), Some(dir.clone()));
+        assert_eq!(web_dir(" ").unwrap(), None);
+        assert!(matches!(
+            web_dir("/nonexistent/kanbot/web"),
+            Err(ConfigError::WebDir(_))
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn defaults_without_a_web_dir() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://db")])).unwrap();
+        assert_eq!(config.web_dir, None);
+        assert_eq!(config.sessions.client_id, "kanbot");
     }
 
     #[test]
