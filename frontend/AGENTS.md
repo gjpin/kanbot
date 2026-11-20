@@ -163,7 +163,10 @@ shadcn/ui, **instead of Material or Cupertino**.
   `tool/web_csp.dart` into `index.html`. Do not loosen that policy (no
   `'unsafe-eval'`, no inline scripts, no new origins) without approval. The
   web server must also send `frame-ancestors 'none'` as a header, which a
-  `<meta>` policy cannot set.
+  `<meta>` policy cannot set. When the backend serves the build (`WEB_DIR`),
+  it sends the whole policy as a header from `backend/src/http/web.rs`, its
+  single source from now on; phase 5.3 of `docs/plan/auth.md` removes the
+  `<meta>` injection.
 - **Native downloads** (FFI hooks): verify with SHA-256, never MD5, and verify
   before the file is written to its final location (or delete it on mismatch).
 

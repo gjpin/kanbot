@@ -32,12 +32,13 @@ backend/
 │   │   ├── mod.rs           # router() and openapi(): merges feature routes, middleware stack
 │   │   ├── health.rs        # /health and /ready
 │   │   ├── problem.rs       # RFC 9457 problem details, ErrorCode
+│   │   ├── web.rs           # serving the Flutter web build (WEB_DIR) and its Content-Security-Policy
 │   │   ├── client_ip.rs     # client address behind trusted proxies (X-Forwarded-For)
 │   │   ├── middleware/      # cross-cutting middleware (request telemetry, security headers, rate limit, ...)
 │   │   └── extract.rs       # shared custom extractors (AuthUser, RequireAdmin)
 │   ├── auth/                # OIDC: config, discovery, JWKS key cache, access-token validation, authentication middleware
 │   ├── users/               # users table (upserted on each authenticated request), /me
-│   ├── sessions/            # kanbot sessions: /auth/* login flow, native handoff, IdP token refresh (phase 3)
+│   ├── sessions/            # kanbot sessions: /auth/* login flow, native handoff, IdP token refresh, cleanup
 │   ├── authz/               # Cedar authorization: can(), visible(), built-in and deployer policies (phase 4)
 │   ├── organizations/       # organizations, their admins and team links (phase 4)
 │   ├── teams/               # teams, members and maintainers, IdP group sync (phase 4)
@@ -63,7 +64,7 @@ backend/
 
 Create `http/extract.rs`, `benches/` and `fuzz/` only when there is something to put in them.
 
-Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Modules, files and variables above and below that are not in the tree yet are planned. Their phase is noted where it is later than phase 2. Until they exist, create them only as the plan says.
+Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Phases 2 (bearer tokens) and 3 (sessions) are implemented. Modules, files and variables above and below that are not in the tree yet are planned; their phase is noted. Until they exist, create them only as the plan says.
 
 ### Layering rules
 
@@ -186,7 +187,7 @@ The defaults are sized for a 10,000-employee company where everyone may reach ka
 |---|---|---|
 | Per client IP, all requests | `RATE_LIMIT_IP_PER_SECOND`, `RATE_LIMIT_IP_BURST` | 2000/s, burst 4000 |
 | Per client IP, failed authentications (401) | `RATE_LIMIT_AUTH_FAILURE_PER_SECOND`, `RATE_LIMIT_AUTH_FAILURE_BURST` | 50/s, burst 500 |
-| Per client IP, login endpoints (phase 3) | `RATE_LIMIT_LOGIN_PER_SECOND`, `RATE_LIMIT_LOGIN_BURST` | 100/s, burst 500 |
+| Per client IP, sign-in routes (`/auth/login`, `/auth/callback`, `/auth/token`) | `RATE_LIMIT_LOGIN_PER_SECOND`, `RATE_LIMIT_LOGIN_BURST` | 100/s, burst 500 |
 | Per user | `RATE_LIMIT_USER_PER_SECOND`, `RATE_LIMIT_USER_BURST` | 20/s, burst 100 |
 | Per user, telemetry relay | `RATE_LIMIT_TELEMETRY_PER_SECOND`, `RATE_LIMIT_TELEMETRY_BURST` | 1/s, burst 20 |
 | Requests in flight per instance | `MAX_IN_FLIGHT_REQUESTS` | 512 (then `503` with `Retry-After`) |
@@ -259,17 +260,19 @@ The app cannot hold collector credentials, so it sends OTLP to the API at `/tele
 Users sign in at an external OIDC IdP; kanbot has no passwords or local accounts. The design, and the IdP requirements and setup guides, are in [`docs/oidc.md`](../docs/oidc.md). An API request is authenticated in one of two ways, and both resolve to the same validated user and roles:
 
 1. **An IdP JWT access token** in `Authorization: Bearer`, validated locally against the IdP's JWKS (CLI, scripts, CI, agents, other services).
-2. **A kanbot session** (phase 3), for kanbot's own apps: an `HttpOnly` cookie on web, a `kbs_` bearer token on native. The backend keeps the IdP tokens server-side, encrypted, and checks the stored access token with exactly the rules used for bearer tokens.
+2. **A kanbot session**, for kanbot's own apps (`sessions/`): the `__Host-kanbot_session` cookie on web, a `kbs_` bearer token on native. The backend runs the login flow as the confidential client (`/auth/login`, `/auth/callback`, and `/auth/token` for the native one-time code), keeps the IdP tokens server-side sealed with XChaCha20-Poly1305 (`sessions/crypto.rs`, row and field bound, key ID for rotation), refreshes them under a row lock, and checks the stored access token with exactly the rules used for bearer tokens. A stale session *cookie* makes the request anonymous and is cleared; a bad `kbs_` bearer is a `401`.
 
 These rules hold in every change:
 
-- **Secure by default.** Every route requires authentication except an explicit public list: `/health` and `/ready`; from phase 3, `/auth/login`, `/auth/callback`, `/auth/token`, `/auth/config` and the web build's static files. A test walks every operation in `http::openapi()`, plus the telemetry relay routes, and fails for any route that is neither on the list nor returns `401` without credentials. Adding a public route means adding it to that list on purpose.
+- **Secure by default.** Every route requires authentication except an explicit public list: `/health`, `/ready`, `/auth/login`, `/auth/callback`, `/auth/token`, `/auth/config` and the web build's static files (`http/web.rs`). Protected operations declare both security schemes, `bearer` and `session`. A test walks every operation in `http::openapi()`, plus the telemetry relay routes, and fails for any route that is neither on the list nor returns `401` without credentials. Adding a public route means adding it to that list on purpose.
 - **Never log, trace or put in metrics:** tokens, codes, cookies, the client secret or session keys; raw claims other than issuer, subject ID and client ID; display names or emails. Record internal IDs (`user.id`) instead.
 - **Database errors** are logged as the error kind, SQLSTATE and constraint name only. Postgres error details can contain row values (`Key (subject)=(...) already exists`).
 - **Auth failures return stable problem codes only**, never the reason. `401` responses carry `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750) when a bearer token was presented, and plain `WWW-Authenticate: Bearer` when none was. The reason goes only into the bounded `reason` attribute of the `kanbot.auth.token.rejections` metric.
 - **Invalid credentials are a `401`**, never treated as anonymous. Until the IdP's keys have loaded, authenticated requests get `503 unavailable`, not `401`.
 - **Outbound calls** (IdP discovery, JWKS, token endpoint) have connect and total timeouts, do not follow redirects, and cap how many response bytes they read.
-- **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom`; never `rand`. Secrets are compared by looking up their SHA-256 hash in the database, never by comparing strings in memory.
+- **CSRF:** a state-changing request authenticated by the session cookie needs `Origin` equal to `PUBLIC_URL`'s origin and `X-Kanbot-CSRF: 1`, else `403`. Bearer requests are exempt.
+- **Cookies** are `__Host-` (`Secure`, `Path=/`, no `Domain`) and `HttpOnly`: the session is `SameSite=Strict`, the login binding `SameSite=Lax` (it must survive the IdP's redirect).
+- **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom` (`sessions/secrets.rs`); never `rand`. Secrets are compared by looking up their SHA-256 hash in the database, never by comparing strings in memory.
 - **Authorization** (phase 4) is decided by the `authz` module with Cedar. Every feature that touches organization data calls `authz`; never write an ad hoc role check in a handler or service.
 
 ## 4. Testing tools

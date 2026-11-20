@@ -2,10 +2,11 @@
 
 > **Status: partly implemented.** This document describes how kanbot
 > authenticates users with an external OpenID Connect (OIDC) identity provider
-> (IdP), and how to set up each supported IdP. **Implemented:** bearer-token
-> validation (the API as a resource server), tested end to end against
-> Authelia. **Not yet:** the login flow through the kanbot backend (sessions)
-> and authorization. Configuration names may still change before the first
+> (IdP), and how to set up each supported IdP. **Implemented** and tested end
+> to end against Authelia: bearer-token validation (the API as a resource
+> server), and the login flow through the kanbot backend with sessions for
+> the web and native apps. **Not yet:** authorization (organizations, teams)
+> and the apps' side of the login. Configuration names may still change before the first
 > release. The provider setups other than Authelia have not been tested with
 > kanbot yet. Facts about each IdP were checked
 > against its official documentation on 2026-11-20, at the version noted in its
@@ -33,7 +34,7 @@ App ──opens the system browser──▶ https://<kanbot-host>/auth/login
                                   tokens, stores them server-side, creates a session
                                        │
      web:    sets an HttpOnly session cookie and redirects to the app
-     native: redirects to <app-scheme>:/auth/done?code=<one-time code>
+     native: redirects to dev.sideral.kanbot:/auth/done?code=<one-time code>
              (Windows and Linux: http://127.0.0.1:<port>/auth/done)
                                        ▼
 App exchanges the one-time code and its PKCE verifier for a kanbot session token
@@ -49,11 +50,10 @@ App exchanges the one-time code and its PKCE verifier for a kanbot session token
   PKCE challenge, expires within about a minute and can be used once, as
   recommended by [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252). An app
   that intercepts the redirect cannot redeem the code.
-- **`<app-scheme>`** is the app's reverse-DNS application ID, which is not
-  final yet. The app receives the redirect through the system browser
+- **`dev.sideral.kanbot`** is the app's reverse-DNS application ID. The app receives the redirect through the system browser
   (`ASWebAuthenticationSession` on Apple platforms, Auth Tab or Custom Tabs on
-  Android). Windows and Linux use a loopback redirect instead (verify whether
-  `127.0.0.1` or `localhost`). No App Links or Universal Links are involved,
+  Android). Windows and Linux use a loopback redirect instead,
+  `http://127.0.0.1:<port>/auth/done`. No App Links or Universal Links are involved,
   because the kanbot project controls no deployment's domain.
 
 **Other clients (CLI, scripts, CI, agents, other services) call the API with an
@@ -139,18 +139,18 @@ equals `OIDC_CLIENT_ID` or is listed in `OIDC_ALLOWED_CLIENTS`.
 
 ## Configuration
 
-Variables marked *(planned)* belong to the login flow and are not read yet.
+Variables marked *(planned)* belong to authorization and are not read yet.
 
 | Variable | Required | Meaning |
 |---|---|---|
 | `OIDC_ISSUER` | yes | Issuer URL. Must match the tokens' `iss` and the discovery document's `issuer` exactly. HTTPS only. |
-| `OIDC_CLIENT_ID` *(planned)* | yes | Kanbot's confidential client, for example `kanbot`. Must differ from `OIDC_AUDIENCE`. |
-| `OIDC_CLIENT_SECRET` (or `OIDC_CLIENT_SECRET_FILE`) *(planned)* | yes | Its secret. |
+| `OIDC_CLIENT_ID` | yes | Kanbot's confidential client, for example `kanbot`. Must differ from `OIDC_AUDIENCE`. |
+| `OIDC_CLIENT_SECRET` (or `OIDC_CLIENT_SECRET_FILE`) | yes | Its secret. |
 | `OIDC_AUDIENCE` | yes | Audience kanbot accepts, for example `kanbot-api`. |
 | `OIDC_ROLES_CLAIM` | yes | Dot-separated path to the roles array, for example `groups`. |
 | `OIDC_ADMIN_ROLE` | yes | Role value that grants platform admin, for example `kanbot-admin`. |
 | `OIDC_USER_ROLE` | yes | Role value that grants access, for example `kanbot-user`. |
-| `OIDC_SCOPES` *(planned)* | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
+| `OIDC_SCOPES` | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
 | `OIDC_SUBJECT_CLAIM` | no | Claim that identifies the user. Default `sub`. Use `oid` for Entra ID. |
 | `OIDC_GROUPS_CLAIM` *(planned)* | no | Dot-separated path to the groups array used to sync team membership. Default: the value of `OIDC_ROLES_CLAIM`. |
 | `OIDC_ALLOWED_CLIENTS` | no | Comma-separated client IDs whose bearer tokens may call the API. Default: any client. |
@@ -158,10 +158,10 @@ Variables marked *(planned)* belong to the login flow and are not read yet.
 | `OIDC_JWKS_ALLOWED_ORIGINS` | no | Extra HTTPS origins allowed to serve the JWKS. |
 | `OIDC_CA_FILE` | no | PEM bundle for an IdP with a private certificate authority. |
 | `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP` | no | Allows an `http://` issuer on a numeric loopback address. Development only. |
-| `PUBLIC_URL` *(planned)* | yes | Kanbot's external base URL, for example `https://kanbot.example.com`. The callback URL is `<PUBLIC_URL>/auth/callback`. |
-| `SESSION_ENCRYPTION_KEYS` (or `SESSION_ENCRYPTION_KEYS_FILE`) *(planned)* | yes | Comma-separated base64 keys, each with a key ID, used to encrypt stored IdP tokens. The first encrypts and all decrypt, so keys can be rotated. |
-| `SESSION_IDLE_TIMEOUT` *(planned)* | no | A session ends after this long without use. Default `7d`. |
-| `SESSION_ABSOLUTE_TIMEOUT` *(planned)* | no | A session ends after this long regardless. Default `30d`. Sessions also end when the IdP refuses a refresh. |
+| `PUBLIC_URL` | yes | Kanbot's external base URL, for example `https://kanbot.example.com` (`http` only on `localhost` or a loopback address). The callback URL is `<PUBLIC_URL>/auth/callback`. |
+| `SESSION_ENCRYPTION_KEYS` (or `SESSION_ENCRYPTION_KEYS_FILE`) | yes | Comma-separated `<key id>:<base64 of 32 random bytes>` entries (for example `k1:$(openssl rand -base64 32)`), used to encrypt stored IdP tokens. The first encrypts and all decrypt: to rotate, put a new key first and drop the old one after `SESSION_ABSOLUTE_TIMEOUT`. |
+| `SESSION_IDLE_TIMEOUT` | no | A session ends after this long without use. Default `7d`. |
+| `SESSION_ABSOLUTE_TIMEOUT` | no | A session ends after this long regardless. Default `30d`. Sessions also end when the IdP refuses a refresh. |
 
 ## Clients to register at the IdP
 
