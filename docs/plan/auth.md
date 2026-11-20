@@ -354,12 +354,13 @@ consent, applies rate limits and runs against a local Authelia.
     middleware in 2.6: `KeyLookup::NotLoaded`.)
 
 ### 2.4 Token validation (`src/auth/token.rs`)
-- [ ] A pure function: token, key set, config and the current time go in; a
+- [x] A pure function: token, key set, config and the current time go in; a
   `Principal` or a `Rejection` reason comes out. In order:
   1. Reject tokens over 16 KiB, or anything that is not three base64url segments
      (this also rejects opaque tokens).
-  2. The header must have `kid` and `alg`. Reject `crit` (verify whether
-     `jsonwebtoken` already rejects it). `alg` must equal the key's derived
+  2. The header must have `kid` and `alg`. Reject `crit` (verified:
+     `jsonwebtoken` 12 rejects every `crit` except `["b64"]` with `b64` set, so
+     kanbot rejects any `crit` itself). `alg` must equal the key's derived
      algorithm. `none` and `HS*` are never accepted.
   3. Verify the signature and the standard claims with `jsonwebtoken`:
      - required: `exp`, `iss`, `aud`, `sub`;
@@ -885,7 +886,8 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - Items to verify:
   - Authelia accepts `kanbot.internal` as a cookie domain;
   - the shape of Authelia's first-factor API in 4.39;
-  - whether `jsonwebtoken` rejects `crit`;
+  - ~~whether `jsonwebtoken` rejects `crit`~~ (resolved in 2.4: not fully, so
+    kanbot does);
   - which loopback host `flutter_web_auth_2` uses on desktop;
   - the **(verify)** items in `docs/oidc.md`.
 
@@ -909,7 +911,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
