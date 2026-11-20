@@ -242,6 +242,8 @@ pub fn with_middleware(app: Router, allowed_origins: &[HeaderValue]) -> Router {
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
+            // Sent by the web app on state-changing requests (CSRF).
+            HeaderName::from_static(crate::auth::middleware::CSRF_HEADER),
             // W3C trace context, so app traces continue into the API.
             HeaderName::from_static("traceparent"),
             HeaderName::from_static("tracestate"),

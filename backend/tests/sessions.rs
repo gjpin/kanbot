@@ -1463,3 +1463,67 @@ async fn logout_needs_a_session(pool: PgPool) {
     let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {jwt}"))).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+async fn send(app: &Router, request: axum::http::request::Builder) -> StatusCode {
+    app.clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[sqlx::test]
+async fn cookie_sessions_need_csrf_proof_to_change_anything(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let cookie = format!("__Host-kanbot_session={token}");
+    let put = |origin: Option<&str>, csrf: Option<&str>| {
+        let mut request = Request::put("/me/preferences")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(origin) = origin {
+            request = request.header(header::ORIGIN, origin);
+        }
+        if let Some(csrf) = csrf {
+            request = request.header("x-kanbot-csrf", csrf);
+        }
+        request
+    };
+    for (origin, csrf) in [
+        (None, None),
+        (Some("http://localhost:3000"), None),
+        (None, Some("1")),
+        (Some("https://evil.example"), Some("1")),
+        (Some("http://localhost:3000"), Some("0")),
+        (Some("http://localhost:3001"), Some("1")),
+        (Some("null"), Some("1")),
+    ] {
+        assert_eq!(
+            send(&app, put(origin, csrf)).await,
+            StatusCode::FORBIDDEN,
+            "{origin:?} {csrf:?}"
+        );
+    }
+    // Two values for either header are refused too.
+    let doubled = put(Some("http://localhost:3000"), Some("1")).header("x-kanbot-csrf", "1");
+    assert_eq!(send(&app, doubled).await, StatusCode::FORBIDDEN);
+
+    // With both, the request reaches the route (which then wants a body).
+    let allowed = put(Some("http://localhost:3000"), Some("1"));
+    assert_eq!(send(&app, allowed).await, StatusCode::BAD_REQUEST);
+
+    // Reading needs no proof.
+    let read = Request::get("/me").header(header::COOKIE, &cookie);
+    assert_eq!(send(&app, read).await, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn bearer_sessions_need_no_csrf_proof(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let request =
+        Request::post("/auth/logout").header(header::AUTHORIZATION, format!("Bearer {token}"));
+    assert_eq!(send(&app, request).await, StatusCode::OK);
+}

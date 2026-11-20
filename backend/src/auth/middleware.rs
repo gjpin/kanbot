@@ -15,7 +15,7 @@ use std::{
 
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, header},
+    http::{HeaderMap, Method, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -202,6 +202,13 @@ pub async fn authenticate(
         }
     };
     match result {
+        Ok((_, Some(session)))
+            if session.from_cookie
+                && !csrf_safe(&request, &auth.app.sessions.public_url.origin()) =>
+        {
+            tracing::info!(session.id = %session.id, "cross-site request refused");
+            AppError::Forbidden.into_response()
+        }
         Ok((user, session)) => {
             request.extensions_mut().insert(user);
             if let Some(session) = session {
@@ -221,6 +228,28 @@ pub async fn authenticate(
         }
         Err(refusal) => refuse(&auth, client, refusal).into_response(),
     }
+}
+
+/// The header a kanbot web app sends on state-changing requests.
+pub const CSRF_HEADER: &str = "x-kanbot-csrf";
+
+/// Whether a request authenticated by the session cookie may run: reading
+/// is always allowed; a state-changing method needs `Origin` equal to
+/// `PUBLIC_URL`'s origin and `X-Kanbot-CSRF: 1`, which a cross-site page
+/// cannot send without a CORS preflight that kanbot refuses.
+fn csrf_safe(request: &Request, public_origin: &str) -> bool {
+    let method = request.method();
+    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return true;
+    }
+    let headers = request.headers();
+    let single = |name: &str| {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next()?;
+        values.next().is_none().then_some(value)
+    };
+    single(header::ORIGIN.as_str()).is_some_and(|origin| origin == public_origin)
+        && single(CSRF_HEADER).is_some_and(|value| value == "1")
 }
 
 /// The user of a session token, and the session.
