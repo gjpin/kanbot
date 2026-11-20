@@ -70,3 +70,34 @@ pub(super) async fn set_telemetry_opt_in(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// Marks the user disabled and deletes their sessions, in one transaction.
+/// `false` if the user does not exist.
+#[tracing::instrument(skip_all, fields(user.id = %id.as_uuid()))]
+pub(super) async fn disable(db: &PgPool, id: UserId) -> Result<bool, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let found = sqlx::query!(
+        "UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1",
+        id.as_uuid()
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    sqlx::query!("DELETE FROM sessions WHERE user_id = $1", id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(found)
+}
+
+/// Deletes every session of the user.
+#[tracing::instrument(skip_all, fields(user.id = %id.as_uuid()))]
+pub(super) async fn delete_sessions(db: &PgPool, id: UserId) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query!("DELETE FROM sessions WHERE user_id = $1", id.as_uuid())
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
+}

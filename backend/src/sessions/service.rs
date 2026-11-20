@@ -533,7 +533,16 @@ pub async fn authenticate_session(
     } else {
         verify_stored(keys, config, session.id, &session.idp_access_token).await?
     };
-    let user = users::authenticate(db, &principal).await?;
+    let user = match users::authenticate(db, &principal).await {
+        Ok(user) => user,
+        Err(AppError::AccountDisabled) => {
+            // Disabled since the session began: end all of their sessions.
+            users::end_sessions(db, crate::users::model::UserId::from_uuid(session.user_id))
+                .await?;
+            return Err(SessionRefusal::Error(AppError::AccountDisabled));
+        }
+        Err(error) => return Err(error.into()),
+    };
     if user.id.as_uuid() != session.user_id {
         // Cannot happen unless the issuer or subject claim was reconfigured.
         tracing::warn!(session.id = %session.id, "session token belongs to another user");

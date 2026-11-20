@@ -54,3 +54,34 @@ pub async fn set_telemetry_opt_in(db: &PgPool, id: UserId, opt_in: bool) -> Resu
         Err(AppError::NotFound)
     }
 }
+
+/// Disables the user: every request of theirs is refused from now on
+/// (`account_disabled`), and their kanbot sessions end at once.
+///
+/// # Errors
+///
+/// [`AppError::NotFound`] if the user does not exist, or a database
+/// error.
+pub async fn disable(db: &PgPool, id: UserId) -> Result<(), AppError> {
+    if repo::disable(db, id).await? {
+        tracing::info!(user.id = %id.as_uuid(), "user disabled");
+        Ok(())
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+/// Ends every kanbot session of the user (for a user found disabled).
+///
+/// # Errors
+///
+/// A database error.
+pub async fn end_sessions(db: &PgPool, id: UserId) -> Result<(), AppError> {
+    let ended = repo::delete_sessions(db, id).await?;
+    tracing::info!(
+        user.id = %id.as_uuid(),
+        sessions = i64::try_from(ended).unwrap_or(i64::MAX),
+        "sessions of a disabled user ended"
+    );
+    Ok(())
+}

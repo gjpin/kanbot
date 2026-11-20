@@ -1614,3 +1614,60 @@ async fn cleanup_deletes_what_has_expired_in_batches(pool: PgPool) {
         0
     );
 }
+
+#[sqlx::test]
+async fn a_user_disabled_in_the_database_loses_every_session(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let first = web_session(&app, &idp, "alice").await;
+    web_session(&app, &idp, "alice").await;
+    web_session(&app, &idp, "bob").await;
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE subject = 'alice'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = me_by_bearer(&app, &first).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem(response).await["code"], "account_disabled");
+    assert_eq!(session_count(&pool).await, 1, "only bob's session is left");
+}
+
+#[sqlx::test]
+async fn disabling_a_user_ends_their_sessions(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    web_session(&app, &idp, "bob").await;
+    let alice = sqlx::query_scalar!("SELECT id FROM users WHERE subject = 'alice'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    kanbot_backend::users::service::disable(
+        &pool,
+        kanbot_backend::users::model::UserId::from_uuid(alice),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session_count(&pool).await, 1);
+    assert_eq!(
+        me_by_bearer(&app, &token).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let disabled = sqlx::query_scalar!(
+        r#"SELECT disabled_at IS NOT NULL AS "d!" FROM users WHERE id = $1"#,
+        alice
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(disabled);
+    assert!(matches!(
+        kanbot_backend::users::service::disable(&pool, kanbot_backend::users::model::UserId::new())
+            .await,
+        Err(kanbot_backend::error::AppError::NotFound)
+    ));
+}
