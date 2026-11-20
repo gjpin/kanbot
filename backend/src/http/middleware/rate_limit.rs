@@ -7,6 +7,7 @@
 
 use std::{
     net::{IpAddr, SocketAddr},
+    num::NonZeroU32,
     sync::Arc,
     time::Duration,
 };
@@ -25,6 +26,61 @@ use crate::http::{
     client_ip::{TrustedProxies, client_ip},
     problem::{ErrorCode, Problem},
 };
+
+/// A configured limit: `per_second` requests on average, with bursts of up
+/// to `burst`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimit {
+    pub per_second: NonZeroU32,
+    pub burst: NonZeroU32,
+}
+
+impl RateLimit {
+    const fn new(per_second: u32, burst: u32) -> Self {
+        Self {
+            per_second: nonzero(per_second),
+            burst: nonzero(burst),
+        }
+    }
+
+    /// How long it takes to earn back one request.
+    #[must_use]
+    pub fn period(self) -> Duration {
+        Duration::from_secs(1)
+            .checked_div(self.per_second.get())
+            .unwrap_or(Duration::from_secs(1))
+    }
+}
+
+const fn nonzero(value: u32) -> NonZeroU32 {
+    match NonZeroU32::new(value) {
+        Some(value) => value,
+        None => NonZeroU32::MIN,
+    }
+}
+
+/// Every rate limit of the API (`RATE_LIMIT_*`). See `backend/AGENTS.md`
+/// for how the defaults were sized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimits {
+    /// Per client IP, all requests.
+    pub ip: RateLimit,
+    /// Per client IP, requests that fail authentication.
+    pub auth_failure: RateLimit,
+    /// Per authenticated user.
+    pub user: RateLimit,
+    /// Per authenticated user, the telemetry relay.
+    pub telemetry: RateLimit,
+}
+
+impl RateLimits {
+    pub const DEFAULT: Self = Self {
+        ip: RateLimit::new(2000, 4000),
+        auth_failure: RateLimit::new(50, 500),
+        user: RateLimit::new(20, 100),
+        telemetry: RateLimit::new(1, 20),
+    };
+}
 
 /// How often the limiter forgets clients it has not seen for a while, so
 /// its memory does not grow with every address that ever connected.
@@ -105,5 +161,17 @@ fn rejection(error: &GovernorError) -> Response {
             Problem::new(ErrorCode::Internal).into_response()
         }
         GovernorError::Other { code, .. } => Problem::for_status(code).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn period_is_the_time_to_earn_one_request() {
+        assert_eq!(RateLimit::new(1, 1).period(), Duration::from_secs(1));
+        assert_eq!(RateLimit::new(4, 1).period(), Duration::from_millis(250));
+        assert_eq!(RateLimit::new(2000, 1).period(), Duration::from_micros(500));
     }
 }

@@ -1,14 +1,32 @@
 //! Runtime configuration, read from environment variables.
 
-use std::{env::VarError, net::SocketAddr};
+use std::{
+    env::VarError,
+    net::SocketAddr,
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+};
 
 use axum::http::HeaderValue;
 use reqwest::Url;
 use secrecy::SecretString;
 
-use crate::http::client_ip::{InvalidNetwork, TrustedProxies};
+use crate::{
+    auth::config::{OidcConfig, OidcConfigError},
+    http::{
+        client_ip::{InvalidNetwork, TrustedProxies},
+        middleware::rate_limit::{RateLimit, RateLimits},
+    },
+};
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:3000";
+const DEFAULT_MAX_IN_FLIGHT_REQUESTS: NonZeroUsize = match NonZeroUsize::new(512) {
+    Some(value) => value,
+    None => NonZeroUsize::MIN,
+};
+const DEFAULT_DATABASE_MAX_CONNECTIONS: NonZeroU32 = match NonZeroU32::new(10) {
+    Some(value) => value,
+    None => NonZeroU32::MIN,
+};
 
 /// Runtime configuration.
 pub struct Config {
@@ -29,6 +47,16 @@ pub struct Config {
     /// to (`TELEMETRY_RELAY_UPSTREAM`, for example `http://collector:4318`).
     /// Unset: the relay is off and those routes do not exist.
     pub telemetry_relay_upstream: Option<Url>,
+    /// The OIDC identity provider (`OIDC_*`).
+    pub oidc: OidcConfig,
+    /// Rate limits (`RATE_LIMIT_*`).
+    pub rate_limits: RateLimits,
+    /// Requests handled at once by this instance before new ones get a 503
+    /// (`MAX_IN_FLIGHT_REQUESTS`, default 512).
+    pub max_in_flight_requests: NonZeroUsize,
+    /// Database pool size of this instance (`DATABASE_MAX_CONNECTIONS`,
+    /// default 10).
+    pub database_max_connections: NonZeroU32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +80,10 @@ pub enum ConfigError {
         "TELEMETRY_RELAY_UPSTREAM is not an http or https URL without credentials, query or fragment"
     )]
     RelayUpstream,
+    #[error("{0} must be a positive whole number")]
+    NotPositive(&'static str),
+    #[error(transparent)]
+    Oidc(#[from] OidcConfigError),
 }
 
 impl Config {
@@ -104,18 +136,105 @@ impl Config {
             .map(|raw| parse_upstream(&raw))
             .transpose()?;
 
+        let oidc = OidcConfig::from_lookup(&lookup)?;
+
+        let rate_limits = RateLimits {
+            ip: rate_limit(
+                &lookup,
+                ("RATE_LIMIT_IP_PER_SECOND", "RATE_LIMIT_IP_BURST"),
+                RateLimits::DEFAULT.ip,
+            )?,
+            auth_failure: rate_limit(
+                &lookup,
+                (
+                    "RATE_LIMIT_AUTH_FAILURE_PER_SECOND",
+                    "RATE_LIMIT_AUTH_FAILURE_BURST",
+                ),
+                RateLimits::DEFAULT.auth_failure,
+            )?,
+            user: rate_limit(
+                &lookup,
+                ("RATE_LIMIT_USER_PER_SECOND", "RATE_LIMIT_USER_BURST"),
+                RateLimits::DEFAULT.user,
+            )?,
+            telemetry: rate_limit(
+                &lookup,
+                (
+                    "RATE_LIMIT_TELEMETRY_PER_SECOND",
+                    "RATE_LIMIT_TELEMETRY_BURST",
+                ),
+                RateLimits::DEFAULT.telemetry,
+            )?,
+        };
+        let max_in_flight_requests = match optional(&lookup, "MAX_IN_FLIGHT_REQUESTS")? {
+            Some(raw) => positive_usize("MAX_IN_FLIGHT_REQUESTS", &raw)?,
+            None => DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+        };
+        let database_max_connections = match optional(&lookup, "DATABASE_MAX_CONNECTIONS")? {
+            Some(raw) => positive_u32("DATABASE_MAX_CONNECTIONS", &raw)?,
+            None => DEFAULT_DATABASE_MAX_CONNECTIONS,
+        };
+
         Ok(Self {
             listen_addr,
             database_url,
             cors_allowed_origins,
             trusted_proxies,
             telemetry_relay_upstream,
+            oidc,
+            rate_limits,
+            max_in_flight_requests,
+            database_max_connections,
         })
     }
 }
 
+/// A rate limit from its `_PER_SECOND` and `_BURST` variables, each
+/// defaulting on its own.
+fn rate_limit(
+    lookup: &impl Fn(&'static str) -> Result<String, VarError>,
+    (per_second_name, burst_name): (&'static str, &'static str),
+    default: RateLimit,
+) -> Result<RateLimit, ConfigError> {
+    let per_second = match optional(lookup, per_second_name)? {
+        Some(raw) => positive_u32(per_second_name, &raw)?,
+        None => default.per_second,
+    };
+    let burst = match optional(lookup, burst_name)? {
+        Some(raw) => positive_u32(burst_name, &raw)?,
+        None => default.burst,
+    };
+    Ok(RateLimit { per_second, burst })
+}
+
+/// A whole number above zero. Zero, a sign, or anything else is refused.
+pub(crate) fn positive(name: &'static str, raw: &str) -> Result<NonZeroU64, ConfigError> {
+    let raw = raw.trim();
+    raw.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| raw.parse::<NonZeroU64>().ok())
+        .flatten()
+        .ok_or(ConfigError::NotPositive(name))
+}
+
+fn positive_u32(name: &'static str, raw: &str) -> Result<NonZeroU32, ConfigError> {
+    NonZeroU32::try_from(positive(name, raw)?).map_err(|_| ConfigError::NotPositive(name))
+}
+
+fn positive_usize(name: &'static str, raw: &str) -> Result<NonZeroUsize, ConfigError> {
+    NonZeroUsize::try_from(positive(name, raw)?).map_err(|_| ConfigError::NotPositive(name))
+}
+
+/// Reads a variable that must be present.
+pub(crate) fn required(
+    lookup: &impl Fn(&'static str) -> Result<String, VarError>,
+    name: &'static str,
+) -> Result<String, ConfigError> {
+    lookup(name).map_err(|source| ConfigError::Var { name, source })
+}
+
 /// Reads a variable that may be absent. Present but not UTF-8 is an error.
-fn optional(
+pub(crate) fn optional(
     lookup: &impl Fn(&'static str) -> Result<String, VarError>,
     name: &'static str,
 ) -> Result<Option<String>, ConfigError> {
@@ -169,8 +288,22 @@ mod tests {
 
     use super::*;
 
+    /// The required `OIDC_*` variables, which these tests do not cover
+    /// (see `auth::config`).
+    const OIDC: [(&str, &str); 5] = [
+        ("OIDC_ISSUER", "https://auth.example.com"),
+        ("OIDC_AUDIENCE", "kanbot-api"),
+        ("OIDC_ROLES_CLAIM", "groups"),
+        ("OIDC_ADMIN_ROLE", "kanbot-admin"),
+        ("OIDC_USER_ROLE", "kanbot-user"),
+    ];
+
     fn lookup(vars: &[(&'static str, &str)]) -> impl Fn(&'static str) -> Result<String, VarError> {
-        let vars: HashMap<_, _> = vars.iter().map(|(k, v)| (*k, (*v).to_owned())).collect();
+        let vars: HashMap<_, _> = OIDC
+            .iter()
+            .chain(vars)
+            .map(|(k, v)| (*k, (*v).to_owned()))
+            .collect();
         move |name| vars.get(name).cloned().ok_or(VarError::NotPresent)
     }
 
@@ -369,6 +502,93 @@ mod tests {
             assert!(matches!(err, ConfigError::RelayUpstream), "{bad}");
             assert!(!err.to_string().contains("secret"), "{err}");
         }
+    }
+
+    #[test]
+    fn defaults_limits_and_pool_size() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://db")])).unwrap();
+        assert_eq!(config.rate_limits, RateLimits::DEFAULT);
+        assert_eq!(config.rate_limits.ip.per_second.get(), 2000);
+        assert_eq!(config.rate_limits.ip.burst.get(), 4000);
+        assert_eq!(config.rate_limits.auth_failure.per_second.get(), 50);
+        assert_eq!(config.rate_limits.auth_failure.burst.get(), 500);
+        assert_eq!(config.rate_limits.user.per_second.get(), 20);
+        assert_eq!(config.rate_limits.user.burst.get(), 100);
+        assert_eq!(config.rate_limits.telemetry.per_second.get(), 1);
+        assert_eq!(config.rate_limits.telemetry.burst.get(), 20);
+        assert_eq!(config.max_in_flight_requests.get(), 512);
+        assert_eq!(config.database_max_connections.get(), 10);
+    }
+
+    #[test]
+    fn reads_limits_and_pool_size() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://db"),
+            ("RATE_LIMIT_IP_PER_SECOND", "1"),
+            ("RATE_LIMIT_IP_BURST", "2"),
+            ("RATE_LIMIT_AUTH_FAILURE_PER_SECOND", "3"),
+            ("RATE_LIMIT_AUTH_FAILURE_BURST", "4"),
+            ("RATE_LIMIT_USER_PER_SECOND", "5"),
+            ("RATE_LIMIT_USER_BURST", "6"),
+            ("RATE_LIMIT_TELEMETRY_PER_SECOND", "7"),
+            ("RATE_LIMIT_TELEMETRY_BURST", " 8 "),
+            ("MAX_IN_FLIGHT_REQUESTS", "9"),
+            ("DATABASE_MAX_CONNECTIONS", "11"),
+        ]))
+        .unwrap();
+        let limits = config.rate_limits;
+        let pairs = [
+            limits.ip,
+            limits.auth_failure,
+            limits.user,
+            limits.telemetry,
+        ]
+        .map(|limit| (limit.per_second.get(), limit.burst.get()));
+        assert_eq!(pairs, [(1, 2), (3, 4), (5, 6), (7, 8)]);
+        assert_eq!(config.max_in_flight_requests.get(), 9);
+        assert_eq!(config.database_max_connections.get(), 11);
+    }
+
+    #[test]
+    fn rejects_zero_or_non_numeric_limits() {
+        for name in [
+            "RATE_LIMIT_IP_PER_SECOND",
+            "RATE_LIMIT_IP_BURST",
+            "RATE_LIMIT_AUTH_FAILURE_PER_SECOND",
+            "RATE_LIMIT_AUTH_FAILURE_BURST",
+            "RATE_LIMIT_USER_PER_SECOND",
+            "RATE_LIMIT_USER_BURST",
+            "RATE_LIMIT_TELEMETRY_PER_SECOND",
+            "RATE_LIMIT_TELEMETRY_BURST",
+            "MAX_IN_FLIGHT_REQUESTS",
+            "DATABASE_MAX_CONNECTIONS",
+        ] {
+            for bad in ["0", "", "-1", "+5", "1.5", "ten", "99999999999999999999"] {
+                let result =
+                    Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://db"), (name, bad)]));
+                assert!(
+                    matches!(result, Err(ConfigError::NotPositive(n)) if n == name),
+                    "{name}={bad}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn requires_oidc() {
+        let err = Config::from_lookup(|name| match name {
+            "DATABASE_URL" => Ok("postgres://db".to_owned()),
+            _ => Err(VarError::NotPresent),
+        })
+        .err()
+        .unwrap();
+        assert!(matches!(
+            err,
+            ConfigError::Var {
+                name: "OIDC_ISSUER",
+                source: VarError::NotPresent
+            }
+        ));
     }
 
     proptest! {

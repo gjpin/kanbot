@@ -306,11 +306,11 @@ consent, applies rate limits and runs against a local Authelia.
   `tower` (`limit`, `load-shed`). Run `cargo deny check`.
 
 ### 2.2 Configuration
-- [ ] **New file `src/auth/config.rs`:** an `OidcConfig` with validated newtypes
+- [x] **New file `src/auth/config.rs`:** an `OidcConfig` with validated newtypes
   (`Issuer`, `Audience`, `ClientId`, `RoleName`, `ClaimPath`). `Config` gains an
   `oidc` field and the rate-limit and pool settings. Follow the existing
   `Config::from_lookup` pattern.
-- [ ] **The backend refuses to start when:**
+- [x] **The backend refuses to start when:**
   - a required variable is missing;
   - the issuer is not HTTPS (unless the insecure flag is set and the host is a
     numeric loopback address);
@@ -320,7 +320,7 @@ consent, applies rate limits and runs against a local Authelia.
   - a claim path has an empty segment;
   - the CA file is unreadable or invalid;
   - a rate limit is zero or not a number.
-- [ ] **Tests:** unit tests for every rule, plus `proptest` for `ClaimPath`
+- [x] **Tests:** unit tests for every rule, plus `proptest` for `ClaimPath`
   parsing.
 
 ### 2.3 Discovery and keys (`src/auth/discovery.rs`, `src/auth/keys.rs`)
@@ -908,7 +908,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

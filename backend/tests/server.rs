@@ -23,16 +23,32 @@ use tokio::{
 
 const UNREACHABLE_DB: &str = "postgres://127.0.0.1:1/kanbot";
 
+/// A valid OIDC configuration whose issuer is unreachable: the server
+/// starts anyway and keeps retrying.
+const OIDC: [(&str, &str); 6] = [
+    ("OIDC_ISSUER", "http://127.0.0.1:1"),
+    ("OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP", "true"),
+    ("OIDC_AUDIENCE", "kanbot-api"),
+    ("OIDC_ROLES_CLAIM", "groups"),
+    ("OIDC_ADMIN_ROLE", "kanbot-admin"),
+    ("OIDC_USER_ROLE", "kanbot-user"),
+];
+
 /// The binary, configured only by what the test sets. Telemetry export is
 /// off unless a test turns it on.
 fn server(listen_addr: SocketAddr, database_url: Option<&str>) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_kanbot-backend"));
     for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("OTEL_") {
+        let name_str = name.to_string_lossy();
+        if ["OTEL_", "OIDC_", "RATE_LIMIT_"]
+            .iter()
+            .any(|prefix| name_str.starts_with(prefix))
+        {
             command.env_remove(name);
         }
     }
     command
+        .envs(OIDC)
         .env("LISTEN_ADDR", listen_addr.to_string())
         .env("OTEL_SDK_DISABLED", "true")
         .env_remove("DATABASE_URL")
@@ -40,6 +56,8 @@ fn server(listen_addr: SocketAddr, database_url: Option<&str>) -> Command {
         .env_remove("CORS_ALLOWED_ORIGINS")
         .env_remove("TRUSTED_PROXIES")
         .env_remove("TELEMETRY_RELAY_UPSTREAM")
+        .env_remove("MAX_IN_FLIGHT_REQUESTS")
+        .env_remove("DATABASE_MAX_CONNECTIONS")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -186,6 +204,30 @@ async fn fails_with_invalid_cors_origin() {
     command.env("CORS_ALLOWED_ORIGINS", "*");
     let stderr = stderr_of_failed_start(command).await;
     assert!(stderr.contains("CorsOrigin"), "{stderr}");
+}
+
+#[tokio::test]
+async fn fails_without_oidc_issuer() {
+    let mut command = server(free_addr().await, Some(UNREACHABLE_DB));
+    command.env_remove("OIDC_ISSUER");
+    let stderr = stderr_of_failed_start(command).await;
+    assert!(stderr.contains("OIDC_ISSUER"), "{stderr}");
+}
+
+#[tokio::test]
+async fn fails_with_insecure_oidc_issuer() {
+    let mut command = server(free_addr().await, Some(UNREACHABLE_DB));
+    command.env_remove("OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP");
+    let stderr = stderr_of_failed_start(command).await;
+    assert!(stderr.contains("Issuer"), "{stderr}");
+}
+
+#[tokio::test]
+async fn fails_with_a_zero_rate_limit() {
+    let mut command = server(free_addr().await, Some(UNREACHABLE_DB));
+    command.env("RATE_LIMIT_USER_BURST", "0");
+    let stderr = stderr_of_failed_start(command).await;
+    assert!(stderr.contains("RATE_LIMIT_USER_BURST"), "{stderr}");
 }
 
 #[tokio::test]
