@@ -178,6 +178,11 @@ impl Config {
                 ),
                 RateLimits::DEFAULT.auth_failure,
             )?,
+            login: rate_limit(
+                &lookup,
+                ("RATE_LIMIT_LOGIN_PER_SECOND", "RATE_LIMIT_LOGIN_BURST"),
+                RateLimits::DEFAULT.login,
+            )?,
             user: rate_limit(
                 &lookup,
                 ("RATE_LIMIT_USER_PER_SECOND", "RATE_LIMIT_USER_BURST"),
@@ -547,6 +552,8 @@ mod tests {
         assert_eq!(config.rate_limits.ip.burst.get(), 4000);
         assert_eq!(config.rate_limits.auth_failure.per_second.get(), 50);
         assert_eq!(config.rate_limits.auth_failure.burst.get(), 500);
+        assert_eq!(config.rate_limits.login.per_second.get(), 100);
+        assert_eq!(config.rate_limits.login.burst.get(), 500);
         assert_eq!(config.rate_limits.user.per_second.get(), 20);
         assert_eq!(config.rate_limits.user.burst.get(), 100);
         assert_eq!(config.rate_limits.telemetry.per_second.get(), 1);
@@ -567,6 +574,8 @@ mod tests {
             ("RATE_LIMIT_USER_BURST", "6"),
             ("RATE_LIMIT_TELEMETRY_PER_SECOND", "7"),
             ("RATE_LIMIT_TELEMETRY_BURST", " 8 "),
+            ("RATE_LIMIT_LOGIN_PER_SECOND", "12"),
+            ("RATE_LIMIT_LOGIN_BURST", "13"),
             ("MAX_IN_FLIGHT_REQUESTS", "9"),
             ("DATABASE_MAX_CONNECTIONS", "11"),
         ]))
@@ -580,6 +589,10 @@ mod tests {
         ]
         .map(|limit| (limit.per_second.get(), limit.burst.get()));
         assert_eq!(pairs, [(1, 2), (3, 4), (5, 6), (7, 8)]);
+        assert_eq!(
+            (limits.login.per_second.get(), limits.login.burst.get()),
+            (12, 13)
+        );
         assert_eq!(config.max_in_flight_requests.get(), 9);
         assert_eq!(config.database_max_connections.get(), 11);
     }
@@ -595,6 +608,8 @@ mod tests {
             "RATE_LIMIT_USER_BURST",
             "RATE_LIMIT_TELEMETRY_PER_SECOND",
             "RATE_LIMIT_TELEMETRY_BURST",
+            "RATE_LIMIT_LOGIN_PER_SECOND",
+            "RATE_LIMIT_LOGIN_BURST",
             "MAX_IN_FLIGHT_REQUESTS",
             "DATABASE_MAX_CONNECTIONS",
         ] {

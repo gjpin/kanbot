@@ -319,3 +319,39 @@ async fn sheds_load_above_the_in_flight_cap(pool: PgPool) {
     assert_eq!(in_flight.await.unwrap().unwrap().status(), StatusCode::OK);
     assert_eq!(status(&app, health()).await, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn sign_in_routes_have_their_own_limit_per_client() {
+    let app = app_from(
+        "203.0.113.9:1000",
+        unreachable_pool(),
+        settings(RateLimits {
+            login: limit(1, 2),
+            ..RateLimits::DEFAULT
+        }),
+    );
+    let login = || {
+        Request::get("/auth/login?platform=web")
+            .body(Body::empty())
+            .unwrap()
+    };
+    // Discovery never ran here: 503, but counted.
+    assert_eq!(status(&app, login()).await, StatusCode::SERVICE_UNAVAILABLE);
+    let token = Request::post("/auth/token")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(status(&app, token).await, StatusCode::UNPROCESSABLE_ENTITY);
+    let rejected = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem_code(rejected).await, "rate_limited");
+    let callback = Request::get("/auth/callback").body(Body::empty()).unwrap();
+    assert_eq!(status(&app, callback).await, StatusCode::TOO_MANY_REQUESTS);
+
+    // Other routes are not affected.
+    for _ in 0..5 {
+        assert_eq!(status(&app, health()).await, StatusCode::OK);
+        let config = Request::get("/auth/config").body(Body::empty()).unwrap();
+        assert_eq!(status(&app, config).await, StatusCode::OK);
+    }
+}

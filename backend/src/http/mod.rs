@@ -97,13 +97,21 @@ impl Modify for SecuritySchemes {
 /// Every route, with its `OpenAPI` description. Merge each feature's
 /// `routes()` here.
 fn api() -> OpenApiRouter<AppState> {
+    let (routes, login_routes) = api_parts();
+    routes.merge(login_routes)
+}
+
+/// The API, and apart from it the sign-in routes, which have their own
+/// rate limit.
+fn api_parts() -> (OpenApiRouter<AppState>, OpenApiRouter<AppState>) {
     let mut doc = ApiDoc::openapi();
     // utoipa copies the crate's license, which a private crate does not have.
     doc.info.license = None;
-    OpenApiRouter::with_openapi(doc)
+    let routes = OpenApiRouter::with_openapi(doc)
         .merge(health::routes())
         .merge(crate::users::routes())
-        .merge(crate::sessions::routes())
+        .merge(crate::sessions::routes());
+    (routes, crate::sessions::login_routes())
 }
 
 /// How the HTTP layer protects the app (see `backend/AGENTS.md`).
@@ -179,10 +187,21 @@ pub fn router(
     settings: HttpSettings,
     relay: Option<Router>,
 ) -> Result<Router, StartupError> {
-    let (routes, _) = api().split_for_parts();
-    let routes = routes.with_state(state.clone()).layer(axum::Extension(
-        crate::sessions::TelemetryAvailable(relay.is_some()),
-    ));
+    let (routes, login_routes) = api_parts();
+    let (routes, _) = routes.split_for_parts();
+    let (login_routes, _) = login_routes.split_for_parts();
+    let login_routes = rate_limit::limit_per_client(
+        login_routes.with_state(state.clone()),
+        Arc::clone(&settings.trusted_proxies),
+        settings.rate_limits.login,
+    )?;
+    let routes = routes
+        .with_state(state.clone())
+        .merge(login_routes)
+        .with_state(state.clone())
+        .layer(axum::Extension(crate::sessions::TelemetryAvailable(
+            relay.is_some(),
+        )));
     let routes = match relay {
         Some(relay) => routes.merge(relay),
         None => routes,

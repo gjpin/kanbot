@@ -84,6 +84,8 @@ pub struct RateLimits {
     pub ip: RateLimit,
     /// Per client IP, requests that fail authentication.
     pub auth_failure: RateLimit,
+    /// Per client IP, the routes that start or finish a sign-in.
+    pub login: RateLimit,
     /// Per authenticated user.
     pub user: RateLimit,
     /// Per authenticated user, the telemetry relay.
@@ -94,6 +96,7 @@ impl RateLimits {
     pub const DEFAULT: Self = Self {
         ip: RateLimit::new(2000, 4000),
         auth_failure: RateLimit::new(50, 500),
+        login: RateLimit::new(100, 500),
         user: RateLimit::new(20, 100),
         telemetry: RateLimit::new(1, 20),
     };

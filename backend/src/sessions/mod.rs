@@ -18,11 +18,18 @@ pub use handlers::{
     LOGIN_COOKIE, SESSION_COOKIE, TelemetryAvailable, clear_session_cookie, cookie,
 };
 
-pub fn routes() -> OpenApiRouter<AppState> {
+/// The routes that start or finish a sign-in, which get their own per-IP
+/// rate limit (`RATE_LIMIT_LOGIN_*`).
+pub fn login_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::login))
         .routes(routes!(handlers::callback))
         .routes(routes!(handlers::token))
+}
+
+/// The other `/auth` routes.
+pub fn routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
         .routes(routes!(handlers::config))
         .routes(routes!(handlers::logout))
 }
