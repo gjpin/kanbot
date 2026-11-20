@@ -1,6 +1,7 @@
 //! Request and response types of the `/auth` routes.
 
-use serde::Deserialize;
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -97,4 +98,62 @@ impl TryFrom<LoginQuery> for LoginRequest {
             }
         }
     }
+}
+
+/// A secret in a request body. Never printed or logged.
+pub struct SecretInput(SecretString);
+
+impl SecretInput {
+    #[must_use]
+    pub fn secret(&self) -> &SecretString {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|value| Self(SecretString::from(value)))
+    }
+}
+
+/// `POST /auth/token`: a native app redeems its one-time code.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TokenRequest {
+    /// The `code` the app received at its redirect URI.
+    #[schema(value_type = String)]
+    pub code: SecretInput,
+    /// The PKCE verifier whose S256 challenge the app sent to `/auth/login`
+    /// (RFC 7636: 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`).
+    #[schema(value_type = String)]
+    pub code_verifier: SecretInput,
+}
+
+impl TokenRequest {
+    /// Field errors for a verifier that RFC 7636 does not allow.
+    #[must_use]
+    pub fn invalid_fields(&self) -> Vec<FieldError> {
+        let verifier = self.code_verifier.secret().expose_secret();
+        let valid = (43..=128).contains(&verifier.len())
+            && verifier
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+        if valid {
+            Vec::new()
+        } else {
+            vec![FieldError::new("/code_verifier", "invalid")]
+        }
+    }
+}
+
+/// A native app's session.
+#[derive(Serialize, ToSchema)]
+pub struct TokenResponse {
+    /// Send as `Authorization: Bearer <session_token>`. Store it only in
+    /// the platform's secure storage.
+    pub session_token: String,
+    /// When the session ends at the latest (RFC 3339, UTC). It can end
+    /// sooner: when idle, on logout, or when the identity provider refuses
+    /// to refresh it.
+    pub expires_at: String,
 }

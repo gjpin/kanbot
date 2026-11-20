@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT token_hash,\n                  to_char(absolute_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"expires!\"\n           FROM sessions",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expires!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "09729388056b18eeaa60b08bd92592638f3cb21725bd83894ca052e28ba6891a"
+}

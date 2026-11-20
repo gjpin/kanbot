@@ -140,3 +140,44 @@ pub(super) async fn insert_code(
     .await?;
     Ok(())
 }
+
+/// Marks the one-time code with `code_hash` used and returns its session
+/// and PKCE challenge, if it is unused and unexpired. Single use, even
+/// under concurrent redemptions.
+#[tracing::instrument(skip_all)]
+pub(super) async fn consume_code(
+    db: &PgPool,
+    code_hash: &[u8],
+) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "UPDATE login_codes SET used_at = now()
+         WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
+         RETURNING session_id, app_code_challenge",
+        code_hash,
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|row| (row.session_id, row.app_code_challenge)))
+}
+
+/// Gives a native session waiting for its token the token with
+/// `token_hash`. Returns the session's absolute expiry (RFC 3339, UTC), or
+/// `None` if there is no such waiting, unexpired session.
+#[tracing::instrument(skip_all, fields(session.id = %session_id))]
+pub(super) async fn activate_native_session(
+    db: &PgPool,
+    session_id: Uuid,
+    token_hash: &[u8],
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"UPDATE sessions SET token_hash = $2, last_used_at = now()
+           WHERE id = $1 AND kind = 'native' AND token_hash IS NULL
+             AND absolute_expires_at > now()
+           RETURNING to_char(absolute_expires_at AT TIME ZONE 'UTC',
+                             'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "expires_at!""#,
+        session_id,
+        token_hash,
+    )
+    .fetch_optional(db)
+    .await
+}

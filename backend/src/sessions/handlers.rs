@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Redirect, Response},
@@ -15,7 +16,7 @@ use crate::{
     error::AppError,
     http::problem::Problem,
     sessions::{
-        dto::LoginQuery,
+        dto::{LoginQuery, TokenRequest, TokenResponse},
         model::LoginRequest,
         service::{self, CallbackParams, Destination, LoginOutcome},
     },
@@ -174,4 +175,41 @@ fn with_query(base: &str, name: &str, value: &str) -> Result<String, AppError> {
     let mut url = Url::parse(base).map_err(|_| AppError::Internal("redirect URI"))?;
     url.query_pairs_mut().append_pair(name, value);
     Ok(url.to_string())
+}
+
+/// Redeems a native app's one-time code for its session token.
+///
+/// The code is single use and expires after 60 seconds; the verifier must
+/// match the challenge the app sent to `/auth/login`.
+#[utoipa::path(
+    post,
+    path = "/auth/token",
+    tag = "auth",
+    request_body = TokenRequest,
+    responses(
+        (status = OK, description = "The session.", body = TokenResponse),
+        (status = BAD_REQUEST, description = "The code is invalid, used or expired, or the verifier is wrong.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = UNPROCESSABLE_ENTITY, description = "The verifier is not a valid PKCE verifier.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn token(
+    State(state): State<AppState>,
+    Json(request): Json<TokenRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    let errors = request.invalid_fields();
+    if !errors.is_empty() {
+        return Err(AppError::Validation(errors));
+    }
+    let session = service::redeem_code(
+        &state.db,
+        request.code.secret().expose_secret(),
+        request.code_verifier.secret(),
+    )
+    .await?;
+    Ok(Json(TokenResponse {
+        session_token: session.token.expose_secret().to_owned(),
+        expires_at: session.expires_at,
+    }))
 }

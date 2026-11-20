@@ -20,4 +20,5 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::login))
         .routes(routes!(handlers::callback))
+        .routes(routes!(handlers::token))
 }

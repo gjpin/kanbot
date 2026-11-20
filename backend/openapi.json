@@ -173,6 +173,58 @@
         }
       }
     },
+    "/auth/token": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Redeems a native app's one-time code for its session token.",
+        "description": "The code is single use and expires after 60 seconds; the verifier must\nmatch the challenge the app sent to `/auth/login`.",
+        "operationId": "token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The code is invalid, used or expired, or the verifier is wrong.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The verifier is not a valid PKCE verifier.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
@@ -463,6 +515,43 @@
             "type": "string",
             "description": "`urn:kanbot:problem:<code>`.",
             "example": "urn:kanbot:problem:not_found"
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "description": "`POST /auth/token`: a native app redeems its one-time code.",
+        "required": [
+          "code",
+          "code_verifier"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The `code` the app received at its redirect URI."
+          },
+          "code_verifier": {
+            "type": "string",
+            "description": "The PKCE verifier whose S256 challenge the app sent to `/auth/login`\n(RFC 7636: 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TokenResponse": {
+        "type": "object",
+        "description": "A native app's session.",
+        "required": [
+          "session_token",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "When the session ends at the latest (RFC 3339, UTC). It can end\nsooner: when idle, on logout, or when the identity provider refuses\nto refresh it."
+          },
+          "session_token": {
+            "type": "string",
+            "description": "Send as `Authorization: Bearer <session_token>`. Store it only in\nthe platform's secure storage."
           }
         }
       }

@@ -841,3 +841,140 @@ async fn native_refusals_go_back_to_the_app(pool: PgPool) {
         "dev.sideral.kanbot:/auth/done?error=no_role"
     );
 }
+
+/// The verifier whose S256 challenge is [`CHALLENGE`] (RFC 7636, appendix B).
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+/// Signs in natively and returns the one-time code.
+async fn native_code(app: &Router, idp: &TestIdp, subject: &str) -> String {
+    let started = start(app, NATIVE_LOGIN).await;
+    answer(
+        idp,
+        &issued_claims(&idp.issuer, subject, &["kanbot-user"]),
+        &id_claims(idp, subject, &started.nonce),
+    );
+    let response = callback(app, &started.state, "", None).await;
+    error_location(&response)
+        .strip_prefix("dev.sideral.kanbot:/auth/done?code=")
+        .unwrap()
+        .to_owned()
+}
+
+async fn redeem(app: &Router, body: &Value) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/auth/token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, problem(response).await)
+}
+
+#[sqlx::test]
+async fn a_native_app_redeems_its_code_once(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let code = native_code(&app, &idp, "bob").await;
+
+    let (status, body) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["session_token"].as_str().unwrap();
+    assert!(token.starts_with("kbs_") && token.len() == 47);
+    let expires_at = body["expires_at"].as_str().unwrap();
+    assert!(
+        expires_at.ends_with('Z') && expires_at.len() == 20,
+        "{expires_at}"
+    );
+    let row = sqlx::query!(
+        r#"SELECT token_hash,
+                  to_char(absolute_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "expires!"
+           FROM sessions"#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.token_hash.unwrap(), secrets::hash(token));
+    assert_eq!(row.expires, expires_at);
+
+    // Single use.
+    let (status, body) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "bad_request");
+}
+
+#[sqlx::test]
+async fn a_wrong_verifier_burns_the_code(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let code = native_code(&app, &idp, "bob").await;
+    let wrong = "x".repeat(43);
+
+    let (status, _) = redeem(&app, &json!({ "code": code, "code_verifier": wrong })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let waiting = sqlx::query_scalar!("SELECT token_hash FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(waiting, None, "no session token was handed out");
+}
+
+#[sqlx::test]
+async fn an_expired_code_cannot_be_redeemed(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let code = native_code(&app, &idp, "bob").await;
+    sqlx::query!("UPDATE login_codes SET expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+async fn redeeming_needs_a_well_formed_request(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let code = native_code(&app, &idp, "bob").await;
+    for (body, status) in [
+        (
+            json!({ "code": code, "code_verifier": "short" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({ "code": code, "code_verifier": format!("{VERIFIER}!") }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({ "code": code, "code_verifier": "a".repeat(129) }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (json!({ "code": code }), StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            json!({ "code": code, "code_verifier": VERIFIER, "extra": 1 }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({ "code": "kbs_not-a-code", "code_verifier": VERIFIER }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "code": "", "code_verifier": VERIFIER }),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        assert_eq!(redeem(&app, &body).await.0, status, "{body}");
+    }
+    // None of these spent the code.
+    let (status, _) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    assert_eq!(status, StatusCode::OK);
+}
