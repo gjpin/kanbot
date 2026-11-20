@@ -41,7 +41,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
     keys.spawn_refresh();
     let relay = config
         .telemetry_relay_upstream
-        .map(|upstream| telemetry_relay::routes(upstream, Arc::new(config.trusted_proxies)))
+        .map(|upstream| telemetry_relay::routes(upstream, config.rate_limits.telemetry))
         .transpose()?;
     let app = http::router(
         AppState {

@@ -433,11 +433,13 @@ consent, applies rate limits and runs against a local Authelia.
     when the relay starts requiring a user).
 
 ### 2.7 Telemetry relay
-- [ ] **Access:** require an authenticated user with `telemetry_opt_in = true`,
+- [x] **Access:** require an authenticated user with `telemetry_opt_in = true`,
   else `403 telemetry_disabled`.
-- [ ] **Limits:** per-user limiter (`RATE_LIMIT_TELEMETRY_*`) replacing the current
-  per-IP-only one; keep the existing body, type and encoding protections.
-- [ ] **Docs:** update `backend/AGENTS.md` ("The telemetry relay is public" is no
+- [x] **Limits:** per-user limiter (`RATE_LIMIT_TELEMETRY_*`) replacing the current
+  per-IP-only one; keep the existing body, type and encoding protections. (An
+  in-memory GCRA limiter in `rate_limit.rs`: `tower_governor` cannot skip
+  anonymous requests, and does not re-export `governor`.)
+- [x] **Docs:** update `backend/AGENTS.md` ("The telemetry relay is public" is no
   longer true).
 
 ### 2.8 Rate limits and load shedding
@@ -912,7 +914,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

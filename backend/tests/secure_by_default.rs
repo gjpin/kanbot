@@ -8,7 +8,12 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode, header},
 };
-use kanbot_backend::http::{self, BEARER_SCHEME};
+use kanbot_backend::{
+    db,
+    http::{self, BEARER_SCHEME, middleware::rate_limit::RateLimits},
+    state::AppState,
+    telemetry_relay,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -118,4 +123,36 @@ fn the_bearer_scheme_is_a_jwt() {
     assert_eq!(scheme["type"], "http");
     assert_eq!(scheme["scheme"], "bearer");
     assert_eq!(scheme["bearerFormat"], "JWT");
+}
+
+/// The telemetry relay follows OTLP/HTTP, not the contract, so it is not in
+/// the document above: it is checked here by name.
+#[tokio::test]
+async fn telemetry_relay_routes_refuse_requests_without_credentials() {
+    let relay = telemetry_relay::routes(
+        "http://127.0.0.1:1".parse().unwrap(),
+        RateLimits::DEFAULT.telemetry,
+    )
+    .unwrap();
+    let options = sqlx::postgres::PgConnectOptions::new_without_pgpass()
+        .host("127.0.0.1")
+        .port(1);
+    let app = http::router(
+        AppState {
+            db: db::pool_with(options),
+            migrator: &db::MIGRATOR,
+            keys: common::idp::static_key_cache(),
+        },
+        &[],
+        Some(relay),
+    );
+    for signal in ["traces", "logs", "metrics"] {
+        let request = Request::post(format!("/telemetry/v1/{signal}"))
+            .header(header::CONTENT_TYPE, "application/x-protobuf")
+            .body(Body::from("batch"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{signal}");
+        assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+    }
 }

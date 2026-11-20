@@ -172,7 +172,8 @@ Tests (`#[test]`, `#[cfg(test)]`) may use `unwrap`, `expect`, `panic!`, indexing
 - `RequestBodyLimitLayer` + `DefaultBodyLimit`: a body size limit.
 - Database pool: `max_connections`, `acquire_timeout` and a PostgreSQL `statement_timeout`.
 
-- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`. Applied to the telemetry relay today, and to the API routes from phase 2 (below).
+- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`. Applied to every route from phase 2.8 (below).
+- Per-user rate limiting (`rate_limit::limit_per_user`, an in-memory GCRA limiter keyed by user ID), inside the authentication middleware. Applied to the telemetry relay (`RATE_LIMIT_TELEMETRY_*`), and to every route from phase 2.8 (`RATE_LIMIT_USER_*`).
 - Load shedding: a global cap on requests in flight (`tower` `ConcurrencyLimit` + `LoadShed`). Above it, requests get `503` with `Retry-After`.
 
 ### Rate limits
@@ -249,7 +250,7 @@ Traces, logs and metrics are OpenTelemetry, exported over OTLP/HTTP (protobuf) t
 
 ### The telemetry relay
 
-The app cannot hold collector credentials, so it sends OTLP to the API at `/telemetry/v1/{traces,logs,metrics}` (`src/telemetry_relay/`), which forwards it to `TELEMETRY_RELAY_UPSTREAM`. The relay is public until phase 2.7, which makes it require an authenticated user who has opted in (`users.telemetry_opt_in`, default `false`, else `403 telemetry_disabled`) and never adds user identity to what it forwards. Keep its protections (body limit `MAX_BODY_BYTES`, protobuf/JSON only, no compressed bodies, no client headers forwarded, per-client rate limit). The collector must still filter what it accepts; `otel-collector/otelcol-config.yaml` shows the minimum (memory limiter, only our service names).
+The app cannot hold collector credentials, so it sends OTLP to the API at `/telemetry/v1/{traces,logs,metrics}` (`src/telemetry_relay/`), which forwards it to `TELEMETRY_RELAY_UPSTREAM`. Only authenticated users who have opted in may use it (`users.telemetry_opt_in`, default `false`, set through `PUT /me/preferences`): no user is `401`, no consent is `403 telemetry_disabled`. It never adds the user's identity to what it forwards. Keep its protections (body limit `MAX_BODY_BYTES`, protobuf/JSON only, no compressed bodies, no client headers forwarded, per-user rate limit `RATE_LIMIT_TELEMETRY_*`). The collector must still filter what it accepts; `otel-collector/otelcol-config.yaml` shows the minimum (memory limiter, only our service names).
 
 ## 3b. Authentication and security invariants
 

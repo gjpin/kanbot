@@ -299,7 +299,7 @@ async fn exports_telemetry_over_otlp() {
 }
 
 #[tokio::test]
-async fn relays_telemetry_through_the_real_server() {
+async fn the_real_server_relays_telemetry_only_for_users() {
     let (collector, paths) = collector().await;
     let addr = free_addr().await;
     let mut command = server(addr, Some(UNREACHABLE_DB));
@@ -311,10 +311,8 @@ async fn relays_telemetry_through_the_real_server() {
         .await
         .unwrap();
 
-    // 200 needs the peer address for the rate limit: proves the server
-    // provides connect info.
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert_eq!(*paths.lock().unwrap(), ["/v1/traces"]);
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(paths.lock().unwrap().is_empty());
     send_signal(&child, "-TERM").await;
 }
 

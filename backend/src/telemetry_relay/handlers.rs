@@ -8,7 +8,7 @@ use axum::{
 };
 
 use super::Relay;
-use crate::error::AppError;
+use crate::{error::AppError, http::extract::AuthUser, users::model::AuthenticatedUser};
 
 /// Largest collector response passed back to the client. OTLP responses
 /// are tiny (an optional partial-success message).
@@ -16,26 +16,41 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub(super) async fn traces(
     State(relay): State<Relay>,
+    AuthUser(user): AuthUser,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    consented(&user)?;
     forward(&relay, "traces", &headers, body).await
 }
 
 pub(super) async fn logs(
     State(relay): State<Relay>,
+    AuthUser(user): AuthUser,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    consented(&user)?;
     forward(&relay, "logs", &headers, body).await
 }
 
 pub(super) async fn metrics(
     State(relay): State<Relay>,
+    AuthUser(user): AuthUser,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    consented(&user)?;
     forward(&relay, "metrics", &headers, body).await
+}
+
+/// Only users who opted in may send telemetry.
+fn consented(user: &AuthenticatedUser) -> Result<(), AppError> {
+    if user.telemetry_opt_in {
+        Ok(())
+    } else {
+        Err(AppError::TelemetryDisabled)
+    }
 }
 
 /// Sends `body` to `<upstream>/v1/<signal>` with only its content type: no
