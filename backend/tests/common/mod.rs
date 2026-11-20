@@ -6,6 +6,8 @@
 //! `DATABASE_URL` is not set. `docker compose up -d` in `backend/` starts a
 //! server; CI always sets it.
 
+pub mod authelia;
+pub mod base64url;
 pub mod idp;
 
 use std::{net::SocketAddr, sync::Arc};

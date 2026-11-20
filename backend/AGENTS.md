@@ -13,7 +13,7 @@ backend/
 ├── openapi.json             # the API contract (generated, committed; the frontend's client is built from it)
 ├── build.rs                 # rebuilds when a migration is added
 ├── compose.yaml             # local Postgres and Authelia; `--profile observability` adds collector + Grafana
-├── dev/                     # local stack: auth-setup.sh, authelia/ config, dev.env; .generated/ is git-ignored
+├── dev/                     # local stack: auth-setup.sh, authelia/ config and users, dev.env; .generated/ is git-ignored
 ├── otel-collector/          # collector config for local development (filters, limits)
 ├── migrations/              # sqlx migrations, one file per change
 ├── .sqlx/                   # offline query metadata from `cargo sqlx prepare` (committed)
@@ -282,7 +282,7 @@ These rules hold in every change:
 
 - **Test IdP** (`tests/common/idp.rs`): an axum server on `127.0.0.1:0` that serves discovery and a JWKS that tests can change at runtime (rotate, empty, broken, oversized, redirect, slow), counts the requests it gets, and signs tokens with any claims and header. The app under test reaches it through `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP`. Use it for token validation, key cache and discovery tests; do not stub the validator.
 - **Fixture keys** (`tests/fixtures/oidc/`): committed signing keys for **tests only** (RSA-2048 keys A and B for rotation, an RSA-1024 key that must be rejected, P-256, P-384 and Ed25519 keys, and their public JWKs). Its README says so and lists the `openssl` commands that generated them. Never use them outside tests, and never put any other key there. A secret scanner needs an allowlist for this folder.
-- **Local Authelia** (`tests/authelia.rs`): end-to-end tests with real tokens from the local Authelia, obtained by the programmatic login helper shared with `examples/dev_token.rs`. The dev users and their dev-only passwords are documented in `dev/authelia/users_database.yml`: `alice` (`kanbot-admin`), `bob` (`kanbot-user`), `carol` (no kanbot group) and `dave` (`kanbot-user` and `contractors`).
+- **Local Authelia** (`tests/authelia.rs`): end-to-end tests with real tokens from the local Authelia (`dev/authelia/configuration.yml`), obtained by the programmatic login helper `tests/common/authelia.rs`, which `examples/dev_token.rs` shares through `#[path]`. The dev users are in `dev/authelia/users_database.yml`, each with the documented dev-only password `<username>-dev-password`: `alice` (`kanbot-admin`), `bob` (`kanbot-user`), `carol` (no kanbot group) and `dave` (`kanbot-user` and `contractors`). The `kanbot` client's dev-only secret is `kanbot-dev-client-secret`.
 - Database and Authelia tests **fail rather than skip** when their service is missing.
 
 ## 5. Supply chain
@@ -313,7 +313,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 127.0.0.1 auth.kanbot.internal
 ```
 
-`dev/auth-setup.sh` generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. Until it exists (phase 2.9 of [`docs/plan/auth.md`](../docs/plan/auth.md)), skip that line: `compose.yaml` then starts Postgres only.
+`dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`.
 
 ```sh
 sh dev/auth-setup.sh

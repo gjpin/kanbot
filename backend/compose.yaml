@@ -1,8 +1,13 @@
 # Local development services.
 #
-# Database (what the tests need): `docker compose up -d`, then
-#   export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
+# What the tests need: `sh dev/auth-setup.sh`, then `docker compose up -d`.
+#
+# Database: export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
 # Tests (#[sqlx::test]) create and drop their own databases on this server.
+#
+# Identity provider: Authelia at https://auth.kanbot.internal:9443, which
+# needs `127.0.0.1 auth.kanbot.internal` in /etc/hosts. dev/dev.env has the
+# backend's OIDC_* settings for it.
 #
 # Observability (optional): `docker compose --profile observability up -d`
 # adds an OpenTelemetry Collector with Grafana, Tempo (traces), Loki (logs)
@@ -21,6 +26,33 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kanbot"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  authelia:
+    image: authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
+    environment:
+      # Lets configuration.yml read the signing key from /secrets.
+      X_AUTHELIA_CONFIG_FILTERS: template
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /secrets/jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /secrets/session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /secrets/storage_encryption_key
+      AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET_FILE: /secrets/oidc_hmac_secret
+    volumes:
+      - ./dev/authelia:/config:ro
+      - ./dev/.generated:/secrets:ro
+    # Sessions and consents do not outlive the container.
+    tmpfs:
+      - /data
+    ports:
+      - "127.0.0.1:9443:9443"
+    networks:
+      default:
+        aliases:
+          - auth.kanbot.internal
 
   observability:
     profiles: [observability]

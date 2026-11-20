@@ -1,0 +1,24 @@
+# Users of the local Authelia. DEVELOPMENT ONLY: the passwords are public and
+# documented. Each user's password is "<username>-dev-password", hashed with
+#   docker run --rm authelia/authelia:4.39.28 authelia crypto hash generate argon2 --password '<password>'
+users:
+  alice:
+    displayname: 'Alice (admin)'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$7zLuQYu/jd90SQNB1MG3qQ$PGQ2RTYvv/vuMulEhLevYFYVUUDzXjrjz7JGpHv2tk8'
+    email: 'alice@kanbot.internal'
+    groups: ['kanbot-admin']
+  bob:
+    displayname: 'Bob (user)'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$hUVMwKULfkN55mh5iWIJyA$jq6pg4yyodrjtWqJnvviFq8PVnQGoaMdaM/qhezn2cU'
+    email: 'bob@kanbot.internal'
+    groups: ['kanbot-user']
+  carol:
+    displayname: 'Carol (no kanbot role)'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$QB+nP9b4yuPVtz/E66Npaw$ncEY5lTqilFvs0rBz5MRqHMvtJ8Saz53AIyQMd+crTY'
+    email: 'carol@kanbot.internal'
+    groups: []
+  dave:
+    displayname: 'Dave (contractor)'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$u7MSsptFmxCZxgRaK4cgZw$VIlMZdIaW4/1q9YaDZ9qOrZoZWbHlfEigXCMmVSLzrY'
+    email: 'dave@kanbot.internal'
+    groups: ['kanbot-user', 'contractors']

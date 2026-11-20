@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # kanbot: local secrets (DATABASE_URL etc.)
 .env
+
+# Local Authelia certificates and secrets (dev/auth-setup.sh)
+/dev/.generated/

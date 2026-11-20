@@ -402,26 +402,7 @@ pub fn sign_with_header(
 }
 
 /// Unpadded base64url (RFC 4648, section 5).
-///
-/// # Panics
-///
-/// Never: every index is below 64.
 #[must_use]
 pub fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let byte = |i: usize| chunk.get(i).copied().unwrap_or(0);
-        let n = u32::from_be_bytes([0, byte(0), byte(1), byte(2)]);
-        let chars = match chunk.len() {
-            1 => 2,
-            2 => 3,
-            _ => 4,
-        };
-        for shift in [18_u32, 12, 6, 0].into_iter().take(chars) {
-            let index = usize::try_from(n.checked_shr(shift).unwrap() & 0x3f).unwrap();
-            out.push(char::from(ALPHABET[index]));
-        }
-    }
-    out
+    super::base64url::encode(bytes)
 }

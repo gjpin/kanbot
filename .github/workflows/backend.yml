@@ -43,20 +43,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61
-        env:
-          POSTGRES_USER: kanbot
-          POSTGRES_PASSWORD: kanbot
-          POSTGRES_DB: kanbot
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U kanbot"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +55,13 @@ jobs:
           tool: cargo-llvm-cov@0.9.1
       - name: Install sqlx-cli
         run: cargo install "sqlx-cli@$SQLX_CLI_VERSION" --locked --no-default-features --features postgres,rustls
+      # The local stack of backend/AGENTS.md: Postgres and Authelia
+      # (compose.yaml, images pinned by digest).
+      - name: Local stack
+        run: |
+          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
+          sh dev/auth-setup.sh
+          docker compose up -d --wait
       # Fails if a query changed without `cargo sqlx prepare` (.sqlx/ is stale).
       - name: Offline query data is up to date
         env:
@@ -113,21 +106,6 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Mutants in database code are caught only by tests that use the database.
-    services:
-      postgres:
-        image: postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61
-        env:
-          POSTGRES_USER: kanbot
-          POSTGRES_PASSWORD: kanbot
-          POSTGRES_DB: kanbot
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U kanbot"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -139,6 +117,14 @@ jobs:
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-mutants@27.1.0
+      # Mutants in database and authentication code are caught only by
+      # tests that use the database and the local Authelia (compose.yaml,
+      # images pinned by digest).
+      - name: Local stack
+        run: |
+          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
+          sh dev/auth-setup.sh
+          docker compose up -d --wait
       - name: Mutation-test changed code
         # --relative makes the paths relative to backend/, where cargo mutants
         # runs. With repo-root paths (backend/src/...) it matches no files and

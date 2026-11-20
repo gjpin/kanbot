@@ -464,24 +464,24 @@ consent, applies rate limits and runs against a local Authelia.
   Add a test with the in-memory exporter.
 
 ### 2.9 Local Authelia
-- [ ] **`backend/dev/auth-setup.sh`** (POSIX shell plus `openssl`) generates into
+- [x] **`backend/dev/auth-setup.sh`** (POSIX shell plus `openssl`) generates into
   a git-ignored `backend/dev/.generated/`:
   - a local CA, and a certificate for `auth.kanbot.internal`;
   - Authelia's JWT, session and storage secrets and its OIDC HMAC secret;
   - an RSA signing key for the OIDC provider.
 
   It is idempotent.
-- [ ] **`backend/dev/authelia/configuration.yml`** (committed, no secrets; secrets
+- [x] **`backend/dev/authelia/configuration.yml`** (committed, no secrets; secrets
   come in through Authelia's `*_FILE` environment variables):
   - TLS on port 9443 with the generated certificate;
   - `session.cookies` for domain `kanbot.internal` with `authelia_url`
-    `https://auth.kanbot.internal:9443` (verify that Authelia accepts
-    `kanbot.internal`; if it doesn't, ask);
+    `https://auth.kanbot.internal:9443` (verified: Authelia 4.39.28 accepts
+    `kanbot.internal`);
   - SQLite storage, filesystem notifier;
   - file authentication backend;
   - access-control policy `one_factor` for the clients;
   - OIDC lifespans: access token 5 minutes, refresh token 30 days.
-- [ ] **OIDC client in that config:**
+- [x] **OIDC client in that config:**
   - `client_id: kanbot`, confidential, with a **documented dev-only secret**
     whose PBKDF2 hash is committed;
   - `access_token_signed_response_alg: RS256`, `audience: ['kanbot-api']`;
@@ -493,34 +493,37 @@ consent, applies rate limits and runs against a local Authelia.
   - redirect URI `https://localhost:3000/auth/callback` (adjust when phase 3 fixes
     the dev URL);
   - `consent_mode: pre-configured`.
-- [ ] **`backend/dev/authelia/users_database.yml`** (committed, Argon2 hashes of
+- [x] **`backend/dev/authelia/users_database.yml`** (committed, Argon2 hashes of
   documented dev-only passwords):
   - `alice` in `kanbot-admin`;
   - `bob` in `kanbot-user`;
   - `carol` with no kanbot group;
   - `dave` in `kanbot-user` and `contractors` (for phase 4 tests).
-- [ ] **`backend/compose.yaml`:** an `authelia` service (pinned tag and digest),
+- [x] **`backend/compose.yaml`:** an `authelia` service (pinned tag and digest),
   started by default with Postgres, port `9443`, network alias
   `auth.kanbot.internal`.
-- [ ] **`backend/dev/dev.env`** (committed, dev-only values, no real secrets): the
+- [x] **`backend/dev/dev.env`** (committed, dev-only values, no real secrets): the
   `OIDC_*` variables for the local stack (`OIDC_ISSUER=https://auth.kanbot.internal:9443`,
   `OIDC_AUDIENCE=kanbot-api`, `OIDC_ROLES_CLAIM=groups`, the roles,
   `OIDC_CA_FILE=dev/.generated/ca.crt`).
-- [ ] **Programmatic login helper**, shared between `examples/dev_token.rs` and the
+- [x] **Programmatic login helper**, shared between `examples/dev_token.rs` and the
   tests (for example through a `#[path]` module, not copied):
   1. Log in through Authelia's first-factor API with a manual cookie jar (no new
-     crates; verify the API shape for 4.39).
+     crates; verified for 4.39.28: `POST /api/firstfactor`
+     `{username, password, keepMeLoggedIn}`, then for the first authorization
+     `POST /api/oidc/consent` `{flow_id, client_id, consent, pre_configure}`).
+     PKCE uses `sha2` (approved) as a dev-dependency.
   2. Run the authorization code flow with PKCE, reading the `Location` header
      instead of following the redirect.
   3. Exchange the code and return the access token.
 
   `cargo run --example dev-token -- alice` prints a token for `curl`.
-- [ ] **`tests/authelia.rs`:**
+- [x] **`tests/authelia.rs`:**
   - real tokens for `alice` → `/me` 200 admin;
   - `bob` → 200 user;
   - `carol` → 403;
   - a token for a different audience → 401.
-- [ ] **CI (`backend.yml` test job):** add the hosts entry, run the setup script,
+- [x] **CI (`backend.yml` test job):** add the hosts entry, run the setup script,
   start compose (Postgres and Authelia), then run the tests. Keep pinned digests.
   Update the "Before you finish" commands in `backend/AGENTS.md`.
 
@@ -888,8 +891,8 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - **Application ID** (needed for phase 5, and for the native redirect allowlist
   in phase 3): currently `com.example.kanbot`. Ask the human.
 - Items to verify:
-  - Authelia accepts `kanbot.internal` as a cookie domain;
-  - the shape of Authelia's first-factor API in 4.39;
+  - ~~Authelia accepts `kanbot.internal` as a cookie domain~~ (yes, 2.9);
+  - ~~the shape of Authelia's first-factor API in 4.39~~ (resolved in 2.9);
   - ~~whether `jsonwebtoken` rejects `crit`~~ (resolved in 2.4: not fully, so
     kanbot does);
   - which loopback host `flutter_web_auth_2` uses on desktop;
@@ -915,7 +918,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

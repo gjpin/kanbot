@@ -1,0 +1,87 @@
+# The local Authelia: kanbot's identity provider for development and tests.
+# DEVELOPMENT ONLY. Secrets are not in this file: dev/auth-setup.sh generates
+# them into dev/.generated/, mounted at /secrets and read through Authelia's
+# *_FILE environment variables (see compose.yaml).
+#
+# Users: dev/authelia/users_database.yml. OIDC client: `kanbot`, with the
+# documented dev-only secret `kanbot-dev-client-secret`.
+
+server:
+  address: 'tcp://:9443/'
+  tls:
+    certificate: '/secrets/auth.kanbot.internal.crt'
+    key: '/secrets/auth.kanbot.internal.key'
+
+log:
+  level: 'info'
+
+telemetry:
+  metrics:
+    enabled: false
+
+theme: 'auto'
+
+authentication_backend:
+  password_reset:
+    disable: true
+  password_change:
+    disable: true
+  file:
+    path: '/config/users_database.yml'
+    watch: false
+
+access_control:
+  default_policy: 'one_factor'
+
+session:
+  cookies:
+    - domain: 'kanbot.internal'
+      authelia_url: 'https://auth.kanbot.internal:9443'
+
+# Tests sign in many times; do not ban anyone for it.
+regulation:
+  max_retries: 0
+
+storage:
+  local:
+    path: '/data/db.sqlite3'
+
+notifier:
+  filesystem:
+    filename: '/data/notification.txt'
+
+identity_providers:
+  oidc:
+    lifespans:
+      access_token: '5m'
+      refresh_token: '30d'
+    jwks:
+      - key_id: 'kanbot-dev'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: {{ secret "/secrets/oidc_jwks_rsa.pem" | mindent 10 "|" | msquote }}
+    claims_policies:
+      kanbot:
+        access_token: ['groups', 'preferred_username', 'name']
+    clients:
+      - client_id: 'kanbot'
+        client_name: 'kanbot'
+        # pbkdf2-sha512 of the dev-only secret 'kanbot-dev-client-secret':
+        #   authelia crypto hash generate pbkdf2 --variant sha512 --password 'kanbot-dev-client-secret'
+        client_secret: '$pbkdf2-sha512$310000$dHkHt7.vJ2924X0aNBfoLw$0O6vZ4ft/Cms6htMWr0W4pZN49TxFZvUVGlLtT4QeUWXMc.f0m3tIzfsdARRJ4ByjFCDLDqHtsAFvIbxibNuig'
+        public: false
+        authorization_policy: 'one_factor'
+        claims_policy: 'kanbot'
+        access_token_signed_response_alg: 'RS256'
+        audience: ['kanbot-api']
+        requested_audience_mode: 'implicit'
+        require_pkce: true
+        pkce_challenge_method: 'S256'
+        scopes: ['openid', 'profile', 'email', 'groups', 'offline_access']
+        grant_types: ['authorization_code', 'refresh_token']
+        response_types: ['code']
+        redirect_uris:
+          - 'https://localhost:3000/auth/callback'
+        consent_mode: 'pre-configured'
+        pre_configured_consent_duration: '1y'
+        token_endpoint_auth_method: 'client_secret_basic'
