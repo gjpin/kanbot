@@ -283,7 +283,7 @@ the table above in phase 3.
     the setup script (`backend/dev/auth-setup.sh`), and add both to the "Before
     you finish" commands;
   - describe the test IdP (`tests/common/idp.rs`) and the fixture keys.
-- [ ] **1.2** `frontend/AGENTS.md`:
+- [x] **1.2** `frontend/AGENTS.md`:
   - **Auth callbacks:** replace "No custom URL schemes for auth callbacks". The
     only allowed custom scheme is the kanbot-backend-to-app login handoff,
     received through `flutter_web_auth_2` (`ASWebAuthenticationSession` on Apple,
@@ -907,7 +907,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 Tick as steps land (each step is one commit on `auth/oidc`).
 
-- Phase 1: [x] 1.1 [ ] 1.2 [ ] 1.3
+- Phase 1: [x] 1.1 [x] 1.2 [ ] 1.3
 - Phase 2: [ ] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8

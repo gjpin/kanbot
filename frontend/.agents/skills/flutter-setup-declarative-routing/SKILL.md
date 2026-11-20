@@ -106,7 +106,7 @@ testWidgets('signed-out user cannot open a board', (tester) async {
 
 ## Workflow: Configuring Platform Deep Linking
 
-Use only verified App Links (Android) and Universal Links (iOS). No custom URL schemes for anything auth-related. Editing `android/` and `ios/` needs the task to ask for it (`frontend/AGENTS.md` §1).
+Use only verified App Links (Android) and Universal Links (iOS) for deep links. They are not used for login: the login handoff from the kanbot backend is the one allowed custom URL scheme, received only through `flutter_web_auth_2` (`frontend/AGENTS.md` §2, "Auth callbacks"). Do not add any other custom scheme. Editing `android/` and `ios/` needs the task to ask for it (`frontend/AGENTS.md` §1).
 
 ### Task Progress
 - [ ] Determine target platforms.

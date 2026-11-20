@@ -86,13 +86,19 @@ shadcn/ui, **instead of Material or Cupertino**.
   in Dart code, assets, `--dart-define`, `.env` files or platform config.
   Anything shipped in the binary can be extracted. Obfuscation does not change this.
   Non-secret build settings, such as the API base URL, may use `--dart-define`.
-- **Token storage:** store auth tokens only in `flutter_secure_storage`
-  (Keychain/Keystore). Never in `shared_preferences`, files, or SQLite in plain text.
-  Clear them on logout. Use `TokenStore` (`lib/data/services/token_store.dart`),
-  which wraps it with the project's settings; do not create other
-  `FlutterSecureStorage` instances. On the web, `flutter_secure_storage` is
-  experimental (WebCrypto-wrapped local storage, HTTPS or localhost only) and
-  does not protect tokens the way Keychain/Keystore do.
+- **Authentication** goes through the kanbot backend, never directly to the
+  IdP: the app never sees IdP tokens. See `docs/oidc.md` and
+  `docs/plan/auth.md` (phase 5) for the flow.
+- **Tokens on the web:** the web app stores no tokens at all, in any storage.
+  It is authenticated by the backend's `HttpOnly` session cookie, which Dart
+  code cannot read, and sends the header `X-Kanbot-CSRF: 1` on every
+  state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`).
+- **Tokens on native platforms:** the only token the app stores is the kanbot
+  session token (`kbs_...`), and only in `TokenStore`
+  (`lib/data/services/token_store.dart`), which wraps `flutter_secure_storage`
+  (Keychain/Keystore) with the project's settings. Never in
+  `shared_preferences`, files, or SQLite in plain text. Do not create other
+  `FlutterSecureStorage` instances. Clear it on logout.
 - **Never hardcode tokens**, not even placeholders like `'Bearer your_token_here'`.
   Tokens are read from the auth layer at request time.
 - **HTTPS only** in anything that can ship. The one exception is local
@@ -122,10 +128,21 @@ shadcn/ui, **instead of Material or Cupertino**.
     Add a test proving an unauthenticated user cannot reach each protected route.
     Routes are defined in `lib/routing/router.dart` (`createRouter`, `Routes`);
     unknown paths show `NotFoundPage`.
-  - Use only verified App Links / Universal Links for anything auth-related.
-    No custom URL schemes for auth callbacks.
+  - **Auth callbacks:** the only custom URL scheme allowed is the login
+    handoff from the kanbot backend to the app (`<app-scheme>:/auth/done`,
+    where `<app-scheme>` is the app's reverse-DNS application ID). It is
+    received only through `flutter_web_auth_2`, which uses
+    `ASWebAuthenticationSession` on Apple platforms and Auth Tab or Custom
+    Tabs on Android, and the one-time code it carries is redeemed with the
+    app's PKCE verifier (S256). Windows and Linux use a loopback redirect
+    (`http://127.0.0.1:<port>/auth/done`) instead. No other custom scheme,
+    and no other way of receiving the callback. No App Links or Universal
+    Links for login: kanbot is self-hosted, so the project controls no domain
+    they could be verified for.
   - Android intent filters: `https` scheme only, always with an explicit
-    `android:host`. Never a bare `<data android:scheme="https" />`.
+    `android:host`. Never a bare `<data android:scheme="https" />`. The one
+    exception is `flutter_web_auth_2`'s callback activity, whose filter
+    accepts only `<app-scheme>`.
   - `apple-app-site-association`: list only the paths the app handles.
     Never `"paths": ["*"]` or `{"/": "/*"}`.
 - **File paths from outside the app** (downloads, deep links, server data):
@@ -200,7 +217,9 @@ shadcn/ui, **instead of Material or Cupertino**.
 - Switch on the exception type and `code` to choose a user-facing message.
   Never show the response body, and never show `code` itself to users.
 - The web build calls the API cross-origin. Its origin must be listed in the
-  backend's `CORS_ALLOWED_ORIGINS` (see `backend/AGENTS.md`).
+  backend's `CORS_ALLOWED_ORIGINS` (see `backend/AGENTS.md`). From phase 5.3
+  of `docs/plan/auth.md`, the backend serves the web build and the API from one
+  origin, and the web app uses a relative API base URL.
 
 ## 3a. Telemetry (OpenTelemetry)
 
@@ -208,6 +227,13 @@ The app reports traces and logs with OpenTelemetry (`dartastic_opentelemetry`),
 over OTLP/HTTP to the API's relay at `<API_BASE_URL>/telemetry` (never to a
 collector directly: the app cannot hold collector credentials, §2). Setup is in
 `lib/config/telemetry.dart`, called from `main`.
+
+- **Consent:** export starts only after the user has logged in and opted in
+  (`telemetry_opt_in` from `GET /me`, set from the settings toggle through
+  `PUT /me/preferences`, off by default). It stops on logout and on opt-out.
+  The relay rejects everything else (`401`, or `403 telemetry_disabled`), so
+  nothing can be sent before login. Until phase 5.6 of `docs/plan/auth.md`
+  lands, export still starts at app launch; do not build anything new on that.
 
 - Already instrumented: every API call (`ApiClient`: a client span, with the
   W3C `traceparent` sent so the backend's span joins the trace), uncaught
