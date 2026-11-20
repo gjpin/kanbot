@@ -167,7 +167,6 @@ async fn forwards_no_client_headers() {
     let (upstream, received) = collector(StatusCode::OK, b"").await;
     let request = Request::post("/telemetry/v1/traces")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .header(header::AUTHORIZATION, "Bearer secret")
         .header(header::COOKIE, "session=secret")
         .body(Body::from("batch"))
         .unwrap();

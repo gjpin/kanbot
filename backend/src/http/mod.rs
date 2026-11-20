@@ -2,6 +2,7 @@
 //! exposes `routes()`, merged here.
 
 pub mod client_ip;
+pub mod extract;
 mod health;
 pub mod middleware;
 pub mod problem;
@@ -20,7 +21,10 @@ use tower_http::{
     timeout::TimeoutLayer,
 };
 
-use utoipa::OpenApi;
+use utoipa::{
+    Modify, OpenApi,
+    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
@@ -47,9 +51,37 @@ const CORS_MAX_AGE: Duration = Duration::from_secs(3600);
         title = "kanbot API",
         description = "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`.",
     ),
-    components(schemas(Problem, ErrorCode, FieldError))
+    components(schemas(Problem, ErrorCode, FieldError)),
+    modifiers(&SecuritySchemes)
 )]
 struct ApiDoc;
+
+/// Name of the security scheme for IdP-issued JWT access tokens. Protected
+/// operations declare `security(("bearer" = []))`.
+pub const BEARER_SCHEME: &str = "bearer";
+
+/// Adds the security schemes, which the derive cannot express.
+struct SecuritySchemes;
+
+impl Modify for SecuritySchemes {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi
+            .components
+            .get_or_insert_with(Default::default)
+            .add_security_scheme(
+                BEARER_SCHEME,
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .description(Some(
+                            "An access token from the deployment's OIDC identity provider.",
+                        ))
+                        .build(),
+                ),
+            );
+    }
+}
 
 /// Every route, with its `OpenAPI` description. Merge each feature's
 /// `routes()` here.
@@ -57,7 +89,9 @@ fn api() -> OpenApiRouter<AppState> {
     let mut doc = ApiDoc::openapi();
     // utoipa copies the crate's license, which a private crate does not have.
     doc.info.license = None;
-    OpenApiRouter::with_openapi(doc).merge(health::routes())
+    OpenApiRouter::with_openapi(doc)
+        .merge(health::routes())
+        .merge(crate::users::routes())
 }
 
 /// The full application: all routes plus the middleware stack.
@@ -66,11 +100,17 @@ fn api() -> OpenApiRouter<AppState> {
 /// when it is configured.
 pub fn router(state: AppState, allowed_origins: &[HeaderValue], relay: Option<Router>) -> Router {
     let (routes, _) = api().split_for_parts();
-    let routes = routes.with_state(state);
+    let routes = routes.with_state(state.clone());
     let routes = match relay {
         Some(relay) => routes.merge(relay),
         None => routes,
     };
+    // Every route, the relay included: credentials are checked wherever
+    // they are presented.
+    let routes = routes.layer(axum::middleware::from_fn_with_state(
+        state,
+        crate::auth::middleware::authenticate,
+    ));
     with_middleware(routes, allowed_origins)
 }
 

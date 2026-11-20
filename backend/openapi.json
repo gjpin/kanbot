@@ -27,6 +27,118 @@
         }
       }
     },
+    "/me": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "The signed-in user.",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "The signed-in user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/me/preferences": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Updates the signed-in user's preferences.",
+        "operationId": "update_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Preferences"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The user, with the new preferences.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not valid preferences.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/ready": {
       "get": {
         "tags": [
@@ -70,7 +182,8 @@
           "rate_limited",
           "internal",
           "unavailable",
-          "account_disabled"
+          "account_disabled",
+          "telemetry_disabled"
         ]
       },
       "FieldError": {
@@ -90,6 +203,57 @@
             "description": "JSON Pointer (RFC 6901) to the field in the request body, for example\n`/title` or `/labels/2`."
           }
         }
+      },
+      "Me": {
+        "type": "object",
+        "description": "The signed-in user.",
+        "required": [
+          "id",
+          "platform_role",
+          "telemetry_opt_in"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From the identity provider (`name`, else `preferred_username`)."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform_role": {
+            "$ref": "#/components/schemas/PlatformRoleDto"
+          },
+          "telemetry_opt_in": {
+            "type": "boolean",
+            "description": "Whether the app may send telemetry. Off until the user opts in."
+          }
+        }
+      },
+      "PlatformRoleDto": {
+        "type": "string",
+        "description": "What the user may do across the whole instance.",
+        "enum": [
+          "admin",
+          "user"
+        ]
+      },
+      "Preferences": {
+        "type": "object",
+        "description": "The user's preferences.",
+        "required": [
+          "telemetry_opt_in"
+        ],
+        "properties": {
+          "telemetry_opt_in": {
+            "type": "boolean",
+            "description": "Allow the app to send telemetry."
+          }
+        },
+        "additionalProperties": false
       },
       "Problem": {
         "type": "object",
@@ -134,6 +298,14 @@
             "example": "urn:kanbot:problem:not_found"
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An access token from the deployment's OIDC identity provider."
       }
     }
   }

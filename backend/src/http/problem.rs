@@ -46,6 +46,7 @@ pub enum ErrorCode {
     Internal,
     Unavailable,
     AccountDisabled,
+    TelemetryDisabled,
 }
 
 impl ErrorCode {
@@ -56,7 +57,9 @@ impl ErrorCode {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden | Self::AccountDisabled => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::AccountDisabled | Self::TelemetryDisabled => {
+                StatusCode::FORBIDDEN
+            }
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::Conflict => StatusCode::CONFLICT,
@@ -113,6 +116,7 @@ impl ErrorCode {
             Self::Internal => "Internal error",
             Self::Unavailable => "Service unavailable",
             Self::AccountDisabled => "Account disabled",
+            Self::TelemetryDisabled => "Telemetry disabled",
         }
     }
 
@@ -131,6 +135,7 @@ impl ErrorCode {
             Self::Internal => "urn:kanbot:problem:internal",
             Self::Unavailable => "urn:kanbot:problem:unavailable",
             Self::AccountDisabled => "urn:kanbot:problem:account_disabled",
+            Self::TelemetryDisabled => "urn:kanbot:problem:telemetry_disabled",
         }
     }
 }
@@ -273,8 +278,10 @@ mod tests {
 
     /// Codes that refine another code's status; a bare status never maps
     /// to them.
-    const REFINED_CODES: [(ErrorCode, ErrorCode); 1] =
-        [(ErrorCode::AccountDisabled, ErrorCode::Forbidden)];
+    const REFINED_CODES: [(ErrorCode, ErrorCode); 2] = [
+        (ErrorCode::AccountDisabled, ErrorCode::Forbidden),
+        (ErrorCode::TelemetryDisabled, ErrorCode::Forbidden),
+    ];
 
     #[test]
     fn every_code_round_trips_through_its_status() {
@@ -298,6 +305,11 @@ mod tests {
             "account_disabled"
         );
         assert_eq!(ErrorCode::AccountDisabled.title(), "Account disabled");
+        assert_eq!(
+            serde_json::to_value(ErrorCode::TelemetryDisabled).unwrap(),
+            "telemetry_disabled"
+        );
+        assert_eq!(ErrorCode::TelemetryDisabled.title(), "Telemetry disabled");
     }
 
     #[test]

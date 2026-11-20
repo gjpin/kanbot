@@ -3,7 +3,10 @@
 
 use std::borrow::Cow;
 
-use axum::response::{IntoResponse, Response};
+use axum::{
+    http::{HeaderValue, header},
+    response::{IntoResponse, Response},
+};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -21,15 +24,22 @@ pub enum AppError {
     /// The request is malformed in a way no field error describes.
     #[error("bad request")]
     BadRequest,
-    /// No valid credentials.
+    /// No credentials. The response asks for a bearer token.
     #[error("unauthorized")]
     Unauthorized,
+    /// Credentials were presented but are not valid (RFC 6750
+    /// `invalid_token`). Never says why.
+    #[error("invalid token")]
+    InvalidToken,
     /// Valid credentials, but not allowed to do this.
     #[error("forbidden")]
     Forbidden,
     /// Valid credentials of a user who has been disabled in kanbot.
     #[error("account disabled")]
     AccountDisabled,
+    /// The user has not opted in to sending telemetry.
+    #[error("telemetry disabled")]
+    TelemetryDisabled,
     /// The resource does not exist, or the caller may not know it exists.
     #[error("not found")]
     NotFound,
@@ -77,9 +87,10 @@ impl AppError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::BadRequest => ErrorCode::BadRequest,
-            Self::Unauthorized => ErrorCode::Unauthorized,
+            Self::Unauthorized | Self::InvalidToken => ErrorCode::Unauthorized,
             Self::Forbidden => ErrorCode::Forbidden,
             Self::AccountDisabled => ErrorCode::AccountDisabled,
+            Self::TelemetryDisabled => ErrorCode::TelemetryDisabled,
             Self::NotFound => ErrorCode::NotFound,
             Self::Conflict => ErrorCode::Conflict,
             Self::Validation(_) => ErrorCode::ValidationFailed,
@@ -125,8 +136,10 @@ impl AppError {
             },
             Self::BadRequest => "bad_request",
             Self::Unauthorized => "unauthorized",
+            Self::InvalidToken => "invalid_token",
             Self::Forbidden => "forbidden",
             Self::AccountDisabled => "account_disabled",
+            Self::TelemetryDisabled => "telemetry_disabled",
             Self::NotFound => "not_found",
             Self::Conflict => "conflict",
             Self::Validation(_) => "validation",
@@ -161,11 +174,22 @@ impl IntoResponse for AppError {
         } else {
             tracing::debug!(?code, "request rejected");
         }
-        match self {
+        let challenge = match &self {
+            Self::Unauthorized => Some(HeaderValue::from_static("Bearer")),
+            Self::InvalidToken => Some(HeaderValue::from_static(r#"Bearer error="invalid_token""#)),
+            _ => None,
+        };
+        let mut response = match self {
             Self::Validation(errors) => Problem::validation(errors),
             _ => Problem::new(code),
         }
-        .into_response()
+        .into_response();
+        if let Some(challenge) = challenge {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, challenge);
+        }
+        response
     }
 }
 
@@ -215,8 +239,10 @@ mod tests {
         for (error, status, code) in [
             (AppError::BadRequest, 400, "bad_request"),
             (AppError::Unauthorized, 401, "unauthorized"),
+            (AppError::InvalidToken, 401, "unauthorized"),
             (AppError::Forbidden, 403, "forbidden"),
             (AppError::AccountDisabled, 403, "account_disabled"),
+            (AppError::TelemetryDisabled, 403, "telemetry_disabled"),
             (AppError::NotFound, 404, "not_found"),
             (AppError::Conflict, 409, "conflict"),
             (AppError::Validation(vec![]), 422, "validation_failed"),
@@ -232,6 +258,24 @@ mod tests {
             assert_eq!(body["status"], status, "{code}");
             assert_eq!(body["code"], code);
         }
+    }
+
+    #[test]
+    fn unauthorized_responses_challenge_for_a_bearer_token() {
+        let challenge = |error: AppError| {
+            error
+                .into_response()
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .cloned()
+        };
+        assert_eq!(challenge(AppError::Unauthorized).unwrap(), "Bearer");
+        assert_eq!(
+            challenge(AppError::InvalidToken).unwrap(),
+            r#"Bearer error="invalid_token""#
+        );
+        assert_eq!(challenge(AppError::Forbidden), None);
+        assert_eq!(challenge(AppError::AccountDisabled), None);
     }
 
     #[tokio::test]
@@ -352,6 +396,8 @@ mod tests {
             (AppError::Unauthorized, "unauthorized"),
             (AppError::Forbidden, "forbidden"),
             (AppError::AccountDisabled, "account_disabled"),
+            (AppError::TelemetryDisabled, "telemetry_disabled"),
+            (AppError::InvalidToken, "invalid_token"),
             (AppError::NotFound, "not_found"),
             (AppError::Conflict, "conflict"),
             (AppError::Validation(vec![]), "validation"),

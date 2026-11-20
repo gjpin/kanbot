@@ -251,15 +251,52 @@ pub fn config(issuer: &str, extra: &[(&'static str, &str)]) -> OidcConfig {
         .unwrap()
 }
 
+/// The issuer of [`static_key_cache`] and [`unloaded_key_cache`].
+pub const STATIC_ISSUER: &str = "http://127.0.0.1:1";
+
+/// Valid access-token claims from [`STATIC_ISSUER`] for `subject` with the
+/// roles claim `groups`, expiring in 5 minutes.
+///
+/// # Panics
+///
+/// If the clock is before 1970.
+#[must_use]
+pub fn claims(subject: &str, groups: &[&str]) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    json!({
+        "iss": STATIC_ISSUER,
+        "aud": "kanbot-api",
+        "sub": subject,
+        "exp": now.checked_add(300).unwrap(),
+        "iat": now,
+        "groups": groups,
+        "azp": "kanbot-cli",
+        "name": format!("{subject} (display)"),
+    })
+}
+
+/// A valid access token from [`STATIC_ISSUER`], signed with `rsa-a`.
+///
+/// # Panics
+///
+/// If the fixture is missing.
+#[must_use]
+pub fn access_token(subject: &str, groups: &[&str]) -> String {
+    sign("rsa-a", &claims(subject, groups))
+}
+
 /// A key cache holding [`DEFAULT_KEYS`] for the unreachable issuer
-/// `http://127.0.0.1:1`: ready, without a network.
+/// [`STATIC_ISSUER`]: ready, without a network.
 ///
 /// # Panics
 ///
 /// If a fixture is missing.
 #[must_use]
 pub fn static_key_cache() -> Arc<KeyCache> {
-    let config = config("http://127.0.0.1:1", &[]);
+    let config = config(STATIC_ISSUER, &[]);
     let client = IdpClient::new(&[]).unwrap();
     let keys: Vec<Value> = DEFAULT_KEYS.iter().map(|name| jwk(name)).collect();
     Arc::new(KeyCache::with_keys(
@@ -269,7 +306,7 @@ pub fn static_key_cache() -> Arc<KeyCache> {
     ))
 }
 
-/// A key cache for the unreachable issuer `http://127.0.0.1:1` that never
+/// A key cache for the unreachable issuer [`STATIC_ISSUER`] that never
 /// loads keys.
 ///
 /// # Panics
@@ -277,7 +314,7 @@ pub fn static_key_cache() -> Arc<KeyCache> {
 /// If the HTTP client cannot be built.
 #[must_use]
 pub fn unloaded_key_cache() -> Arc<KeyCache> {
-    let config = config("http://127.0.0.1:1", &[]);
+    let config = config(STATIC_ISSUER, &[]);
     Arc::new(KeyCache::new(
         Arc::new(config),
         IdpClient::new(&[]).unwrap(),

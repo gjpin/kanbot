@@ -403,13 +403,13 @@ consent, applies rate limits and runs against a local Authelia.
   - Pattern: a CTE with `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE ...
     RETURNING`, combined with a `SELECT` for the row that was not updated.
 - [x] **Disabled user** → `403` with the new error code `account_disabled`.
-- [ ] **Endpoints** (moved to 2.6: they need the authentication middleware):
+- [x] **Endpoints** (done in 2.6: they need the authentication middleware):
   - `GET /me`: `{ id, display_name, platform_role, telemetry_opt_in }`.
   - `PUT /me/preferences`: `{ telemetry_opt_in: bool }`, with
     `deny_unknown_fields`.
 
 ### 2.6 Authentication middleware, extractors and contract
-- [ ] **Authentication middleware**, applied to the API router:
+- [x] **Authentication middleware**, applied to the API router:
   - If credentials are present, validate them, upsert the user, and insert the
     authenticated user into request extensions.
   - Invalid credentials → `401` immediately (never treated as anonymous), counted
@@ -417,19 +417,20 @@ consent, applies rate limits and runs against a local Authelia.
   - No credentials → continue without a user.
 
   In phase 3 the same middleware also accepts kanbot sessions.
-- [ ] **Extractors in `src/http/extract.rs`:**
+- [x] **Extractors in `src/http/extract.rs`:**
   - `AuthUser`: requires the extension, else `401`.
   - `RequireAdmin`: platform admin only, else `403`.
-- [ ] **OpenAPI:**
+- [x] **OpenAPI:**
   - add a `bearer` security scheme (HTTP bearer, JWT);
   - protected operations declare it and document their `401` and `403`
     responses;
   - add `account_disabled` and `telemetry_disabled` to `ErrorCode`, with tests.
-- [ ] **Secure-by-default test:**
+- [x] **Secure-by-default test:**
   - It walks every operation in `http::openapi()`.
   - Each must either be on the public list, or declare security and return `401`
     without credentials.
-  - The telemetry relay routes (not in OpenAPI) are covered explicitly.
+  - The telemetry relay routes (not in OpenAPI) are covered explicitly (in 2.7,
+    when the relay starts requiring a user).
 
 ### 2.7 Telemetry relay
 - [ ] **Access:** require an authenticated user with `telemetry_opt_in = true`,
@@ -911,7 +912,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

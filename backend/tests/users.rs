@@ -1,12 +1,24 @@
 //! Users: recorded once per identity on authenticated requests, kept up to
-//! date with few writes, and refused once disabled.
+//! date with few writes, and refused once disabled; and the `/me` routes,
+//! through the authentication middleware.
 
+pub mod common;
+
+use axum::{
+    Router,
+    body::Body,
+    http::{Method, Request, StatusCode, header},
+};
+use common::idp::{access_token, claims, sign};
+use http_body_util::BodyExt;
 use kanbot_backend::{
     auth::token::{PlatformRole, Principal},
     error::AppError,
     users::{model::UserId, service},
 };
+use serde_json::{Value, json};
 use sqlx::PgPool;
+use tower::ServiceExt;
 
 fn principal(subject: &str) -> Principal {
     Principal {
@@ -252,4 +264,275 @@ async fn telemetry_consent_is_stored(pool: PgPool) {
 async fn consent_of_an_unknown_user_is_not_found(pool: PgPool) {
     let result = service::set_telemetry_opt_in(&pool, UserId::new(), true).await;
     assert!(matches!(result, Err(AppError::NotFound)));
+}
+
+/// Sends a request with an optional `Authorization` header and JSON body;
+/// returns the status, the `WWW-Authenticate` header and the JSON body.
+async fn call(
+    app: Router,
+    method: Method,
+    path: &str,
+    authorization: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Option<String>, Value) {
+    let mut request = Request::builder().method(method).uri(path);
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    let request = match body {
+        Some(body) => request
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string())),
+        None => request.body(Body::empty()),
+    }
+    .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let challenge = response
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .map(|value| value.to_str().unwrap().to_owned());
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
+    (status, challenge, body)
+}
+
+async fn get_me(pool: &PgPool, authorization: Option<&str>) -> (StatusCode, Option<String>, Value) {
+    call(
+        common::app_with_pool(pool.clone()),
+        Method::GET,
+        "/me",
+        authorization,
+        None,
+    )
+    .await
+}
+
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
+}
+
+#[sqlx::test]
+async fn me_without_credentials_asks_for_a_bearer_token(pool: PgPool) {
+    let (status, challenge, body) = get_me(&pool, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(challenge.as_deref(), Some("Bearer"));
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[sqlx::test]
+async fn invalid_credentials_are_refused_without_a_reason(pool: PgPool) {
+    let expired = with(claims("alice", &["kanbot-user"]), "exp", json!(1_000));
+    for authorization in [
+        bearer("not-a-jwt"),
+        bearer(&sign("rsa-a", &expired)),
+        "Basic YWxpY2U6c2VjcmV0".to_owned(),
+        "Bearer".to_owned(),
+        bearer(""),
+    ] {
+        let (status, challenge, body) = get_me(&pool, Some(&authorization)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{authorization}");
+        assert_eq!(
+            challenge.as_deref(),
+            Some(r#"Bearer error="invalid_token""#),
+            "{authorization}"
+        );
+        assert_eq!(body["code"], "unauthorized");
+        assert_eq!(body.as_object().unwrap().get("detail"), None);
+    }
+    assert_eq!(user_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn invalid_credentials_are_refused_on_public_routes_too(pool: PgPool) {
+    let (status, challenge, _) = call(
+        common::app_with_pool(pool),
+        Method::GET,
+        "/health",
+        Some(&bearer("not-a-jwt")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        challenge.as_deref(),
+        Some(r#"Bearer error="invalid_token""#)
+    );
+}
+
+#[sqlx::test]
+async fn two_authorization_headers_are_refused(pool: PgPool) {
+    let token = bearer(&access_token("alice", &["kanbot-user"]));
+    let request = Request::get("/me")
+        .header(header::AUTHORIZATION, &token)
+        .header(header::AUTHORIZATION, &token)
+        .body(Body::empty())
+        .unwrap();
+    let response = common::app_with_pool(pool).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+fn with(mut claims: Value, field: &str, value: Value) -> Value {
+    claims[field] = value;
+    claims
+}
+
+#[sqlx::test]
+async fn me_returns_the_user(pool: PgPool) {
+    let (status, _, body) = get_me(
+        &pool,
+        Some(&bearer(&access_token("alice", &["kanbot-user"]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "alice (display)");
+    assert_eq!(body["platform_role"], "user");
+    assert_eq!(body["telemetry_opt_in"], false);
+    let id = body["id"].as_str().unwrap().to_owned();
+
+    let (_, _, again) = get_me(
+        &pool,
+        Some(&bearer(&access_token("alice", &["kanbot-user"]))),
+    )
+    .await;
+    assert_eq!(again["id"], id.as_str());
+    assert_eq!(user_count(&pool).await, 1);
+}
+
+#[sqlx::test]
+async fn me_reports_admins(pool: PgPool) {
+    let (status, _, body) = get_me(
+        &pool,
+        Some(&bearer(&access_token("root", &["kanbot-admin"]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["platform_role"], "admin");
+}
+
+#[sqlx::test]
+async fn me_updates_the_display_name(pool: PgPool) {
+    get_me(
+        &pool,
+        Some(&bearer(&access_token("alice", &["kanbot-user"]))),
+    )
+    .await;
+    let renamed = with(claims("alice", &["kanbot-user"]), "name", json!("Alice L."));
+
+    let (_, _, body) = get_me(&pool, Some(&bearer(&sign("rsa-a", &renamed)))).await;
+
+    assert_eq!(body["display_name"], "Alice L.");
+    let stored = sqlx::query_scalar!("SELECT display_name FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("Alice L."));
+}
+
+#[sqlx::test]
+async fn a_token_without_a_kanbot_role_is_forbidden(pool: PgPool) {
+    let (status, challenge, body) =
+        get_me(&pool, Some(&bearer(&access_token("carol", &["staff"])))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(challenge, None);
+    assert_eq!(body["code"], "forbidden");
+    assert_eq!(user_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn a_disabled_user_is_forbidden(pool: PgPool) {
+    let token = bearer(&access_token("alice", &["kanbot-user"]));
+    get_me(&pool, Some(&token)).await;
+    sqlx::query!("UPDATE users SET disabled_at = now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, _, body) = get_me(&pool, Some(&token)).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "account_disabled");
+}
+
+#[sqlx::test]
+async fn tokens_are_unavailable_until_keys_load(pool: PgPool) {
+    let app = common::app_with_keys(
+        pool.clone(),
+        &kanbot_backend::db::MIGRATOR,
+        common::idp::unloaded_key_cache(),
+    );
+    let (status, challenge, body) = call(
+        app,
+        Method::GET,
+        "/me",
+        Some(&bearer(&access_token("alice", &["kanbot-user"]))),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(challenge, None);
+    assert_eq!(body["code"], "unavailable");
+}
+
+async fn put_preferences(pool: &PgPool, token: &str, body: Value) -> (StatusCode, Value) {
+    let (status, _, body) = call(
+        common::app_with_pool(pool.clone()),
+        Method::PUT,
+        "/me/preferences",
+        Some(&bearer(token)),
+        Some(body),
+    )
+    .await;
+    (status, body)
+}
+
+#[sqlx::test]
+async fn preferences_set_telemetry_consent(pool: PgPool) {
+    let token = access_token("alice", &["kanbot-user"]);
+
+    let (status, body) = put_preferences(&pool, &token, json!({ "telemetry_opt_in": true })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["telemetry_opt_in"], true);
+    assert_eq!(body["platform_role"], "user");
+    let (_, _, me) = get_me(&pool, Some(&bearer(&token))).await;
+    assert_eq!(me["telemetry_opt_in"], true);
+
+    let (_, body) = put_preferences(&pool, &token, json!({ "telemetry_opt_in": false })).await;
+    assert_eq!(body["telemetry_opt_in"], false);
+    let (_, _, me) = get_me(&pool, Some(&bearer(&token))).await;
+    assert_eq!(me["telemetry_opt_in"], false);
+}
+
+#[sqlx::test]
+async fn preferences_reject_unknown_or_missing_fields(pool: PgPool) {
+    let token = access_token("alice", &["kanbot-user"]);
+    for body in [
+        json!({ "telemetry_opt_in": true, "admin": true }),
+        json!({}),
+        json!({ "telemetry_opt_in": "yes" }),
+    ] {
+        let (status, problem) = put_preferences(&pool, &token, body.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(problem["code"], "validation_failed", "{body}");
+    }
+    let (_, _, me) = get_me(&pool, Some(&bearer(&token))).await;
+    assert_eq!(me["telemetry_opt_in"], false);
+}
+
+#[sqlx::test]
+async fn preferences_need_credentials(pool: PgPool) {
+    let (status, challenge, _) = call(
+        common::app_with_pool(pool),
+        Method::PUT,
+        "/me/preferences",
+        None,
+        Some(json!({ "telemetry_opt_in": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(challenge.as_deref(), Some("Bearer"));
 }
