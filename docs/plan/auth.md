@@ -528,18 +528,18 @@ consent, applies rate limits and runs against a local Authelia.
   Update the "Before you finish" commands in `backend/AGENTS.md`.
 
 ### 2.10 Test IdP and tests
-- [ ] **Fixtures** (`backend/tests/fixtures/oidc/`, with a README saying test-only
+- [x] **Fixtures** (`backend/tests/fixtures/oidc/`, with a README saying test-only
   and the `openssl` commands used):
   - RSA-2048 keys A and B (rotation);
   - an RSA-1024 key (too weak);
   - P-256, P-384 and Ed25519 keys;
   - their public JWKs.
-- [ ] **`tests/common/idp.rs`:** an axum server on `127.0.0.1:0` serving discovery
+- [x] **`tests/common/idp.rs`:** an axum server on `127.0.0.1:0` serving discovery
   and a JWKS that can be changed at runtime (rotate, empty, broken, oversized,
   redirect, slow), counting requests, plus a helper that signs tokens with any
   claims and header. The app under test uses it through
   `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP`.
-- [ ] **Required test cases**, each failing without the code it tests:
+- [x] **Required test cases**, each failing without the code it tests:
   - **Accepted:** each supported algorithm.
   - **Time:** expired; `nbf` in the future; `iat` in the future.
   - **Claims:** each required claim missing; `iss` differing by a trailing slash;
@@ -578,7 +578,8 @@ consent, applies rate limits and runs against a local Authelia.
     - the secure-by-default test.
   - **Telemetry:** no token or claim values appear in spans, logs or metrics.
 - [ ] Add a `cargo-fuzz` target for token parsing and validation (`fuzz/`, run
-  manually).
+  manually). (Waiting for approval of `libfuzzer-sys`, which cargo-fuzz needs
+  and the dependency table does not list.)
 
 ### 2.11 Contract and docs
 - [ ] Regenerate `backend/openapi.json` and the frontend client
