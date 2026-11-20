@@ -177,8 +177,11 @@ shadcn/ui, **instead of Material or Cupertino**.
   `http.get/post/...`, a new `http.Client`), and never edit generated files.
 - After `backend/openapi.json` changes, run `dart run tool/generate_api_client.dart`
   and commit the result. It runs swagger_parser (`swagger_parser.yaml`), then
-  `dart fix` and `dart format`, so generated code passes `flutter analyze`
-  like hand-written code. CI fails if the committed client is stale. A new
+  the fixes in `tool/generated_code_fixes.dart` (for example, typing the empty
+  scope lists of security requirements), `dart fix` and `dart format`, so
+  generated code passes `flutter analyze` like hand-written code. When
+  generated code fails analysis, add a tested fix there; never exclude it
+  from analysis. CI fails if the committed client is stale. A new
   endpoint starts in the backend (`backend/AGENTS.md` §2a).
 - Every generated request goes through `ApiClient`
   (`lib/data/services/api_client.dart`), an `http.BaseClient`. It adds the

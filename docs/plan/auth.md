@@ -582,9 +582,11 @@ consent, applies rate limits and runs against a local Authelia.
   and the dependency table does not list.)
 
 ### 2.11 Contract and docs
-- [ ] Regenerate `backend/openapi.json` and the frontend client
-  (`frontend/AGENTS.md` §3). Run the frontend checks.
-- [ ] Update `docs/oidc.md` (bearer validation is now implemented) and
+- [x] Regenerate `backend/openapi.json` and the frontend client
+  (`frontend/AGENTS.md` §3). Run the frontend checks. (swagger_parser writes
+  untyped `[]` scopes for security requirements, which strict inference
+  refuses; `tool/generated_code_fixes.dart` types them, with tests.)
+- [x] Update `docs/oidc.md` (bearer validation is now implemented) and
   `backend/AGENTS.md`.
 
 **Phase 2 done when** every check in `backend/AGENTS.md` passes (including
@@ -919,7 +921,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [ ] 2.10 (fuzz target pending) [x] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

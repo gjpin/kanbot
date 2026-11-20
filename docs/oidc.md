@@ -1,10 +1,13 @@
 # OIDC authentication
 
-> **Status: design, not implemented yet.** This document describes how kanbot
-> will authenticate users with an external OpenID Connect (OIDC) identity
-> provider (IdP), and how to set up each supported IdP. Configuration names may
-> still change before the first release. None of the provider setups below has
-> been tested end to end with kanbot yet. Facts about each IdP were checked
+> **Status: partly implemented.** This document describes how kanbot
+> authenticates users with an external OpenID Connect (OIDC) identity provider
+> (IdP), and how to set up each supported IdP. **Implemented:** bearer-token
+> validation (the API as a resource server), tested end to end against
+> Authelia. **Not yet:** the login flow through the kanbot backend (sessions)
+> and authorization. Configuration names may still change before the first
+> release. The provider setups other than Authelia have not been tested with
+> kanbot yet. Facts about each IdP were checked
 > against its official documentation on 2026-11-20, at the version noted in its
 > section. The implementation plan is [`docs/plan/auth.md`](plan/auth.md); each
 > section here becomes current documentation as its part is implemented.
@@ -96,13 +99,16 @@ access tokens.
 
 ## What kanbot checks on every access token
 
+- At most 16 KiB, three base64url segments (so opaque tokens are refused),
+  and a header with `kid` and `alg` and without `crit`.
 - Signature against the issuer's JWKS. The algorithm is taken from the JWK, and
   a token whose header `alg` does not match it is rejected. `none` and `HS*` are
   always rejected.
 - `iss` equals the configured issuer exactly.
 - `aud` contains the configured audience.
+- `exp`, `iss`, `aud` and `sub` are present.
 - `exp` is in the future. If present, `nbf` and `iat` are not in the future,
-  allowing a small clock skew.
+  allowing 60 seconds of clock skew.
 - `sub` (or the configured subject claim) is present.
 - The roles claim resolves to an array that contains the admin role or the user
   role. Admins also count as users. Tokens with neither role are rejected
@@ -110,8 +116,19 @@ access tokens.
 - If `OIDC_ALLOWED_CLIENTS` is set, the client claim (`azp`, `client_id` or
   `cid`, whichever the IdP uses) must be in the list.
 
-The JWKS is cached. An unknown key ID triggers one refresh, at most once per
-second. If a refresh returns no usable keys, the last good key set is kept.
+Refused tokens get `401` with `WWW-Authenticate: Bearer error="invalid_token"`
+and never a reason; tokens without either role get `403`. The reason goes to
+the `kanbot.auth.token.rejections` metric only.
+
+The JWKS is fetched through discovery: the discovery document's `issuer` must
+equal `OIDC_ISSUER` byte for byte, and its `jwks_uri` must be on the issuer's
+origin or in `OIDC_JWKS_ALLOWED_ORIGINS`. Only signature keys are used: RSA of
+at least 2048 bits, EC P-256 and P-384, and Ed25519; other keys are skipped.
+The JWKS is cached and refreshed every `OIDC_JWKS_TTL`. An unknown key ID
+triggers one refresh, at most once per second. If a refresh fails or returns
+no usable keys, the last good key set is kept. The server starts even when the
+IdP is unreachable: `/ready` answers `503`, and so do requests with a token,
+until the keys load.
 
 ### Why the audience must differ from the client ID
 
@@ -120,29 +137,31 @@ equals a client ID, an ID token for that client passes the audience check and
 could be used as an access token. Kanbot refuses to start if `OIDC_AUDIENCE`
 equals `OIDC_CLIENT_ID` or is listed in `OIDC_ALLOWED_CLIENTS`.
 
-## Configuration (planned)
+## Configuration
+
+Variables marked *(planned)* belong to the login flow and are not read yet.
 
 | Variable | Required | Meaning |
 |---|---|---|
 | `OIDC_ISSUER` | yes | Issuer URL. Must match the tokens' `iss` and the discovery document's `issuer` exactly. HTTPS only. |
-| `OIDC_CLIENT_ID` | yes | Kanbot's confidential client, for example `kanbot`. Must differ from `OIDC_AUDIENCE`. |
-| `OIDC_CLIENT_SECRET` (or `OIDC_CLIENT_SECRET_FILE`) | yes | Its secret. |
+| `OIDC_CLIENT_ID` *(planned)* | yes | Kanbot's confidential client, for example `kanbot`. Must differ from `OIDC_AUDIENCE`. |
+| `OIDC_CLIENT_SECRET` (or `OIDC_CLIENT_SECRET_FILE`) *(planned)* | yes | Its secret. |
 | `OIDC_AUDIENCE` | yes | Audience kanbot accepts, for example `kanbot-api`. |
 | `OIDC_ROLES_CLAIM` | yes | Dot-separated path to the roles array, for example `groups`. |
 | `OIDC_ADMIN_ROLE` | yes | Role value that grants platform admin, for example `kanbot-admin`. |
 | `OIDC_USER_ROLE` | yes | Role value that grants access, for example `kanbot-user`. |
-| `OIDC_SCOPES` | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
+| `OIDC_SCOPES` *(planned)* | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
 | `OIDC_SUBJECT_CLAIM` | no | Claim that identifies the user. Default `sub`. Use `oid` for Entra ID. |
-| `OIDC_GROUPS_CLAIM` | no | Dot-separated path to the groups array used to sync team membership. Default: the value of `OIDC_ROLES_CLAIM`. |
+| `OIDC_GROUPS_CLAIM` *(planned)* | no | Dot-separated path to the groups array used to sync team membership. Default: the value of `OIDC_ROLES_CLAIM`. |
 | `OIDC_ALLOWED_CLIENTS` | no | Comma-separated client IDs whose bearer tokens may call the API. Default: any client. |
 | `OIDC_JWKS_TTL` | no | Seconds between JWKS refreshes. Default `3600`. |
 | `OIDC_JWKS_ALLOWED_ORIGINS` | no | Extra HTTPS origins allowed to serve the JWKS. |
 | `OIDC_CA_FILE` | no | PEM bundle for an IdP with a private certificate authority. |
 | `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP` | no | Allows an `http://` issuer on a numeric loopback address. Development only. |
-| `PUBLIC_URL` | yes | Kanbot's external base URL, for example `https://kanbot.example.com`. The callback URL is `<PUBLIC_URL>/auth/callback`. |
-| `SESSION_ENCRYPTION_KEYS` (or `SESSION_ENCRYPTION_KEYS_FILE`) | yes | Comma-separated base64 keys, each with a key ID, used to encrypt stored IdP tokens. The first encrypts and all decrypt, so keys can be rotated. |
-| `SESSION_IDLE_TIMEOUT` | no | A session ends after this long without use. Default `7d`. |
-| `SESSION_ABSOLUTE_TIMEOUT` | no | A session ends after this long regardless. Default `30d`. Sessions also end when the IdP refuses a refresh. |
+| `PUBLIC_URL` *(planned)* | yes | Kanbot's external base URL, for example `https://kanbot.example.com`. The callback URL is `<PUBLIC_URL>/auth/callback`. |
+| `SESSION_ENCRYPTION_KEYS` (or `SESSION_ENCRYPTION_KEYS_FILE`) *(planned)* | yes | Comma-separated base64 keys, each with a key ID, used to encrypt stored IdP tokens. The first encrypts and all decrypt, so keys can be rotated. |
+| `SESSION_IDLE_TIMEOUT` *(planned)* | no | A session ends after this long without use. Default `7d`. |
+| `SESSION_ABSOLUTE_TIMEOUT` *(planned)* | no | A session ends after this long regardless. Default `30d`. Sessions also end when the IdP refuses a refresh. |
 
 ## Clients to register at the IdP
 

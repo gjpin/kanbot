@@ -49,8 +49,9 @@ backend/
 │       ├── service.rs       # business rules
 │       └── repo.rs          # database access
 ├── tests/
-│   ├── common/mod.rs        # shared test setup (test app over a #[sqlx::test] pool)
+│   ├── common/mod.rs        # shared test setup (test app over a #[sqlx::test] pool); `pub mod common;` in each test file
 │   ├── common/idp.rs        # test IdP: discovery, a changeable JWKS, token signing (§4a)
+│   ├── common/authelia.rs   # programmatic login at the local Authelia (§4a)
 │   ├── fixtures/            # test-only migrations
 │   ├── fixtures/oidc/       # committed test-only signing keys (§4a)
 │   ├── authelia.rs          # end-to-end tests against the local Authelia
@@ -202,7 +203,7 @@ Every outbound call (HTTP or database) must have a timeout. Never spawn unbounde
 
 ### Configuration
 
-All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/telemetry.rs`). Invalid values stop the server at startup; it never falls back to a default for a value that was set. The phase column refers to [`docs/plan/auth.md`](../docs/plan/auth.md); a variable with a phase is not read until that phase lands.
+All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/telemetry.rs`). Invalid values stop the server at startup; it never falls back to a default for a value that was set. The phase column refers to [`docs/plan/auth.md`](../docs/plan/auth.md): phase 2 is implemented; variables of later phases are not read yet.
 
 | Variable | Phase | Default | Meaning |
 |---|---|---|---|
