@@ -1671,3 +1671,59 @@ async fn disabling_a_user_ends_their_sessions(pool: PgPool) {
         Err(kanbot_backend::error::AppError::NotFound)
     ));
 }
+
+#[sqlx::test]
+async fn sessions_survive_a_key_rotation(pool: PgPool) {
+    const OLD: &str = "test1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+    const NEW: &str = "test2:AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+    let idp = TestIdp::start().await;
+    let keys = idp.loaded_key_cache(&[]).await;
+    let with_keys = |raw: &str| {
+        common::serve(
+            kanbot_backend::state::AppState {
+                db: pool.clone(),
+                migrator: &db::MIGRATOR,
+                keys: keys.clone(),
+                sessions: common::session_config_with_keys(raw),
+            },
+            kanbot_backend::http::HttpSettings::new(),
+            None,
+        )
+    };
+    let token = web_session(&with_keys(OLD), &idp, "alice").await;
+
+    // The new key encrypts; the old one still opens what it sealed.
+    let rotated = with_keys(&format!("{NEW},{OLD}"));
+    assert_eq!(
+        me_by_bearer(&rotated, &token).await.status(),
+        StatusCode::OK
+    );
+    expire_soon(&pool).await;
+    answer_refresh(&idp, "alice", &["kanbot-user"], Some("rotated-refresh"));
+    assert_eq!(
+        me_by_bearer(&rotated, &token).await.status(),
+        StatusCode::OK
+    );
+    let sealed = sqlx::query_scalar!("SELECT idp_access_token FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        &sealed[1..7],
+        b"\x05test2",
+        "refreshed tokens use the new key"
+    );
+
+    // Without the old key, sessions it sealed can no longer be used...
+    let other = web_session(&with_keys(OLD), &idp, "bob").await;
+    let only_new = with_keys(NEW);
+    assert_eq!(
+        me_by_bearer(&only_new, &other).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // ...while those resealed with the new key still work.
+    assert_eq!(
+        me_by_bearer(&only_new, &token).await.status(),
+        StatusCode::OK
+    );
+}

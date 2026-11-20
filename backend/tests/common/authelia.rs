@@ -65,8 +65,6 @@ pub fn dev_password(username: &str) -> String {
 /// login, or answers unexpectedly.
 pub async fn access_token(username: &str, password: &str) -> Result<String, LoginError> {
     let client = client()?;
-    let cookie = first_factor(&client, username, password).await?;
-
     let verifier = format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -74,7 +72,7 @@ pub async fn access_token(username: &str, password: &str) -> Result<String, Logi
     );
     let challenge = super::base64url::encode(&Sha256::digest(verifier.as_bytes()));
     let state = uuid::Uuid::new_v4().simple().to_string();
-    let authorize = Url::parse_with_params(
+    let authorize_url = Url::parse_with_params(
         &format!("{ISSUER}/api/oidc/authorization"),
         &[
             ("client_id", CLIENT_ID),
@@ -89,11 +87,7 @@ pub async fn access_token(username: &str, password: &str) -> Result<String, Logi
     )
     .map_err(|error| fail("authorization URL", error))?;
 
-    let mut location = redirect_target(&client, &cookie, authorize).await?;
-    if location.path().starts_with("/consent/") {
-        let consented = consent(&client, &cookie, &location).await?;
-        location = redirect_target(&client, &cookie, consented).await?;
-    }
+    let location = authorize(username, password, authorize_url).await?;
     let mut code = None;
     let mut returned_state = None;
     for (name, value) in location.query_pairs() {
@@ -109,6 +103,29 @@ pub async fn access_token(username: &str, password: &str) -> Result<String, Logi
     let code = code.ok_or_else(|| fail("authorization", "no code in the redirect"))?;
 
     exchange(&client, &code, &verifier).await
+}
+
+/// Signs `username` in at the local Authelia and follows
+/// `authorization_url` (built by someone else, such as kanbot's
+/// `/auth/login`) through consent; returns where Authelia finally
+/// redirects: the client's redirect URI with the code and state.
+///
+/// # Errors
+///
+/// [`LoginError`] as for [`access_token`].
+pub async fn authorize(
+    username: &str,
+    password: &str,
+    authorization_url: Url,
+) -> Result<Url, LoginError> {
+    let client = client()?;
+    let cookie = first_factor(&client, username, password).await?;
+    let mut location = redirect_target(&client, &cookie, authorization_url).await?;
+    if location.path().starts_with("/consent/") {
+        let consented = consent(&client, &cookie, &location).await?;
+        location = redirect_target(&client, &cookie, consented).await?;
+    }
+    Ok(location)
 }
 
 fn client() -> Result<Client, LoginError> {

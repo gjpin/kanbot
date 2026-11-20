@@ -53,6 +53,36 @@ pub fn session_config() -> Arc<SessionConfig> {
     )
 }
 
+/// [`session_config`] with other `SESSION_ENCRYPTION_KEYS`.
+///
+/// # Panics
+///
+/// If `keys` is invalid.
+#[must_use]
+pub fn session_config_with_keys(keys: &str) -> Arc<SessionConfig> {
+    let keys = keys.to_owned();
+    let vars: std::collections::HashMap<&str, String> = [
+        ("OIDC_CLIENT_ID", "kanbot".to_owned()),
+        ("OIDC_CLIENT_SECRET", "kanbot-dev-client-secret".to_owned()),
+        (
+            "OIDC_SCOPES",
+            "openid profile email groups offline_access".to_owned(),
+        ),
+        ("PUBLIC_URL", "http://localhost:3000".to_owned()),
+        ("SESSION_ENCRYPTION_KEYS", keys),
+    ]
+    .into_iter()
+    .collect();
+    Arc::new(
+        SessionConfig::from_lookup(&|name| {
+            vars.get(name)
+                .cloned()
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap(),
+    )
+}
+
 /// The client address requests come from, unless a test chooses another.
 pub const PEER: &str = "203.0.113.9:50000";
 

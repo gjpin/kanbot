@@ -21,6 +21,7 @@ use kanbot_backend::{
     db,
 };
 use serde_json::Value;
+
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -101,4 +102,118 @@ async fn a_wrong_password_gets_no_token() {
     let error = result.unwrap_err().to_string();
     // Authelia itself refused: not an unreachable server.
     assert_eq!(error, "first factor: 401 Unauthorized");
+}
+
+/// The app with the login flow against the local Authelia.
+async fn signing_app(pool: PgPool) -> Router {
+    app(pool, "kanbot-api").await
+}
+
+#[sqlx::test]
+async fn the_web_sign_in_works_end_to_end_and_refreshes(pool: PgPool) {
+    let app = signing_app(pool.clone()).await;
+
+    // The web app navigates to /auth/login.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/auth/login?platform=web")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let authorize =
+        reqwest::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    assert!(
+        authorize
+            .as_str()
+            .starts_with(&format!("{ISSUER}/api/oidc/authorization?"))
+    );
+    let login_cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    // The user signs in at Authelia, which sends the browser back.
+    let callback = authelia::authorize("alice", &dev_password("alice"), authorize)
+        .await
+        .unwrap();
+    assert_eq!(
+        callback.as_str().split('?').next(),
+        Some("http://localhost:3000/auth/callback")
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/auth/callback?{}", callback.query().unwrap()))
+                .header(header::COOKIE, &login_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "http://localhost:3000/"
+    );
+    let session_cookie = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .find(|cookie| cookie.starts_with("__Host-kanbot_session="))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let me = |app: Router, cookie: String| async move {
+        let response = app
+            .oneshot(
+                Request::get("/me")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice::<Value>(&body).unwrap())
+    };
+    let (status, body) = me(app.clone(), session_cookie.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["platform_role"], "admin");
+
+    // A real refresh with Authelia's refresh token (offline_access).
+    let before = sqlx::query_scalar!("SELECT idp_refresh_token FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(before.is_some(), "Authelia issued a refresh token");
+    sqlx::query!("UPDATE sessions SET access_expires_at = now() + interval '10 seconds'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, body) = me(app.clone(), session_cookie).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = sqlx::query!(
+        r#"SELECT idp_refresh_token, access_expires_at > now() + interval '1 minute' AS "renewed!"
+           FROM sessions"#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(after.renewed, "a new access token was stored");
+    assert_ne!(
+        after.idp_refresh_token, before,
+        "Authelia rotates refresh tokens"
+    );
 }
