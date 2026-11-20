@@ -4,18 +4,21 @@
 //!   [`crate::http::client_ip`]. Requires the server to provide
 //!   `ConnectInfo<SocketAddr>` (`into_make_service_with_connect_info`),
 //!   which `kanbot_backend::run` does.
-//! - Per authenticated user ([`limit_per_user`]), keyed by the user ID the
-//!   authentication middleware put in the request. Anonymous requests pass.
+//! - Per authenticated user ([`limit_per_user`], `governor`), keyed by the
+//!   user ID the authentication middleware put in the request. Anonymous
+//!   requests pass.
+//!
+//! The failed-authentication limit is in `auth::failures`: it must refuse a
+//! client before checking its credentials, which `governor` cannot do
+//! without spending budget.
 //!
 //! Limits are kept in memory per server instance.
 
 use std::{
-    collections::HashMap,
-    hash::Hash,
     net::{IpAddr, SocketAddr},
     num::NonZeroU32,
-    sync::{Arc, Mutex, PoisonError},
-    time::{Duration, Instant},
+    sync::Arc,
+    time::Duration,
 };
 
 use axum::{
@@ -24,6 +27,10 @@ use axum::{
     http::{HeaderValue, Request, header},
     middleware::Next,
     response::{IntoResponse, Response},
+};
+use governor::{
+    DefaultKeyedRateLimiter, Quota, RateLimiter,
+    clock::{Clock, DefaultClock},
 };
 use tower_governor::{
     GovernorError, GovernorLayer, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
@@ -199,101 +206,25 @@ fn rejection(error: &GovernorError) -> Response {
     }
 }
 
-/// An in-memory rate limiter per key, using the generic cell rate
-/// algorithm (GCRA): each key stores the theoretical arrival time of its
-/// next request, so its state is one `Instant`.
-pub struct KeyedLimiter<K> {
-    /// Time to earn back one request.
-    period: Duration,
-    /// How far ahead of `now` a key's arrival time may be: `burst - 1`
-    /// periods.
-    tolerance: Duration,
-    arrivals: Mutex<HashMap<K, Instant>>,
-}
-
-impl<K: Eq + Hash> KeyedLimiter<K> {
-    #[must_use]
-    pub fn new(limit: RateLimit) -> Self {
-        let period = limit.period();
-        Self {
-            period,
-            tolerance: period
-                .checked_mul(limit.burst.get().saturating_sub(1))
-                .unwrap_or(Duration::MAX),
-            arrivals: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Admits one request for `key` at `now`, or says how long to wait.
-    ///
-    /// # Errors
-    ///
-    /// The time until a request for `key` would be admitted.
-    pub fn check(&self, key: K, now: Instant) -> Result<(), Duration> {
-        let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
-        let arrival = arrivals.get(&key).copied().map_or(now, |at| at.max(now));
-        let ahead = arrival.saturating_duration_since(now);
-        if ahead > self.tolerance {
-            return Err(ahead.saturating_sub(self.tolerance));
-        }
-        let next = arrival.checked_add(self.period).unwrap_or(arrival);
-        arrivals.insert(key, next);
-        Ok(())
-    }
-
-    /// Whether a request for `key` at `now` would be admitted, without
-    /// spending any budget.
-    ///
-    /// # Errors
-    ///
-    /// The time until a request for `key` would be admitted.
-    pub fn peek(&self, key: &K, now: Instant) -> Result<(), Duration> {
-        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
-        let ahead = arrivals
-            .get(key)
-            .map_or(Duration::ZERO, |at| at.saturating_duration_since(now));
-        if ahead > self.tolerance {
-            Err(ahead.saturating_sub(self.tolerance))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Forgets keys that are back to a full burst at `now`, so memory does
-    /// not grow with every key ever seen.
-    pub fn retain_recent(&self, now: Instant) {
-        self.arrivals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, arrival| *arrival > now);
-    }
-
-    /// How many keys are tracked.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.arrivals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 /// Limits every route of `router` per authenticated user (see the module
-/// documentation). Must sit inside the authentication middleware. Spawns a
-/// task (on the current Tokio runtime) that periodically forgets idle
-/// users.
-pub fn limit_per_user<S>(router: Router<S>, limit: RateLimit) -> Router<S>
+/// documentation), with `governor`'s keyed limiter. Must sit inside the
+/// authentication middleware. Spawns a task (on the current Tokio runtime)
+/// that periodically forgets idle users.
+///
+/// # Errors
+///
+/// Returns [`InvalidRateLimit`] if the limit's period rounds to zero.
+pub fn limit_per_user<S>(router: Router<S>, limit: RateLimit) -> Result<Router<S>, InvalidRateLimit>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let limiter = Arc::new(KeyedLimiter::<UserId>::new(limit));
-    spawn_cleanup(&limiter);
-    router.layer(axum::middleware::from_fn_with_state(limiter, per_user))
+    let quota = Quota::with_period(limit.period())
+        .ok_or(InvalidRateLimit)?
+        .allow_burst(limit.burst);
+    let limiter: Arc<DefaultKeyedRateLimiter<UserId>> = Arc::new(RateLimiter::keyed(quota));
+    let cleanup = Arc::clone(&limiter);
+    spawn_periodic(move || cleanup.retain_recent());
+    Ok(router.layer(axum::middleware::from_fn_with_state(limiter, per_user)))
 }
 
 /// `wait` in whole seconds, rounded up.
@@ -303,114 +234,36 @@ pub fn whole_seconds(wait: Duration) -> u64 {
         .saturating_add(u64::from(wait.subsec_nanos() > 0))
 }
 
-/// Spawns a task that periodically calls `retain_recent` on `limiter`.
-pub fn spawn_cleanup<K>(limiter: &Arc<KeyedLimiter<K>>)
-where
-    K: Eq + Hash + Send + 'static,
-{
-    let limiter = Arc::clone(limiter);
+/// Runs `task` every [`CLEANUP_INTERVAL`] on the current Tokio runtime.
+pub fn spawn_periodic(task: impl Fn() + Send + 'static) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
         loop {
             interval.tick().await;
-            limiter.retain_recent(Instant::now());
+            task();
         }
     });
 }
 
 async fn per_user(
-    State(limiter): State<Arc<KeyedLimiter<UserId>>>,
+    State(limiter): State<Arc<DefaultKeyedRateLimiter<UserId>>>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
     let Some(user) = request.extensions().get::<AuthenticatedUser>() else {
         return next.run(request).await;
     };
-    match limiter.check(user.id, Instant::now()) {
+    match limiter.check_key(&user.id) {
         Ok(()) => next.run(request).await,
-        Err(wait) => too_many_requests(whole_seconds(wait)),
+        Err(not_until) => too_many_requests(whole_seconds(
+            not_until.wait_time_from(DefaultClock::default().now()),
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn limiter(per_second: u32, burst: u32) -> KeyedLimiter<&'static str> {
-        KeyedLimiter::new(RateLimit::new(per_second, burst))
-    }
-
-    fn at(start: Instant, millis: u64) -> Instant {
-        start.checked_add(Duration::from_millis(millis)).unwrap()
-    }
-
-    #[test]
-    fn admits_a_burst_then_one_per_period() {
-        let limiter = limiter(2, 3);
-        let start = Instant::now();
-        for _ in 0..3 {
-            assert_eq!(limiter.check("a", start), Ok(()));
-        }
-        assert_eq!(limiter.check("a", start), Err(Duration::from_millis(500)));
-        assert_eq!(
-            limiter.check("a", at(start, 499)),
-            Err(Duration::from_millis(1))
-        );
-        assert_eq!(limiter.check("a", at(start, 500)), Ok(()));
-        assert_eq!(
-            limiter.check("a", at(start, 500)),
-            Err(Duration::from_millis(500))
-        );
-        // After a long pause, a full burst again, not more.
-        let later = at(start, 60_000);
-        for _ in 0..3 {
-            assert_eq!(limiter.check("a", later), Ok(()));
-        }
-        assert!(limiter.check("a", later).is_err());
-    }
-
-    #[test]
-    fn a_burst_of_one_admits_one_per_period() {
-        let limiter = limiter(1, 1);
-        let start = Instant::now();
-        assert_eq!(limiter.check("a", start), Ok(()));
-        assert_eq!(limiter.check("a", start), Err(Duration::from_secs(1)));
-        assert_eq!(limiter.check("a", at(start, 1000)), Ok(()));
-    }
-
-    #[test]
-    fn keys_have_separate_budgets() {
-        let limiter = limiter(1, 1);
-        let now = Instant::now();
-        assert_eq!(limiter.check("a", now), Ok(()));
-        assert!(limiter.check("a", now).is_err());
-        assert_eq!(limiter.check("b", now), Ok(()));
-    }
-
-    #[test]
-    fn a_refused_request_does_not_spend_budget() {
-        let limiter = limiter(1, 1);
-        let start = Instant::now();
-        assert_eq!(limiter.check("a", start), Ok(()));
-        for _ in 0..10 {
-            assert!(limiter.check("a", at(start, 100)).is_err());
-        }
-        assert_eq!(limiter.check("a", at(start, 1000)), Ok(()));
-    }
-
-    #[test]
-    fn peek_does_not_spend_budget() {
-        let limiter = limiter(1, 2);
-        let start = Instant::now();
-        assert_eq!(limiter.peek(&"a", start), Ok(()));
-        assert!(limiter.is_empty());
-        limiter.check("a", start).unwrap();
-        assert_eq!(limiter.peek(&"a", start), Ok(()));
-        limiter.check("a", start).unwrap();
-        assert_eq!(limiter.peek(&"a", start), Err(Duration::from_secs(1)));
-        assert_eq!(limiter.peek(&"a", at(start, 1000)), Ok(()));
-        assert_eq!(limiter.check("a", at(start, 1000)), Ok(()));
-    }
 
     #[test]
     fn rounds_waits_up_to_whole_seconds() {
@@ -429,19 +282,6 @@ mod tests {
         assert_eq!(key("2001:db8:1:2::1"), "2001:db8:1:2::");
         assert_eq!(key("2001:db8:1:3::1"), "2001:db8:1:3::");
         assert_eq!(key("::1"), "::");
-    }
-
-    #[test]
-    fn forgets_keys_back_to_a_full_burst() {
-        let limiter = limiter(1, 2);
-        let start = Instant::now();
-        limiter.check("a", start).unwrap();
-        limiter.check("b", at(start, 900)).unwrap();
-        assert_eq!(limiter.len(), 2);
-        limiter.retain_recent(at(start, 1000));
-        assert_eq!(limiter.len(), 1);
-        limiter.retain_recent(at(start, 1900));
-        assert!(limiter.is_empty());
     }
 
     #[test]

@@ -436,9 +436,12 @@ consent, applies rate limits and runs against a local Authelia.
 - [x] **Access:** require an authenticated user with `telemetry_opt_in = true`,
   else `403 telemetry_disabled`.
 - [x] **Limits:** per-user limiter (`RATE_LIMIT_TELEMETRY_*`) replacing the current
-  per-IP-only one; keep the existing body, type and encoding protections. (An
-  in-memory GCRA limiter in `rate_limit.rs`: `tower_governor` cannot skip
-  anonymous requests, and does not re-export `governor`.)
+  per-IP-only one; keep the existing body, type and encoding protections.
+  (`governor`'s keyed limiter, added as a direct dependency with the human's
+  approval: `tower_governor` cannot let anonymous requests through. The
+  failed-authentication limiter keeps a small GCRA, `auth/failures.rs`,
+  because it must check a client without spending budget, which `governor`
+  cannot do.)
 - [x] **Docs:** update `backend/AGENTS.md` ("The telemetry relay is public" is no
   longer true).
 

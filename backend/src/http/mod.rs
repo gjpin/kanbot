@@ -162,7 +162,7 @@ pub fn router(
         Some(relay) => routes.merge(relay),
         None => routes,
     };
-    let routes = rate_limit::limit_per_user(routes, settings.rate_limits.user);
+    let routes = rate_limit::limit_per_user(routes, settings.rate_limits.user)?;
     // Every route, the relay included: credentials are checked wherever
     // they are presented.
     let routes = routes.layer(axum::middleware::from_fn_with_state(

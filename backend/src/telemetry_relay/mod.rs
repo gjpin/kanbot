@@ -32,6 +32,8 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum RelayError {
     #[error("failed to build the upstream HTTP client")]
     Client(#[from] reqwest::Error),
+    #[error(transparent)]
+    RateLimit(#[from] rate_limit::InvalidRateLimit),
 }
 
 /// Forwards to the collector at `upstream`.
@@ -47,7 +49,8 @@ struct Relay {
 ///
 /// # Errors
 ///
-/// Returns [`RelayError`] if the HTTP client cannot be built.
+/// Returns [`RelayError`] if the HTTP client cannot be built or the limit's
+/// period rounds to zero.
 pub fn routes(upstream: Url, limit: RateLimit) -> Result<Router, RelayError> {
     let relay = Relay {
         client: reqwest::Client::builder()
@@ -63,5 +66,5 @@ pub fn routes(upstream: Url, limit: RateLimit) -> Result<Router, RelayError> {
         .route("/telemetry/v1/metrics", post(handlers::metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(relay);
-    Ok(rate_limit::limit_per_user(routes, limit))
+    Ok(rate_limit::limit_per_user(routes, limit)?)
 }

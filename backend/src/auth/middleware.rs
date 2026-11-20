@@ -26,6 +26,7 @@ use opentelemetry::{
 
 use crate::{
     auth::{
+        failures::FailureLimiter,
         keys::KeyLookup,
         token::{Rejection, UnverifiedToken},
     },
@@ -33,7 +34,7 @@ use crate::{
     http::{
         client_ip::TrustedProxies,
         middleware::rate_limit::{
-            KeyedLimiter, RateLimit, client_key, spawn_cleanup, too_many_requests, whole_seconds,
+            RateLimit, client_key, spawn_periodic, too_many_requests, whole_seconds,
         },
         problem::{ErrorCode, Problem},
     },
@@ -78,7 +79,7 @@ pub struct Authentication {
     app: AppState,
     trusted_proxies: Arc<TrustedProxies>,
     /// Failed authentications per client (`RATE_LIMIT_AUTH_FAILURE_*`).
-    failures: Arc<KeyedLimiter<IpAddr>>,
+    failures: Arc<FailureLimiter<IpAddr>>,
     metrics: AuthMetrics,
 }
 
@@ -92,8 +93,9 @@ impl Authentication {
         failure_limit: RateLimit,
         metrics: AuthMetrics,
     ) -> Self {
-        let failures = Arc::new(KeyedLimiter::new(failure_limit));
-        spawn_cleanup(&failures);
+        let failures = Arc::new(FailureLimiter::new(failure_limit));
+        let cleanup = Arc::clone(&failures);
+        spawn_periodic(move || cleanup.retain_recent(Instant::now()));
         Self {
             app,
             trusted_proxies,

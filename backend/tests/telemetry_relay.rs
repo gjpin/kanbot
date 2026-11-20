@@ -75,8 +75,8 @@ async fn collector(status: StatusCode, response_body: &'static [u8]) -> (Url, Re
 
 /// A limit high enough never to interfere.
 const GENEROUS: RateLimit = RateLimit {
-    per_second: NonZeroU32::MAX,
-    burst: NonZeroU32::MAX,
+    per_second: NonZeroU32::new(1_000_000).unwrap(),
+    burst: NonZeroU32::new(1_000_000).unwrap(),
 };
 
 /// The full app with the relay to `upstream`, limited per user by `limit`.
