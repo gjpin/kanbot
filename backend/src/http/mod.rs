@@ -175,7 +175,9 @@ pub fn router(
     relay: Option<Router>,
 ) -> Result<Router, StartupError> {
     let (routes, _) = api().split_for_parts();
-    let routes = routes.with_state(state.clone());
+    let routes = routes.with_state(state.clone()).layer(axum::Extension(
+        crate::sessions::TelemetryAvailable(relay.is_some()),
+    ));
     let routes = match relay {
         Some(relay) => routes.merge(relay),
         None => routes,

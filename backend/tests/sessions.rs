@@ -978,3 +978,31 @@ async fn redeeming_needs_a_well_formed_request(pool: PgPool) {
     let (status, _) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn config_tells_apps_where_to_sign_in(pool: PgPool) {
+    let response = get(&common::app_with_pool(pool.clone()), "/auth/config").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = problem(response).await;
+    assert_eq!(body["login_url"], "http://localhost:3000/auth/login");
+    assert_eq!(body["telemetry_available"], false);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+
+    let relay = kanbot_backend::telemetry_relay::routes(
+        "http://127.0.0.1:1".parse().unwrap(),
+        kanbot_backend::http::middleware::rate_limit::RateLimits::DEFAULT.telemetry,
+    )
+    .unwrap();
+    let with_relay = common::serve(
+        kanbot_backend::state::AppState {
+            db: pool,
+            migrator: &db::MIGRATOR,
+            keys: common::idp::static_key_cache(),
+            sessions: common::session_config(),
+        },
+        kanbot_backend::http::HttpSettings::new(),
+        Some(relay),
+    );
+    let body = problem(get(&with_relay, "/auth/config").await).await;
+    assert_eq!(body["telemetry_available"], true);
+}

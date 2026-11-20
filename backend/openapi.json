@@ -77,6 +77,27 @@
         }
       }
     },
+    "/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "What an app needs before signing in: where to sign in, whether\ntelemetry can be sent, and the server version. Public.",
+        "operationId": "config",
+        "responses": {
+          "200": {
+            "description": "The configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/login": {
       "get": {
         "tags": [
@@ -385,6 +406,29 @@
   },
   "components": {
     "schemas": {
+      "AuthConfig": {
+        "type": "object",
+        "description": "What an app needs to know before signing in.",
+        "required": [
+          "login_url",
+          "telemetry_available",
+          "version"
+        ],
+        "properties": {
+          "login_url": {
+            "type": "string",
+            "description": "Where to start a sign-in (`?platform=web` or `?platform=native&...`)."
+          },
+          "telemetry_available": {
+            "type": "boolean",
+            "description": "Whether this instance relays the app's telemetry. Each user still\ndecides (`telemetry_opt_in`)."
+          },
+          "version": {
+            "type": "string",
+            "description": "The server's version."
+          }
+        }
+      },
       "ErrorCode": {
         "type": "string",
         "description": "Stable, machine-readable error codes. Clients depend on these strings:\nadd new codes, but never rename or reuse one.",

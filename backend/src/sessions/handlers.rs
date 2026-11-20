@@ -16,7 +16,7 @@ use crate::{
     error::AppError,
     http::problem::Problem,
     sessions::{
-        dto::{LoginQuery, TokenRequest, TokenResponse},
+        dto::{AuthConfig, LoginQuery, TokenRequest, TokenResponse},
         model::LoginRequest,
         service::{self, CallbackParams, Destination, LoginOutcome},
     },
@@ -212,4 +212,28 @@ pub(super) async fn token(
         session_token: session.token.expose_secret().to_owned(),
         expires_at: session.expires_at,
     }))
+}
+
+/// Whether the telemetry relay is configured, added to requests by
+/// [`crate::http::router`].
+#[derive(Clone, Copy, Debug)]
+pub struct TelemetryAvailable(pub bool);
+
+/// What an app needs before signing in: where to sign in, whether
+/// telemetry can be sent, and the server version. Public.
+#[utoipa::path(
+    get,
+    path = "/auth/config",
+    tag = "auth",
+    responses((status = OK, description = "The configuration.", body = AuthConfig)),
+)]
+pub(super) async fn config(
+    State(state): State<AppState>,
+    axum::Extension(TelemetryAvailable(telemetry_available)): axum::Extension<TelemetryAvailable>,
+) -> Json<AuthConfig> {
+    Json(AuthConfig {
+        login_url: state.sessions.public_url.join("auth/login"),
+        telemetry_available,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    })
 }

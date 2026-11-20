@@ -157,3 +157,15 @@ pub struct TokenResponse {
     /// to refresh it.
     pub expires_at: String,
 }
+
+/// What an app needs to know before signing in.
+#[derive(Serialize, ToSchema)]
+pub struct AuthConfig {
+    /// Where to start a sign-in (`?platform=web` or `?platform=native&...`).
+    pub login_url: String,
+    /// Whether this instance relays the app's telemetry. Each user still
+    /// decides (`telemetry_opt_in`).
+    pub telemetry_available: bool,
+    /// The server's version.
+    pub version: String,
+}

@@ -3,6 +3,9 @@
 import 'dart:convert' as convert;
 
 import 'package:http/http.dart' as http;
+import 'package:kanbot/data/api/generated/auth/models/auth_config.dart'
+    as models
+    show AuthConfig;
 import 'package:kanbot/data/api/generated/auth/models/login_platform.dart'
     as models
     show LoginPlatform;
@@ -99,6 +102,43 @@ class AuthClient {
       throw http.ClientException('HTTP $status', url);
     }
     await response.stream.drain<void>();
+  }
+
+  /// What an app needs before signing in: where to sign in, whether
+  /// telemetry can be sent, and the server version. Public.
+  Future<models.AuthConfig> config({
+    Map<String, Object?> extra = const {},
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+  }) async {
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    final url = Uri.parse('$base/auth/config');
+    final request = http.AbortableRequest(
+      'GET',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return models.AuthConfig.fromJson(value as Map<String, Object?>);
+    });
   }
 
   /// Starts a sign-in: redirects the browser to the identity provider.
