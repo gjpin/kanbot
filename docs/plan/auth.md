@@ -680,7 +680,10 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - [x] **3.13 Disabled users:** (`users::service::disable` for a future admin
   API; a session request that finds its user disabled ends all of that user's
   sessions) disabling a user deletes their sessions.
-- [ ] **3.14 Web serving** (`WEB_DIR`):
+- [x] **3.14 Web serving** (`WEB_DIR`): (Flutter does not hash file names, so
+  files other than `index.html` get `no-cache`, revalidated through
+  `Last-Modified`; the SPA fallback answers only requests that accept HTML.
+  `frontend/tool/web_csp.dart` goes in 5.3)
   - static files with an SPA fallback to `index.html`;
   - `index.html` gets `Cache-Control: no-store`, hashed assets are cacheable;
   - HTML responses get the web Content-Security-Policy as an HTTP header, taken
@@ -932,7 +935,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 [x] 3.13 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 [x] 3.13 [x] 3.14 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

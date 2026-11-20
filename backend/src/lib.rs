@@ -53,12 +53,15 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             keys,
             sessions: Arc::new(config.sessions),
         },
-        http::HttpSettings::configured(
-            config.cors_allowed_origins,
-            config.trusted_proxies,
-            config.rate_limits,
-            config.max_in_flight_requests,
-        ),
+        http::HttpSettings {
+            web_dir: config.web_dir,
+            ..http::HttpSettings::configured(
+                config.cors_allowed_origins,
+                config.trusted_proxies,
+                config.rate_limits,
+                config.max_in_flight_requests,
+            )
+        },
         relay,
     )?;
 

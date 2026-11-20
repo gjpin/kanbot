@@ -6,6 +6,7 @@ pub mod extract;
 mod health;
 pub mod middleware;
 pub mod problem;
+pub mod web;
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
@@ -117,6 +118,9 @@ pub struct HttpSettings {
     /// (`MAX_IN_FLIGHT_REQUESTS`).
     pub max_in_flight_requests: NonZeroUsize,
     pub auth_metrics: AuthMetrics,
+    /// The Flutter web build to serve for paths no route matches
+    /// (`WEB_DIR`), if any.
+    pub web_dir: Option<std::path::PathBuf>,
 }
 
 impl HttpSettings {
@@ -147,6 +151,7 @@ impl HttpSettings {
             rate_limits,
             max_in_flight_requests,
             auth_metrics: AuthMetrics::global(),
+            web_dir: None,
         }
     }
 }
@@ -180,6 +185,10 @@ pub fn router(
     ));
     let routes = match relay {
         Some(relay) => routes.merge(relay),
+        None => routes,
+    };
+    let routes = match &settings.web_dir {
+        Some(dir) => web::with_web_app(routes, dir),
         None => routes,
     };
     let routes = rate_limit::limit_per_user(routes, settings.rate_limits.user)?;
