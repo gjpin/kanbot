@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use reqwest::{Certificate, StatusCode, Url, header};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::auth::config::OidcConfig;
@@ -64,26 +65,81 @@ impl IdpClient {
         url: Url,
         max_bytes: usize,
     ) -> Result<T, FetchError> {
-        let mut response = self
+        let response = self
             .0
             .get(url)
             .header(header::ACCEPT, "application/json")
             .send()
             .await
             .map_err(FetchError::Request)?;
-        if response.status() != StatusCode::OK {
-            return Err(FetchError::Status(response.status()));
-        }
-        // Read in chunks, whatever Content-Length says: a server can lie.
-        let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(FetchError::Request)? {
-            if body.len().saturating_add(chunk.len()) > max_bytes {
-                return Err(FetchError::TooLarge(max_bytes));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        serde_json::from_slice(&body).map_err(FetchError::Json)
+        read_json(response, max_bytes).await
     }
+
+    /// POSTs `form` to `url` (a token endpoint) with HTTP Basic client
+    /// authentication (`client_secret_basic`, RFC 6749 section 2.3.1: the
+    /// ID and secret are form-encoded first) and parses the JSON answer,
+    /// reading at most `max_bytes`. Anything but `200` is an error; the
+    /// error's body is never read.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdpClient::get_json`].
+    pub async fn post_form<T: DeserializeOwned>(
+        &self,
+        url: Url,
+        client_id: &str,
+        client_secret: &SecretString,
+        form: &[(&str, &str)],
+        max_bytes: usize,
+    ) -> Result<T, FetchError> {
+        let response = self
+            .0
+            .post(url)
+            .basic_auth(
+                form_encode(&[("", client_id)]),
+                Some(form_encode(&[("", client_secret.expose_secret())])),
+            )
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(form_encode(form))
+            .send()
+            .await
+            .map_err(FetchError::Request)?;
+        read_json(response, max_bytes).await
+    }
+}
+
+/// `application/x-www-form-urlencoded`. A single pair with an empty name
+/// encodes just its value.
+fn form_encode(pairs: &[(&str, &str)]) -> String {
+    let Ok(mut url) = Url::parse("https://form.invalid/") else {
+        return String::new();
+    };
+    url.query_pairs_mut().extend_pairs(pairs);
+    let encoded = url.query().unwrap_or_default();
+    match pairs {
+        [("", _)] => encoded.strip_prefix('=').unwrap_or(encoded).to_owned(),
+        _ => encoded.to_owned(),
+    }
+}
+
+/// The JSON body of a `200` response, read in chunks up to `max_bytes`,
+/// whatever `Content-Length` says: a server can lie.
+async fn read_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<T, FetchError> {
+    if response.status() != StatusCode::OK {
+        return Err(FetchError::Status(response.status()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(FetchError::Request)? {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(FetchError::TooLarge(max_bytes));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(FetchError::Json)
 }
 
 /// What kanbot uses from the discovery document.
@@ -155,4 +211,22 @@ pub async fn discover(
         token_endpoint: endpoint(document.token_endpoint),
         end_session_endpoint: endpoint(document.end_session_endpoint),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn form_encodes_pairs_and_single_values() {
+        assert_eq!(
+            form_encode(&[
+                ("grant_type", "authorization_code"),
+                ("redirect_uri", "https://k.example/a b")
+            ]),
+            "grant_type=authorization_code&redirect_uri=https%3A%2F%2Fk.example%2Fa+b"
+        );
+        assert_eq!(form_encode(&[("", "kanbot")]), "kanbot");
+        assert_eq!(form_encode(&[("", "p@ss:w/rd")]), "p%40ss%3Aw%2Frd");
+    }
 }

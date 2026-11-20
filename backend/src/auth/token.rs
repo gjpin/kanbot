@@ -10,7 +10,10 @@
 use jsonwebtoken::{Algorithm, Validation, errors::ErrorKind};
 use serde_json::{Map, Value};
 
-use crate::auth::{config::OidcConfig, keys::VerifyingKey};
+use crate::auth::{
+    config::{Issuer, OidcConfig},
+    keys::VerifyingKey,
+};
 
 /// Largest token accepted, in bytes.
 pub const MAX_TOKEN_BYTES: usize = 16 * 1024;
@@ -87,6 +90,16 @@ pub struct Principal {
     pub display_name: Option<String>,
     /// The string values of the roles claim. Personal data: never log it.
     pub groups: Vec<String>,
+    /// The token's `exp`, in seconds since the Unix epoch.
+    pub expires_at: u64,
+}
+
+/// What kanbot uses from a verified ID token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdToken {
+    pub subject: String,
+    /// The `nonce` claim; the caller checks it against the login attempt.
+    pub nonce: Option<String>,
 }
 
 /// A token whose shape and header are acceptable, not yet verified.
@@ -175,7 +188,7 @@ impl<'a> UnverifiedToken<'a> {
         if claims.get("iss").and_then(Value::as_str) != Some(config.issuer.as_str()) {
             return Err(Rejection::WrongIssuer);
         }
-        check_times(&claims, now)?;
+        let expires_at = check_times(&claims, now)?;
 
         let subject = config
             .subject_claim
@@ -227,13 +240,70 @@ impl<'a> UnverifiedToken<'a> {
             client_id,
             display_name,
             groups,
+            expires_at,
+        })
+    }
+}
+
+impl UnverifiedToken<'_> {
+    /// Verifies an ID token from the login flow (`OpenID` Connect Core,
+    /// section 3.1.3.7): the signature with `key`, `iss` exactly `issuer`,
+    /// `aud` containing `client_id`, `azp` equal to `client_id` when present
+    /// (and required with several audiences), and the times at `now`.
+    ///
+    /// # Errors
+    ///
+    /// The first [`Rejection`] found.
+    pub fn verify_id_token(
+        &self,
+        key: &VerifyingKey,
+        issuer: &Issuer,
+        client_id: &str,
+        now: u64,
+    ) -> Result<IdToken, Rejection> {
+        if self.algorithm != key.algorithm() {
+            return Err(Rejection::BadAlgorithm);
+        }
+        let mut validation = Validation::new(key.algorithm());
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        validation.set_issuer(&[issuer.as_str()]);
+        validation.set_audience(&[client_id]);
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        let claims =
+            jsonwebtoken::decode::<Map<String, Value>>(self.token, key.decoding_key(), &validation)
+                .map_err(|error| rejection(error.kind()))?
+                .claims;
+        if claims.get("iss").and_then(Value::as_str) != Some(issuer.as_str()) {
+            return Err(Rejection::WrongIssuer);
+        }
+        check_times(&claims, now)?;
+        let several_audiences =
+            matches!(claims.get("aud"), Some(Value::Array(audiences)) if audiences.len() > 1);
+        match claims.get("azp") {
+            Some(azp) if azp.as_str() != Some(client_id) => return Err(Rejection::WrongAudience),
+            None if several_audiences => return Err(Rejection::WrongAudience),
+            _ => {}
+        }
+        let subject = claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .filter(|subject| !subject.is_empty())
+            .ok_or(Rejection::MissingClaim)?
+            .to_owned();
+        Ok(IdToken {
+            subject,
+            nonce: claims
+                .get("nonce")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         })
     }
 }
 
 /// `exp` must not be past, `nbf` and `iat` (when present) not in the
-/// future, each with [`LEEWAY_SECONDS`].
-fn check_times(claims: &Map<String, Value>, now: u64) -> Result<(), Rejection> {
+/// future, each with [`LEEWAY_SECONDS`]. Returns `exp`.
+fn check_times(claims: &Map<String, Value>, now: u64) -> Result<u64, Rejection> {
     let time = |claim: &str| -> Result<Option<u64>, Rejection> {
         claims
             .get(claim)
@@ -249,7 +319,7 @@ fn check_times(claims: &Map<String, Value>, now: u64) -> Result<(), Rejection> {
     {
         return Err(Rejection::NotYetValid);
     }
-    Ok(())
+    Ok(exp)
 }
 
 fn rejection(kind: &ErrorKind) -> Rejection {
@@ -348,15 +418,21 @@ mod tests {
     fn checks_times_with_leeway() {
         use serde_json::json;
         let check = |claims: Value| check_times(claims.as_object().unwrap(), 1_000_000);
-        assert_eq!(check(json!({ "exp": 1_000_000 })), Ok(()));
-        assert_eq!(check(json!({ "exp": 999_940 })), Ok(()));
+        assert_eq!(check(json!({ "exp": 1_000_000 })), Ok(1_000_000));
+        assert_eq!(check(json!({ "exp": 999_940 })), Ok(999_940));
         assert_eq!(check(json!({ "exp": 999_939 })), Err(Rejection::Expired));
-        assert_eq!(check(json!({ "exp": 1_000_000, "nbf": 1_000_060 })), Ok(()));
+        assert_eq!(
+            check(json!({ "exp": 1_000_000, "nbf": 1_000_060 })),
+            Ok(1_000_000)
+        );
         assert_eq!(
             check(json!({ "exp": 1_000_000, "nbf": 1_000_061 })),
             Err(Rejection::NotYetValid)
         );
-        assert_eq!(check(json!({ "exp": 1_000_000, "iat": 1_000_060 })), Ok(()));
+        assert_eq!(
+            check(json!({ "exp": 1_000_000, "iat": 1_000_060 })),
+            Ok(1_000_000)
+        );
         assert_eq!(
             check(json!({ "exp": 1_000_000, "iat": 1_000_061 })),
             Err(Rejection::NotYetValid)

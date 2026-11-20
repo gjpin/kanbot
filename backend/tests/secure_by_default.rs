@@ -18,11 +18,12 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 /// Operations anyone may call, as `METHOD path`.
-const PUBLIC: [&str; 3] = [
+const PUBLIC: [&str; 4] = [
     "GET /health",
     "GET /ready",
     // The login flow: how a user gets credentials in the first place.
     "GET /auth/login",
+    "GET /auth/callback",
 ];
 
 const METHODS: [&str; 8] = [

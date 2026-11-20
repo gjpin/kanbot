@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.kind, s.token_hash, c.code_hash, c.app_code_challenge, c.used_at IS NULL AS \"unused!\",\n                  c.expires_at <= now() + interval '60 seconds'\n                    AND c.expires_at > now() + interval '50 seconds' AS \"one_minute!\"\n           FROM sessions s JOIN login_codes c ON c.session_id = s.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "code_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_codes",
+            "name": "code_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "app_code_challenge",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_codes",
+            "name": "app_code_challenge"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "unused!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "one_minute!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "7fd983d6a10dcbc373fe1415c4b6eb42e8809aa04c3245becd48f8f0492a1b47"
+}

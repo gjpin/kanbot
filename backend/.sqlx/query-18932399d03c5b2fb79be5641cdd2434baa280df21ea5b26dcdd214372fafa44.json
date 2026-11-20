@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE login_attempts SET used_at = now()\n         WHERE state_hash = $1 AND used_at IS NULL AND expires_at > now()\n           AND (platform = 'native' OR browser_binding_hash = $2)\n         RETURNING id, nonce_hash, pkce_verifier, app_redirect_uri, app_code_challenge",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "nonce_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "nonce_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pkce_verifier",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "pkce_verifier"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "app_redirect_uri",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "app_redirect_uri"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "app_code_challenge",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "app_code_challenge"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "18932399d03c5b2fb79be5641cdd2434baa280df21ea5b26dcdd214372fafa44"
+}

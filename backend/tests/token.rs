@@ -72,6 +72,7 @@ fn accepts_a_valid_token() {
             client_id: Some("kanbot-cli".to_owned()),
             display_name: Some("Alice".to_owned()),
             groups: vec!["kanbot-user".to_owned(), "staff".to_owned()],
+            expires_at: 1_800_000_300,
         }
     );
 }

@@ -634,7 +634,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     `SameSite=Lax`, short-lived) that binds the attempt to the browser, which
     prevents login CSRF;
   - redirects to the IdP's authorization endpoint.
-- [ ] **3.6 `GET /auth/callback`:**
+- [x] **3.6 `GET /auth/callback`:**
   1. Check `state` (and the login cookie for web), and that the attempt is unused
      and unexpired.
   2. Exchange the code at the token endpoint (`client_secret_basic`, PKCE
@@ -927,7 +927,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

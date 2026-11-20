@@ -1,21 +1,31 @@
 //! Business rules of the login flow and sessions.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use reqwest::Url;
 use secrecy::{ExposeSecret, SecretString};
+use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    auth::keys::KeyCache,
+    auth::{
+        keys::{KeyCache, KeyLookup, VerifyingKey},
+        token::{Rejection, UnverifiedToken},
+    },
     error::AppError,
     sessions::{
         config::SessionConfig,
         crypto::{self, Field},
-        model::LoginRequest,
-        repo::{self, NewAttempt},
+        model::{LoginRequest, Platform},
+        repo::{self, NewAttempt, NewSession},
         secrets,
     },
+    users::service as users,
 };
+
+/// Largest token endpoint response read, in bytes.
+const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Where to send the browser to sign in, and for the web app the value of
 /// the cookie that binds the attempt to that browser.
@@ -109,4 +119,334 @@ pub async fn start_login(
 #[must_use]
 pub fn callback_url(config: &SessionConfig) -> String {
     config.public_url.join("auth/callback")
+}
+
+/// Why a sign-in failed, as the stable `error` parameter of the redirect
+/// back to the app. Never more detail than this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginError {
+    /// The user declined at the identity provider, or is disabled here.
+    AccessDenied,
+    /// Anything else: an unknown or replayed state, a refused token, the
+    /// identity provider failing.
+    LoginFailed,
+    /// The user signed in but has no kanbot role.
+    NoRole,
+}
+
+impl LoginError {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessDenied => "access_denied",
+            Self::LoginFailed => "login_failed",
+            Self::NoRole => "no_role",
+        }
+    }
+}
+
+/// Where the outcome of a sign-in goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination {
+    /// The web app (`<PUBLIC_URL>/`, or `<PUBLIC_URL>/login` on failure).
+    Web,
+    /// A native app's redirect URI.
+    App(String),
+}
+
+/// How a sign-in ended.
+pub enum LoginOutcome {
+    /// A web session: its token goes into the session cookie.
+    WebSession { token: SecretString },
+    /// A native session waiting for its one-time code to be redeemed.
+    NativeCode {
+        redirect: String,
+        code: SecretString,
+    },
+    Failed {
+        destination: Destination,
+        error: LoginError,
+    },
+}
+
+/// What the identity provider sent back to the callback.
+pub struct CallbackParams<'a> {
+    pub state: Option<&'a str>,
+    pub code: Option<&'a str>,
+    /// The `error` parameter of an authorization error response.
+    pub error: Option<&'a str>,
+}
+
+/// A token endpoint's answer (RFC 6749, section 5.1).
+#[derive(Deserialize)]
+struct TokenResponse {
+    #[serde(rename = "access_token")]
+    access: String,
+    #[serde(rename = "id_token")]
+    id: Option<String>,
+    #[serde(rename = "refresh_token")]
+    refresh: Option<String>,
+}
+
+/// A refusal: the error the app sees, and the reason for the log.
+type Refusal = (LoginError, &'static str);
+
+const fn refused(reason: &'static str) -> Refusal {
+    (LoginError::LoginFailed, reason)
+}
+
+/// Finishes a sign-in at `/auth/callback`: checks the state (and the
+/// browser binding for the web), exchanges the code, validates the ID
+/// token and the access token, records the user and creates the session.
+///
+/// # Errors
+///
+/// Only infrastructure failures (database, randomness, encryption) are
+/// errors; every reason to refuse the sign-in is a [`LoginOutcome::Failed`].
+pub async fn finish_login(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    params: &CallbackParams<'_>,
+    browser_binding: Option<&str>,
+) -> Result<LoginOutcome, AppError> {
+    let Some(state) = params.state else {
+        return Ok(failed(Destination::Web, refused("no state")));
+    };
+    let binding_hash = browser_binding.map(secrets::hash);
+    let Some(attempt) = repo::consume_attempt(
+        db,
+        &secrets::hash(state),
+        binding_hash.as_ref().map(<[u8; 32]>::as_slice),
+    )
+    .await?
+    else {
+        return Ok(failed(
+            Destination::Web,
+            refused("unknown, used or unbound state"),
+        ));
+    };
+    let destination = attempt
+        .app_redirect_uri
+        .clone()
+        .map_or(Destination::Web, Destination::App);
+    let principal = match authorize(keys, config, params, &attempt).await {
+        Ok(principal) => principal,
+        Err(refusal) => return Ok(failed(destination, refusal)),
+    };
+    let (tokens, principal) = principal;
+    let user = match users::authenticate(db, &principal).await {
+        Ok(user) => user,
+        Err(AppError::AccountDisabled) => {
+            return Ok(failed(
+                destination,
+                (LoginError::AccessDenied, "disabled user"),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    let platform = match destination {
+        Destination::Web => Platform::Web,
+        Destination::App(_) => Platform::Native,
+    };
+    let (session_id, session_token) = create_session(
+        db,
+        config,
+        platform,
+        user.id.as_uuid(),
+        &tokens,
+        principal.expires_at,
+    )
+    .await?;
+    tracing::info!(
+        user.id = %user.id.as_uuid(),
+        session.id = %session_id,
+        kind = platform.as_str(),
+        "signed in"
+    );
+    match (
+        session_token,
+        attempt.app_redirect_uri,
+        attempt.app_code_challenge,
+    ) {
+        (Some(token), _, _) => Ok(LoginOutcome::WebSession { token: token.value }),
+        (None, Some(redirect), Some(challenge)) => {
+            let code = secrets::issue(secrets::LOGIN_CODE)?;
+            repo::insert_code(db, &code.hash, session_id, &challenge).await?;
+            Ok(LoginOutcome::NativeCode {
+                redirect,
+                code: code.value,
+            })
+        }
+        // The schema makes a native attempt carry both.
+        (None, _, _) => Err(AppError::Internal("native attempt without redirect")),
+    }
+}
+
+fn failed(destination: Destination, (error, reason): Refusal) -> LoginOutcome {
+    tracing::info!(reason, error = error.as_str(), "sign-in refused");
+    LoginOutcome::Failed { destination, error }
+}
+
+/// Exchanges the code and validates both tokens: the ID token was issued
+/// to kanbot for this attempt's nonce, and the access token passes exactly
+/// the bearer-token rules.
+async fn authorize(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    params: &CallbackParams<'_>,
+    attempt: &repo::Attempt,
+) -> Result<(TokenResponse, crate::auth::token::Principal), Refusal> {
+    if let Some(error) = params.error {
+        let error = if error == "access_denied" {
+            LoginError::AccessDenied
+        } else {
+            LoginError::LoginFailed
+        };
+        return Err((error, "the identity provider returned an error"));
+    }
+    let code = params.code.ok_or(refused("no code"))?;
+    let tokens = exchange(keys, config, attempt, code).await?;
+    let now = now();
+
+    let id_token = tokens.id.as_deref().ok_or(refused("no ID token"))?;
+    let (unverified, key) = key_for(keys, id_token)
+        .await
+        .map_err(|_| refused("ID token key unknown"))?;
+    let claims = unverified
+        .verify_id_token(&key, &keys.config().issuer, &config.client_id, now)
+        .map_err(|_| refused("ID token refused"))?;
+    let nonce_matches = claims
+        .nonce
+        .as_deref()
+        .is_some_and(|nonce| secrets::hash(nonce).as_slice() == attempt.nonce_hash.as_slice());
+    if !nonce_matches {
+        return Err(refused("ID token nonce mismatch"));
+    }
+
+    let (unverified, key) = key_for(keys, &tokens.access)
+        .await
+        .map_err(|_| refused("access token key unknown"))?;
+    match unverified.verify(&key, keys.config(), now) {
+        Ok(principal) => Ok((tokens, principal)),
+        Err(Rejection::NoRole) => Err((LoginError::NoRole, "no role")),
+        Err(rejection) => {
+            tracing::info!(
+                reason = rejection.reason(),
+                "access token refused at sign-in"
+            );
+            Err(refused("access token refused"))
+        }
+    }
+}
+
+/// The token request: the code, the callback URL and the PKCE verifier,
+/// with the client's credentials.
+async fn exchange(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    attempt: &repo::Attempt,
+    code: &str,
+) -> Result<TokenResponse, Refusal> {
+    let verifier = crypto::open(
+        &config.keys,
+        attempt.id,
+        Field::PkceVerifier,
+        &attempt.pkce_verifier,
+    )
+    .map_err(|_| refused("verifier cannot be opened"))?;
+    let endpoint = keys
+        .discovery()
+        .and_then(|discovery| discovery.token_endpoint.clone())
+        .ok_or(refused("no token endpoint"))?;
+    let callback = callback_url(config);
+    keys.client()
+        .post_form(
+            endpoint,
+            &config.client_id,
+            &config.client_secret,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", &callback),
+                ("code_verifier", verifier.expose_secret()),
+            ],
+            MAX_TOKEN_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "token exchange failed");
+            refused("token exchange failed")
+        })
+}
+
+/// Stores the session with the sealed tokens. A web session gets its
+/// token now; a native one when its code is redeemed.
+async fn create_session(
+    db: &PgPool,
+    config: &SessionConfig,
+    platform: Platform,
+    user_id: Uuid,
+    tokens: &TokenResponse,
+    access_expires_at: u64,
+) -> Result<(Uuid, Option<secrets::Issued>), AppError> {
+    let session_id = Uuid::new_v4();
+    let seal = |field: Field, value: &str| {
+        crypto::seal(
+            &config.keys,
+            session_id,
+            field,
+            &SecretString::from(value.to_owned()),
+        )
+    };
+    let access = seal(Field::AccessToken, &tokens.access)?;
+    let refresh = tokens
+        .refresh
+        .as_deref()
+        .map(|token| seal(Field::RefreshToken, token))
+        .transpose()?;
+    let id = tokens
+        .id
+        .as_deref()
+        .map(|token| seal(Field::IdToken, token))
+        .transpose()?;
+    let session_token = match platform {
+        Platform::Web => Some(secrets::issue(secrets::SESSION_TOKEN)?),
+        Platform::Native => None,
+    };
+    repo::insert_session(
+        db,
+        &NewSession {
+            id: session_id,
+            token_hash: session_token.as_ref().map(|token| token.hash.as_slice()),
+            user_id,
+            kind: platform.as_str(),
+            access_token: &access,
+            refresh_token: refresh.as_deref(),
+            id_token: id.as_deref(),
+            access_expires_at: i64::try_from(access_expires_at).unwrap_or(i64::MAX),
+            idle_seconds: config.idle_timeout.as_secs_f64(),
+            absolute_seconds: config.absolute_timeout.as_secs_f64(),
+        },
+    )
+    .await?;
+    Ok((session_id, session_token))
+}
+
+/// The token's key, refreshing the keys once for an unknown `kid`.
+async fn key_for<'t>(
+    keys: &KeyCache,
+    token: &'t str,
+) -> Result<(UnverifiedToken<'t>, std::sync::Arc<VerifyingKey>), Rejection> {
+    let unverified = UnverifiedToken::parse(token)?;
+    match keys.key(unverified.kid()).await {
+        KeyLookup::Found(key) => Ok((unverified, key)),
+        KeyLookup::Unknown | KeyLookup::NotLoaded => Err(Rejection::UnknownKey),
+    }
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }

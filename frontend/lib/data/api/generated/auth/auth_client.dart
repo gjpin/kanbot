@@ -37,6 +37,62 @@ class AuthClient {
     return entries.join('&');
   }
 
+  /// Where the identity provider sends the browser back. Finishes the
+  /// sign-in and redirects to the app: the web app with its session cookie
+  /// (to `/`, or `/login?error=...`), a native app with a one-time code
+  /// (`<redirect_uri>?code=...`, or `?error=...`). The `error` is
+  /// `access_denied`, `login_failed` or `no_role`, never more.
+  Future<void> callback({
+    Map<String, Object?> extra = const {},
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+
+    /// The state sent with the authorization request.
+    String? state,
+
+    /// The authorization code.
+    String? code,
+
+    /// The identity provider's error, instead of a code.
+    String? error,
+  }) async {
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    var url = Uri.parse('$base/auth/callback');
+    final query = _httpQuery(<String, Object?>{
+      'state': ?state,
+      'code': ?code,
+      'error': ?error,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
+    final request = http.AbortableRequest(
+      'GET',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status >= 200 && status < 300)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    await response.stream.drain<void>();
+  }
+
   /// Starts a sign-in: redirects the browser to the identity provider.
   ///
   /// The web app navigates here; native apps open it in the system browser

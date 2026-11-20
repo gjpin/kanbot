@@ -220,6 +220,12 @@ impl KeyCache {
         cache
     }
 
+    /// The HTTP client for the identity provider (for the token endpoint).
+    #[must_use]
+    pub fn client(&self) -> &IdpClient {
+        &self.client
+    }
+
     #[must_use]
     pub fn config(&self) -> &OidcConfig {
         &self.config

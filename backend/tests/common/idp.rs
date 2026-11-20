@@ -51,12 +51,22 @@ pub enum Reply {
     Chunked(Vec<u8>),
 }
 
+/// A request to the token endpoint: its `Authorization` header and its
+/// form, decoded.
+#[derive(Clone, Debug)]
+pub struct TokenRequest {
+    pub authorization: Option<String>,
+    pub form: HashMap<String, String>,
+}
+
 #[derive(Default)]
 struct Endpoints {
     discovery: Option<Reply>,
     jwks: Option<Reply>,
+    token: Option<Reply>,
     discovery_requests: usize,
     jwks_requests: usize,
+    token_requests: Vec<TokenRequest>,
 }
 
 pub struct TestIdp {
@@ -78,6 +88,7 @@ impl TestIdp {
         let app = Router::new()
             .route("/.well-known/openid-configuration", get(discovery))
             .route("/jwks", get(jwks))
+            .route("/token", axum::routing::post(token))
             .with_state((issuer.clone(), Arc::clone(&endpoints)));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let idp = Self { issuer, endpoints };
@@ -98,6 +109,25 @@ impl TestIdp {
     /// If a request handler panicked.
     pub fn set_jwks(&self, reply: Reply) {
         self.endpoints.lock().unwrap().jwks = Some(reply);
+    }
+
+    /// Answers token requests with `reply`.
+    ///
+    /// # Panics
+    ///
+    /// If a request handler panicked.
+    pub fn set_token(&self, reply: Reply) {
+        self.endpoints.lock().unwrap().token = Some(reply);
+    }
+
+    /// The token requests it has received, in order.
+    ///
+    /// # Panics
+    ///
+    /// If a request handler panicked.
+    #[must_use]
+    pub fn token_requests(&self) -> Vec<TokenRequest> {
+        self.endpoints.lock().unwrap().token_requests.clone()
     }
 
     /// Replaces the default discovery document.
@@ -199,6 +229,33 @@ async fn jwks(State((_, endpoints)): State<IdpState>) -> Response {
     respond(reply.unwrap_or(Reply::Status(StatusCode::NOT_FOUND))).await
 }
 
+async fn token(
+    State((_, endpoints)): State<IdpState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = reqwest::Url::parse(&format!(
+        "https://form.invalid/?{}",
+        String::from_utf8_lossy(&body)
+    ))
+    .map_or_else(
+        |_| HashMap::new(),
+        |url| url.query_pairs().into_owned().collect(),
+    );
+    let reply = {
+        let mut endpoints = endpoints.lock().unwrap();
+        endpoints.token_requests.push(TokenRequest {
+            authorization: headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            form,
+        });
+        endpoints.token.clone()
+    };
+    respond(reply.unwrap_or(Reply::Status(StatusCode::BAD_REQUEST))).await
+}
+
 async fn respond(reply: Reply) -> Response {
     match reply {
         Reply::Json(value) => axum::Json(value).into_response(),
@@ -254,20 +311,37 @@ pub fn config(issuer: &str, extra: &[(&'static str, &str)]) -> OidcConfig {
 /// The issuer of [`static_key_cache`] and [`unloaded_key_cache`].
 pub const STATIC_ISSUER: &str = "http://127.0.0.1:1";
 
-/// Valid access-token claims from [`STATIC_ISSUER`] for `subject` with the
-/// roles claim `groups`, expiring in 5 minutes.
+/// Seconds since the Unix epoch.
 ///
 /// # Panics
 ///
 /// If the clock is before 1970.
 #[must_use]
-pub fn claims(subject: &str, groups: &[&str]) -> Value {
-    let now = std::time::SystemTime::now()
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs();
+        .as_secs()
+}
+
+/// Valid access-token claims from [`STATIC_ISSUER`] for `subject` with the
+/// roles claim `groups`, expiring in 5 minutes.
+#[must_use]
+pub fn claims(subject: &str, groups: &[&str]) -> Value {
+    issued_claims(STATIC_ISSUER, subject, groups)
+}
+
+/// Valid access-token claims from `issuer` for `subject` with the roles
+/// claim `groups`, expiring in 5 minutes.
+///
+/// # Panics
+///
+/// If the clock is before 1970.
+#[must_use]
+pub fn issued_claims(issuer: &str, subject: &str, groups: &[&str]) -> Value {
+    let now = now();
     json!({
-        "iss": STATIC_ISSUER,
+        "iss": issuer,
         "aud": "kanbot-api",
         "sub": subject,
         "exp": now.checked_add(300).unwrap(),

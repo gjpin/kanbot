@@ -28,6 +28,7 @@ fn principal(subject: &str) -> Principal {
         client_id: Some("kanbot-cli".to_owned()),
         display_name: Some("Alice".to_owned()),
         groups: vec!["kanbot-user".to_owned()],
+        expires_at: 1_800_000_000,
     }
 }
 
