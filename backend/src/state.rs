@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sqlx::{PgPool, migrate::Migrator};
 
-use crate::auth::keys::KeyCache;
+use crate::{auth::keys::KeyCache, sessions::config::SessionConfig};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,4 +15,7 @@ pub struct AppState {
     /// The identity provider's signing keys and the OIDC configuration.
     /// `/ready` checks that keys have been loaded.
     pub keys: Arc<KeyCache>,
+    /// The login flow's settings: the confidential client, `PUBLIC_URL`,
+    /// session keys and lifetimes.
+    pub sessions: Arc<SessionConfig>,
 }

@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT state_hash, nonce_hash, pkce_verifier, platform, browser_binding_hash,\n                  app_redirect_uri, used_at IS NULL AS \"unused!\",\n                  expires_at > now() + interval '9 minutes' AND expires_at <= now() + interval '10 minutes' AS \"ten_minutes!\"\n           FROM login_attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "state_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "nonce_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "nonce_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pkce_verifier",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "pkce_verifier"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "browser_binding_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "browser_binding_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "app_redirect_uri",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "app_redirect_uri"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "unused!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "ten_minutes!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "13acfd40083bde0ac06b8b6393084b1d5ed76255cf665758d608f3fb91b4fe8c"
+}

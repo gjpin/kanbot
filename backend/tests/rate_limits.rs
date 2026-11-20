@@ -47,6 +47,7 @@ fn state(pool: PgPool) -> AppState {
         db: pool,
         migrator: &db::MIGRATOR,
         keys: common::idp::static_key_cache(),
+        sessions: common::session_config(),
     }
 }
 

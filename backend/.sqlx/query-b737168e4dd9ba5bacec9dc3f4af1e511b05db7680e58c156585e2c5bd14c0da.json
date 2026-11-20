@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT platform, app_redirect_uri, app_code_challenge, browser_binding_hash\n         FROM login_attempts ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "app_redirect_uri",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "app_redirect_uri"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "app_code_challenge",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "app_code_challenge"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "browser_binding_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "browser_binding_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b737168e4dd9ba5bacec9dc3f4af1e511b05db7680e58c156585e2c5bd14c0da"
+}

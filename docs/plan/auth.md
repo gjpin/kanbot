@@ -623,14 +623,12 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - only SHA-256 hashes are stored;
   - IdP tokens are encrypted with the AEAD, with the session ID as associated
     data and a key-ID prefix for rotation.
-- [ ] **3.5 `GET /auth/login`**, query `platform=web|native`:
+- [x] **3.5 `GET /auth/login`**, query `platform=web|native`:
   - **native** adds `redirect_uri`, `code_challenge` and
     `code_challenge_method=S256`;
-  - **allowed native redirects:** `<app-scheme>:/auth/done`, where `<app-scheme>`
-    is the app's final reverse-DNS ID (see the open items), and
-    `http://127.0.0.1:{any port}/auth/done` (verify whether `flutter_web_auth_2`
-    on Windows and Linux uses `127.0.0.1` or `localhost`, and allow exactly what
-    it uses);
+  - **allowed native redirects:** `dev.sideral.kanbot:/auth/done` (the app ID,
+    decided by the human) and `http://127.0.0.1:{any port}/auth/done` (verified:
+    `flutter_web_auth_2` 6.0.0 binds `127.0.0.1` on Windows and Linux);
   - creates a login attempt with state, nonce and IdP PKCE;
   - **web** also sets a `__Host-kanbot_login` cookie (`HttpOnly`, `Secure`,
     `SameSite=Lax`, short-lived) that binds the attempt to the browser, which
@@ -898,14 +896,14 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Open items
 
-- **Application ID** (needed for phase 5, and for the native redirect allowlist
-  in phase 3): currently `com.example.kanbot`. Ask the human.
+- **Application ID:** `dev.sideral.kanbot` (decided by the human; set it in the
+  frontend in phase 5.1).
 - Items to verify:
   - ~~Authelia accepts `kanbot.internal` as a cookie domain~~ (yes, 2.9);
   - ~~the shape of Authelia's first-factor API in 4.39~~ (resolved in 2.9);
   - ~~whether `jsonwebtoken` rejects `crit`~~ (resolved in 2.4: not fully, so
     kanbot does);
-  - which loopback host `flutter_web_auth_2` uses on desktop;
+  - ~~which loopback host `flutter_web_auth_2` uses on desktop~~ (`127.0.0.1`);
   - the **(verify)** items in `docs/oidc.md`.
 
 ## Out of scope
@@ -929,7 +927,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

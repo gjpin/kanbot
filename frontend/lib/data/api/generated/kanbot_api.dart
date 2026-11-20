@@ -4,7 +4,7 @@ import 'package:http/http.dart' as transport;
 
 import 'package:kanbot/data/api/generated/exports.dart'
     as clients
-    show HealthClient, UsersClient;
+    show AuthClient, HealthClient, UsersClient;
 
 export 'exports.dart';
 
@@ -24,6 +24,11 @@ final class KanbotApi {
   final void Function(transport.BaseRequest, Map<String, Object?>)?
   prepareRequest;
 
+  late final clients.AuthClient auth = clients.AuthClient(
+    _client,
+    baseUrl: baseUrl,
+    prepareRequest: prepareRequest,
+  );
   late final clients.HealthClient health = clients.HealthClient(
     _client,
     baseUrl: baseUrl,

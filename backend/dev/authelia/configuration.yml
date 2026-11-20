@@ -81,6 +81,9 @@ identity_providers:
         grant_types: ['authorization_code', 'refresh_token']
         response_types: ['code']
         redirect_uris:
+          # The backend's callback in development (PUBLIC_URL in dev/dev.env).
+          - 'http://localhost:3000/auth/callback'
+          # Where tests/common/authelia.rs sends codes it reads itself.
           - 'https://localhost:3000/auth/callback'
         consent_mode: 'pre-configured'
         pre_configured_consent_duration: '1y'

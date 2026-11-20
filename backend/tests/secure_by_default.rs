@@ -18,7 +18,12 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 /// Operations anyone may call, as `METHOD path`.
-const PUBLIC: [&str; 2] = ["GET /health", "GET /ready"];
+const PUBLIC: [&str; 3] = [
+    "GET /health",
+    "GET /ready",
+    // The login flow: how a user gets credentials in the first place.
+    "GET /auth/login",
+];
 
 const METHODS: [&str; 8] = [
     "get", "put", "post", "delete", "options", "head", "patch", "trace",
@@ -142,6 +147,7 @@ async fn telemetry_relay_routes_refuse_requests_without_credentials() {
             db: db::pool_with(options),
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
+            sessions: common::session_config(),
         },
         HttpSettings::new(),
         Some(relay),

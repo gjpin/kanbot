@@ -17,9 +17,41 @@ use kanbot_backend::{
     auth::keys::KeyCache,
     db,
     http::{self, HttpSettings},
+    sessions::config::SessionConfig,
     state::AppState,
 };
 use sqlx::{PgPool, migrate::Migrator, postgres::PgConnectOptions};
+
+/// The login flow's settings for tests: client `kanbot`, `PUBLIC_URL`
+/// `http://localhost:3000` (registered at the local Authelia), and a fixed
+/// test-only session key.
+///
+/// # Panics
+///
+/// Never: the values are valid.
+#[must_use]
+pub fn session_config() -> Arc<SessionConfig> {
+    let vars: std::collections::HashMap<&str, &str> = [
+        ("OIDC_CLIENT_ID", "kanbot"),
+        ("OIDC_CLIENT_SECRET", "kanbot-dev-client-secret"),
+        ("OIDC_SCOPES", "openid profile email groups offline_access"),
+        ("PUBLIC_URL", "http://localhost:3000"),
+        (
+            "SESSION_ENCRYPTION_KEYS",
+            "test1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        ),
+    ]
+    .into_iter()
+    .collect();
+    Arc::new(
+        SessionConfig::from_lookup(&|name| {
+            vars.get(name)
+                .map(|value| (*value).to_owned())
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap(),
+    )
+}
 
 /// The client address requests come from, unless a test chooses another.
 pub const PEER: &str = "203.0.113.9:50000";
@@ -78,6 +110,7 @@ pub fn app_with_keys(pool: PgPool, migrator: &'static Migrator, keys: Arc<KeyCac
             db: pool,
             migrator,
             keys,
+            sessions: session_config(),
         },
         HttpSettings::new(),
         None,

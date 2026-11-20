@@ -54,6 +54,7 @@ async fn no_token_or_claim_value_is_recorded(pool: PgPool) {
             db: pool,
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
+            sessions: common::session_config(),
         },
         HttpSettings {
             auth_metrics: AuthMetrics::new(&meter_provider.meter("test")),

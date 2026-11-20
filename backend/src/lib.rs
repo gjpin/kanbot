@@ -50,6 +50,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             db,
             migrator: &db::MIGRATOR,
             keys,
+            sessions: Arc::new(config.sessions),
         },
         http::HttpSettings::configured(
             config.cors_allowed_origins,

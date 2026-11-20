@@ -102,6 +102,7 @@ fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(doc)
         .merge(health::routes())
         .merge(crate::users::routes())
+        .merge(crate::sessions::routes())
 }
 
 /// How the HTTP layer protects the app (see `backend/AGENTS.md`).

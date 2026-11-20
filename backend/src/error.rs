@@ -53,6 +53,10 @@ pub enum AppError {
     /// The request body's content type or encoding is not accepted.
     #[error("unsupported media type")]
     UnsupportedMediaType,
+    /// A failure that is a bug or a broken host (no randomness, a
+    /// cipher error), named for the log.
+    #[error("internal error: {0}")]
+    Internal(&'static str),
     /// The service cannot handle requests yet (or right now). Retrying later
     /// may work.
     #[error("service unavailable")]
@@ -102,7 +106,7 @@ impl AppError {
             )
             | Self::Unavailable => ErrorCode::Unavailable,
             // Anything else (a failed query, a decode error) is a bug.
-            Self::Database(_) => ErrorCode::Internal,
+            Self::Database(_) | Self::Internal(_) => ErrorCode::Internal,
         }
     }
 }
@@ -145,6 +149,7 @@ impl AppError {
             Self::Validation(_) => "validation",
             Self::UnsupportedMediaType => "unsupported_media_type",
             Self::Unavailable => "unavailable",
+            Self::Internal(what) => what,
         }
     }
 
@@ -254,6 +259,7 @@ mod tests {
                 "unsupported_media_type",
             ),
             (AppError::Unavailable, 503, "unavailable"),
+            (AppError::Internal("crypto"), 500, "internal"),
         ] {
             let (actual_status, body) = problem(error).await;
             assert_eq!(actual_status.as_u16(), status, "{code}");
@@ -405,6 +411,7 @@ mod tests {
             (AppError::Validation(vec![]), "validation"),
             (AppError::UnsupportedMediaType, "unsupported_media_type"),
             (AppError::Unavailable, "unavailable"),
+            (AppError::Internal("randomness"), "randomness"),
             (
                 AppError::Database(sqlx::Error::RowNotFound),
                 "database.row_not_found",

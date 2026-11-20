@@ -6,6 +6,102 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts a sign-in: redirects the browser to the identity provider.",
+        "description": "The web app navigates here; native apps open it in the system browser\nwith their redirect URI and PKCE challenge.",
+        "operationId": "login",
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "query",
+            "description": "`web` or `native`.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Which app signs in.",
+              "enum": [
+                "web",
+                "native"
+              ]
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "description": "Native only: `dev.sideral.kanbot:/auth/done`, or\n`http://127.0.0.1:<port>/auth/done` on Windows and Linux.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "description": "Native only: the S256 PKCE challenge of the app's verifier.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "description": "Native only: `S256`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "To the identity provider's sign-in page.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The authorization URL."
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown or malformed parameters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Parameters that do not fit the platform, or a redirect URI that is not the app's.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The identity provider has not been discovered yet.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
