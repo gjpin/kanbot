@@ -314,3 +314,48 @@ pub(super) async fn delete_session(
     .fetch_optional(db)
     .await
 }
+
+/// Deletes up to `limit` expired login attempts; returns how many.
+/// `SKIP LOCKED`: instances cleaning at the same time share the work.
+pub(super) async fn delete_expired_attempts(db: &PgPool, limit: i64) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query!(
+        "DELETE FROM login_attempts WHERE id IN (
+           SELECT id FROM login_attempts WHERE expires_at < now()
+           LIMIT $1 FOR UPDATE SKIP LOCKED)",
+        limit,
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
+/// Deletes up to `limit` expired one-time codes; returns how many.
+pub(super) async fn delete_expired_codes(db: &PgPool, limit: i64) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query!(
+        "DELETE FROM login_codes WHERE code_hash IN (
+           SELECT code_hash FROM login_codes WHERE expires_at < now()
+           LIMIT $1 FOR UPDATE SKIP LOCKED)",
+        limit,
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
+/// Deletes up to `limit` ended sessions: idle too long, past their
+/// absolute lifetime, or native sessions whose code was never redeemed.
+pub(super) async fn delete_expired_sessions(db: &PgPool, limit: i64) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query!(
+        "DELETE FROM sessions WHERE id IN (
+           SELECT id FROM sessions
+           WHERE idle_expires_at < now() OR absolute_expires_at < now()
+              OR (token_hash IS NULL AND created_at < now() - make_interval(secs => $2))
+           LIMIT $1 FOR UPDATE SKIP LOCKED)",
+        limit,
+        // A code lives a minute; leave a margin for a redemption in flight.
+        CODE_LIFETIME_SECONDS * 5.0,
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE login_attempts SET expires_at = now() - interval '1 second'\n         WHERE id = (SELECT id FROM login_attempts LIMIT 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "0150c0b12a4d3c023400711f93ed8de67bd55e8ea13687f103339bc1f10ac365"
+}

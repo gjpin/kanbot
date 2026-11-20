@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM login_attempts WHERE id IN (\n           SELECT id FROM login_attempts WHERE expires_at < now()\n           LIMIT $1 FOR UPDATE SKIP LOCKED)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10a4d8971923db2d8b5a8a0ffc0a7d0815be2b558a417de320cfd923ca773bf9"
+}

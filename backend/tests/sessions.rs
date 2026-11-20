@@ -1527,3 +1527,90 @@ async fn bearer_sessions_need_no_csrf_proof(pool: PgPool) {
         Request::post("/auth/logout").header(header::AUTHORIZATION, format!("Bearer {token}"));
     assert_eq!(send(&app, request).await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn cleanup_deletes_what_has_expired_in_batches(pool: PgPool) {
+    let user_id = user(&pool).await;
+    let live_web = insert_session(&pool, user_id, "web", Some(b"live"))
+        .await
+        .unwrap();
+    let waiting = insert_session(&pool, user_id, "native", None)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE sessions SET idle_expires_at = now() + interval '1 day',
+                             absolute_expires_at = now() + interval '2 days'"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for i in 0..5_u8 {
+        insert_session(&pool, user_id, "web", Some(&[b'x', i]))
+            .await
+            .unwrap();
+    }
+    // A native session that never got its token, long ago.
+    let abandoned = insert_session(&pool, user_id, "native", None)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE sessions SET created_at = now() - interval '1 hour',
+                             idle_expires_at = now() + interval '1 day',
+                             absolute_expires_at = now() + interval '2 days'
+         WHERE id = $1",
+        abandoned
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    insert_attempt(&pool, "web", Some(b"binding"), None, None)
+        .await
+        .unwrap();
+    insert_attempt(&pool, "web", Some(b"binding"), None, None)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE login_attempts SET expires_at = now() - interval '1 second'
+         WHERE id = (SELECT id FROM login_attempts LIMIT 1)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO login_codes (code_hash, session_id, app_code_challenge, expires_at)
+         VALUES ('old', $1, 'c', now() - interval '1 second'),
+                ('new', $1, 'c', now() + interval '1 minute')",
+        waiting
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Batches of 2: the 6 ended sessions take 4 statements.
+    let deleted = kanbot_backend::sessions::service::cleanup(&pool, 2)
+        .await
+        .unwrap();
+
+    assert_eq!(deleted, 1 + 1 + 6);
+    let sessions: Vec<Uuid> = sqlx::query_scalar!("SELECT id FROM sessions ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let mut expected = vec![live_web, waiting];
+    expected.sort();
+    assert_eq!(sessions, expected);
+    let left = sqlx::query_scalar!(
+        r#"SELECT (SELECT count(*) FROM login_attempts) * 10 + (SELECT count(*) FROM login_codes) AS "n!""#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 10 + 1);
+    // Nothing more to do.
+    assert_eq!(
+        kanbot_backend::sessions::service::cleanup(&pool, 2)
+            .await
+            .unwrap(),
+        0
+    );
+}

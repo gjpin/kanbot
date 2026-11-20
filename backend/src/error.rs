@@ -116,6 +116,12 @@ impl AppError {
     /// error its SQLSTATE and constraint name. Never the error's message
     /// or `Debug` form: Postgres puts row values in them (`Key
     /// (subject)=(...) already exists`).
+    /// The error's kind, safe to log (see [`AppError::log_kind`]).
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        self.log_kind()
+    }
+
     fn log_kind(&self) -> &'static str {
         match self {
             Self::Database(error) => match error {

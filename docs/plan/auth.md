@@ -675,7 +675,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - [x] **3.11 CSRF for cookie sessions:** state-changing methods require `Origin`
   equal to `PUBLIC_URL`'s origin **and** the header `X-Kanbot-CSRF: 1`. Bearer
   requests are exempt.
-- [ ] **3.12 Cleanup:** a periodic task deletes expired login attempts, codes and
+- [x] **3.12 Cleanup:** a periodic task deletes expired login attempts, codes and
   sessions in bounded batches.
 - [ ] **3.13 Disabled users:** disabling a user deletes their sessions.
 - [ ] **3.14 Web serving** (`WEB_DIR`):
@@ -930,7 +930,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

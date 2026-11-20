@@ -41,6 +41,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
     // The server starts even if the identity provider is unreachable: it
     // reports not ready until the keys load.
     keys.spawn_refresh();
+    sessions::service::spawn_cleanup(db.clone());
     let relay = config
         .telemetry_relay_upstream
         .map(|upstream| telemetry_relay::routes(upstream, config.rate_limits.telemetry))

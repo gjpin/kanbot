@@ -733,6 +733,59 @@ pub async fn logout(
     Ok(Some(url))
 }
 
+/// Rows deleted per statement by [`cleanup`].
+pub const CLEANUP_BATCH: i64 = 1000;
+/// Statements per table and run, so one run stays short; the rest waits
+/// for the next run.
+const CLEANUP_MAX_BATCHES: u32 = 10;
+/// How often [`spawn_cleanup`] runs [`cleanup`].
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Deletes expired login attempts, one-time codes and sessions, `batch`
+/// rows per statement, until a statement deletes fewer or
+/// `CLEANUP_MAX_BATCHES` ran per table. Returns how many rows went.
+///
+/// # Errors
+///
+/// A database error; what was deleted before it stays deleted.
+pub async fn cleanup(db: &PgPool, batch: i64) -> Result<u64, sqlx::Error> {
+    let mut deleted = 0_u64;
+    for table in 0..3 {
+        for _ in 0..CLEANUP_MAX_BATCHES {
+            let count = match table {
+                0 => repo::delete_expired_attempts(db, batch).await?,
+                1 => repo::delete_expired_codes(db, batch).await?,
+                _ => repo::delete_expired_sessions(db, batch).await?,
+            };
+            deleted = deleted.saturating_add(count);
+            if count < u64::try_from(batch).unwrap_or(u64::MAX) {
+                break;
+            }
+        }
+    }
+    Ok(deleted)
+}
+
+/// Runs [`cleanup`] every 5 minutes on the current Tokio runtime.
+pub fn spawn_cleanup(db: PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+        loop {
+            interval.tick().await;
+            match cleanup(&db, CLEANUP_BATCH).await {
+                Ok(deleted) => tracing::debug!(
+                    deleted = i64::try_from(deleted).unwrap_or(i64::MAX),
+                    "expired sessions cleaned up"
+                ),
+                Err(error) => tracing::warn!(
+                    error.type = crate::error::AppError::from(error).kind(),
+                    "session cleanup failed"
+                ),
+            }
+        }
+    });
+}
+
 /// The token's key, refreshing the keys once for an unknown `kid`.
 async fn key_for<'t>(
     keys: &KeyCache,
