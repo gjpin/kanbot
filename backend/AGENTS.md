@@ -12,7 +12,8 @@ Code is organized **by feature first, then by layer** inside each feature:
 backend/
 ├── openapi.json             # the API contract (generated, committed; the frontend's client is built from it)
 ├── build.rs                 # rebuilds when a migration is added
-├── compose.yaml             # local Postgres; `--profile observability` adds collector + Grafana
+├── compose.yaml             # local Postgres and Authelia; `--profile observability` adds collector + Grafana
+├── dev/                     # local stack: auth-setup.sh, authelia/ config, dev.env; .generated/ is git-ignored
 ├── otel-collector/          # collector config for local development (filters, limits)
 ├── migrations/              # sqlx migrations, one file per change
 ├── .sqlx/                   # offline query metadata from `cargo sqlx prepare` (committed)
@@ -33,8 +34,14 @@ backend/
 │   │   ├── problem.rs       # RFC 9457 problem details, ErrorCode
 │   │   ├── client_ip.rs     # client address behind trusted proxies (X-Forwarded-For)
 │   │   ├── middleware/      # cross-cutting middleware (request telemetry, security headers, rate limit, ...)
-│   │   └── extract.rs       # shared custom extractors (AuthUser, ...)
-│   └── <feature>/           # e.g. boards/, cards/, users/
+│   │   └── extract.rs       # shared custom extractors (AuthUser, RequireAdmin)
+│   ├── auth/                # OIDC: config, discovery, JWKS key cache, access-token validation, authentication middleware
+│   ├── users/               # users table (upserted on each authenticated request), /me
+│   ├── sessions/            # kanbot sessions: /auth/* login flow, native handoff, IdP token refresh (phase 3)
+│   ├── authz/               # Cedar authorization: can(), visible(), built-in and deployer policies (phase 4)
+│   ├── organizations/       # organizations, their admins and team links (phase 4)
+│   ├── teams/               # teams, members and maintainers, IdP group sync (phase 4)
+│   └── <feature>/           # e.g. boards/, cards/
 │       ├── mod.rs           # pub fn routes() -> OpenApiRouter<AppState>
 │       ├── model.rs         # domain types: validated newtypes and entities
 │       ├── dto.rs           # request/response types (serde), converted to/from model types
@@ -43,13 +50,19 @@ backend/
 │       └── repo.rs          # database access
 ├── tests/
 │   ├── common/mod.rs        # shared test setup (test app over a #[sqlx::test] pool)
+│   ├── common/idp.rs        # test IdP: discovery, a changeable JWKS, token signing (§4a)
 │   ├── fixtures/            # test-only migrations
+│   ├── fixtures/oidc/       # committed test-only signing keys (§4a)
+│   ├── authelia.rs          # end-to-end tests against the local Authelia
 │   └── <feature>.rs         # HTTP-level integration tests, one file per feature
+├── examples/dev_token.rs    # `cargo run --example dev-token -- alice`: a local Authelia access token
 ├── benches/                 # criterion benchmarks
 └── fuzz/                    # cargo-fuzz targets
 ```
 
 Create `http/extract.rs`, `benches/` and `fuzz/` only when there is something to put in them.
+
+Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Modules, files and variables above and below that are not in the tree yet are planned. Their phase is noted where it is later than phase 2. Until they exist, create them only as the plan says.
 
 ### Layering rules
 
@@ -159,25 +172,68 @@ Tests (`#[test]`, `#[cfg(test)]`) may use `unwrap`, `expect`, `panic!`, indexing
 - `RequestBodyLimitLayer` + `DefaultBodyLimit`: a body size limit.
 - Database pool: `max_connections`, `acquire_timeout` and a PostgreSQL `statement_timeout`.
 
-- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`. Applied to the telemetry relay today.
+- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`. Applied to the telemetry relay today, and to the API routes from phase 2 (below).
+- Load shedding: a global cap on requests in flight (`tower` `ConcurrencyLimit` + `LoadShed`). Above it, requests get `503` with `Retry-After`.
 
-**Still to decide** before the API is exposed publicly: rate limits for the API routes themselves (the same middleware applies).
+### Rate limits
+
+The defaults are sized for a 10,000-employee company where everyone may reach kanbot through one corporate IP: about 1,000 requests/s at peak (30% active, roughly 0.3 requests/s each). Every value is configurable.
+
+| Limit | Variable(s) | Default |
+|---|---|---|
+| Per client IP, all requests | `RATE_LIMIT_IP_PER_SECOND`, `RATE_LIMIT_IP_BURST` | 2000/s, burst 4000 |
+| Per client IP, failed authentications (401) | `RATE_LIMIT_AUTH_FAILURE_PER_SECOND`, `RATE_LIMIT_AUTH_FAILURE_BURST` | 50/s, burst 500 |
+| Per client IP, login endpoints (phase 3) | `RATE_LIMIT_LOGIN_PER_SECOND`, `RATE_LIMIT_LOGIN_BURST` | 100/s, burst 500 |
+| Per user | `RATE_LIMIT_USER_PER_SECOND`, `RATE_LIMIT_USER_BURST` | 20/s, burst 100 |
+| Per user, telemetry relay | `RATE_LIMIT_TELEMETRY_PER_SECOND`, `RATE_LIMIT_TELEMETRY_BURST` | 1/s, burst 20 |
+| Requests in flight per instance | `MAX_IN_FLIGHT_REQUESTS` | 512 (then `503` with `Retry-After`) |
+| Database pool per instance | `DATABASE_MAX_CONNECTIONS` | 10 |
+
+- Limits are kept in memory per server instance, so N instances allow N times the traffic. Say so wherever deployment is documented.
+- IPv6 clients are keyed by their **/64** prefix, IPv4 clients by their full address.
+- Client IPs come from `http/client_ip.rs`, so `TRUSTED_PROXIES` applies.
+- The failed-authentication limiter is checked before credentials are validated. The per-user limiter runs after authentication, keyed by the user ID.
+- Rejections are `429 rate_limited` problems with `Retry-After`.
+- A rate limit of zero, or one that is not a number, is a startup error.
 
 Every outbound call (HTTP or database) must have a timeout. Never spawn unbounded work per request.
 
 ### Configuration
 
-All from environment variables (`src/config.rs`, `src/telemetry.rs`):
+All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/telemetry.rs`). Invalid values stop the server at startup; it never falls back to a default for a value that was set. The phase column refers to [`docs/plan/auth.md`](../docs/plan/auth.md); a variable with a phase is not read until that phase lands.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `DATABASE_URL` | required | PostgreSQL connection string (secret) |
-| `LISTEN_ADDR` | `127.0.0.1:3000` | HTTP listen address |
-| `CORS_ALLOWED_ORIGINS` | none | Browser origins allowed cross-origin, comma-separated |
-| `TRUSTED_PROXIES` | none | Reverse proxies (IPs, CIDRs) whose `X-Forwarded-For` is trusted |
-| `TELEMETRY_RELAY_UPSTREAM` | unset (relay off) | OTLP/HTTP collector the app's telemetry is relayed to |
-| `OTEL_*` | SDK defaults | OpenTelemetry SDK settings (§3a) |
-| `RUST_LOG` | `info` | Log and span filter |
+| Variable | Phase | Default | Meaning |
+|---|---|---|---|
+| `DATABASE_URL` | | required | PostgreSQL connection string (secret) |
+| `DATABASE_MAX_CONNECTIONS` | 2 | `10` | Pool size per instance |
+| `LISTEN_ADDR` | | `127.0.0.1:3000` | HTTP listen address |
+| `CORS_ALLOWED_ORIGINS` | | none | Browser origins allowed cross-origin, comma-separated. Optional when the backend serves the web build (`WEB_DIR`) |
+| `TRUSTED_PROXIES` | | none | Reverse proxies (IPs, CIDRs) whose `X-Forwarded-For` is trusted |
+| `TELEMETRY_RELAY_UPSTREAM` | | unset (relay off) | OTLP/HTTP collector the app's telemetry is relayed to |
+| `OTEL_*` | | SDK defaults | OpenTelemetry SDK settings (§3a) |
+| `RUST_LOG` | | `info` | Log and span filter |
+| `OIDC_ISSUER` | 2 | required | Must equal the tokens' `iss` and the discovery document's `issuer` exactly. HTTPS only |
+| `OIDC_AUDIENCE` | 2 | required | Accepted access-token audience, for example `kanbot-api` |
+| `OIDC_ROLES_CLAIM` | 2 | required | Dot path to the roles array (`groups`, `roles`, `realm_access.roles`) |
+| `OIDC_ADMIN_ROLE` | 2 | required | Role that grants platform admin, for example `kanbot-admin`. Must not be empty |
+| `OIDC_USER_ROLE` | 2 | required | Role that grants access, for example `kanbot-user`. Must not be empty |
+| `OIDC_SUBJECT_CLAIM` | 2 | `sub` | Claim that identifies the user. `oid` for Entra ID |
+| `OIDC_ALLOWED_CLIENTS` | 2 | any | Comma-separated client IDs, matched against `azp`, then `client_id`, then `cid`. Must not contain `OIDC_AUDIENCE` |
+| `OIDC_JWKS_TTL` | 2 | `3600` | Seconds between JWKS refreshes |
+| `OIDC_JWKS_ALLOWED_ORIGINS` | 2 | none | Extra HTTPS origins allowed to serve the JWKS |
+| `OIDC_CA_FILE` | 2 | none | PEM bundle trusted for the IdP, in addition to the system roots |
+| `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP` | 2 | `false` | Allows `http://` issuers on numeric loopback hosts only. Development and tests only |
+| `RATE_LIMIT_*`, `MAX_IN_FLIGHT_REQUESTS` | 2, 3 | see [Rate limits](#rate-limits) | |
+| `OIDC_CLIENT_ID` | 3 | required | Kanbot's confidential client. Must differ from `OIDC_AUDIENCE` |
+| `OIDC_CLIENT_SECRET` / `OIDC_CLIENT_SECRET_FILE` | 3 | one required | Its secret (`SecretString`) |
+| `OIDC_SCOPES` | 3 | `openid profile email offline_access` | Add what the IdP needs for the roles claim, for example `groups` |
+| `PUBLIC_URL` | 3 | required | External base URL, for example `https://kanbot.example.com`. Used for the callback URL, cookie checks and CSRF origin checks |
+| `SESSION_ENCRYPTION_KEYS` / `SESSION_ENCRYPTION_KEYS_FILE` | 3 | one required | Comma-separated base64 keys, each with a key ID (secret). The first encrypts and all decrypt, so keys can be rotated |
+| `SESSION_IDLE_TIMEOUT` | 3 | `7d` | A session ends after this long without use |
+| `SESSION_ABSOLUTE_TIMEOUT` | 3 | `30d` | A session ends after this long regardless. Sessions also end when the IdP refuses a refresh |
+| `WEB_DIR` | 3 | unset (off) | Directory with the Flutter web build to serve at `/` |
+| `OIDC_GROUPS_CLAIM` | 4 | value of `OIDC_ROLES_CLAIM` | Dot path to the groups array used for team sync and Cedar `principal.groups` |
+| `AUTHZ_POLICY_FILE` | 4 | none | Deployer Cedar policies. `forbid` only: a file containing any `permit` stops startup |
 
 ## 3a. Observability (OpenTelemetry)
 
@@ -193,7 +249,25 @@ Traces, logs and metrics are OpenTelemetry, exported over OTLP/HTTP (protobuf) t
 
 ### The telemetry relay
 
-The app cannot hold collector credentials, so it sends OTLP to the API at `/telemetry/v1/{traces,logs,metrics}` (`src/telemetry_relay/`), which forwards it to `TELEMETRY_RELAY_UPSTREAM`. The relay is public: keep its protections (body limit `MAX_BODY_BYTES`, protobuf/JSON only, no compressed bodies, no client headers forwarded, per-client rate limit). The collector must still filter what it accepts; `otel-collector/otelcol-config.yaml` shows the minimum (memory limiter, only our service names).
+The app cannot hold collector credentials, so it sends OTLP to the API at `/telemetry/v1/{traces,logs,metrics}` (`src/telemetry_relay/`), which forwards it to `TELEMETRY_RELAY_UPSTREAM`. The relay is public until phase 2.7, which makes it require an authenticated user who has opted in (`users.telemetry_opt_in`, default `false`, else `403 telemetry_disabled`) and never adds user identity to what it forwards. Keep its protections (body limit `MAX_BODY_BYTES`, protobuf/JSON only, no compressed bodies, no client headers forwarded, per-client rate limit). The collector must still filter what it accepts; `otel-collector/otelcol-config.yaml` shows the minimum (memory limiter, only our service names).
+
+## 3b. Authentication and security invariants
+
+Users sign in at an external OIDC IdP; kanbot has no passwords or local accounts. The design, and the IdP requirements and setup guides, are in [`docs/oidc.md`](../docs/oidc.md). An API request is authenticated in one of two ways, and both resolve to the same validated user and roles:
+
+1. **An IdP JWT access token** in `Authorization: Bearer`, validated locally against the IdP's JWKS (CLI, scripts, CI, agents, other services).
+2. **A kanbot session** (phase 3), for kanbot's own apps: an `HttpOnly` cookie on web, a `kbs_` bearer token on native. The backend keeps the IdP tokens server-side, encrypted, and checks the stored access token with exactly the rules used for bearer tokens.
+
+These rules hold in every change:
+
+- **Secure by default.** Every route requires authentication except an explicit public list: `/health` and `/ready`; from phase 3, `/auth/login`, `/auth/callback`, `/auth/token`, `/auth/config` and the web build's static files. A test walks every operation in `http::openapi()`, plus the telemetry relay routes, and fails for any route that is neither on the list nor returns `401` without credentials. Adding a public route means adding it to that list on purpose.
+- **Never log, trace or put in metrics:** tokens, codes, cookies, the client secret or session keys; raw claims other than issuer, subject ID and client ID; display names or emails. Record internal IDs (`user.id`) instead.
+- **Database errors** are logged as the error kind, SQLSTATE and constraint name only. Postgres error details can contain row values (`Key (subject)=(...) already exists`).
+- **Auth failures return stable problem codes only**, never the reason. `401` responses carry `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750) when a bearer token was presented, and plain `WWW-Authenticate: Bearer` when none was. The reason goes only into the bounded `reason` attribute of the `kanbot.auth.token.rejections` metric.
+- **Invalid credentials are a `401`**, never treated as anonymous. Until the IdP's keys have loaded, authenticated requests get `503 unavailable`, not `401`.
+- **Outbound calls** (IdP discovery, JWKS, token endpoint) have connect and total timeouts, do not follow redirects, and cap how many response bytes they read.
+- **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom`; never `rand`. Secrets are compared by looking up their SHA-256 hash in the database, never by comparing strings in memory.
+- **Authorization** (phase 4) is decided by the `authz` module with Cedar. Every feature that touches organization data calls `authz`; never write an ad hoc role check in a handler or service.
 
 ## 4. Testing tools
 
@@ -201,6 +275,13 @@ The app cannot hold collector credentials, so it sends OTLP to the API at `/tele
 - Anything that parses untrusted input should get a `cargo-fuzz` target under `fuzz/`. Fuzzing needs nightly and is run manually, not in CI.
 - CI runs `cargo mutants` on changed code. A missed mutant must be fixed with a better test.
 - CI enforces a minimum line coverage with `cargo llvm-cov`. Do not lower the threshold.
+
+## 4a. Testing authentication
+
+- **Test IdP** (`tests/common/idp.rs`): an axum server on `127.0.0.1:0` that serves discovery and a JWKS that tests can change at runtime (rotate, empty, broken, oversized, redirect, slow), counts the requests it gets, and signs tokens with any claims and header. The app under test reaches it through `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP`. Use it for token validation, key cache and discovery tests; do not stub the validator.
+- **Fixture keys** (`tests/fixtures/oidc/`): committed signing keys for **tests only** (RSA-2048 keys A and B for rotation, an RSA-1024 key that must be rejected, P-256, P-384 and Ed25519 keys, and their public JWKs). Its README says so and lists the `openssl` commands that generated them. Never use them outside tests, and never put any other key there. A secret scanner needs an allowlist for this folder.
+- **Local Authelia** (`tests/authelia.rs`): end-to-end tests with real tokens from the local Authelia, obtained by the programmatic login helper shared with `examples/dev_token.rs`. The dev users and their dev-only passwords are documented in `dev/authelia/users_database.yml`: `alice` (`kanbot-admin`), `bob` (`kanbot-user`), `carol` (no kanbot group) and `dave` (`kanbot-user` and `contractors`).
+- Database and Authelia tests **fail rather than skip** when their service is missing.
 
 ## 5. Supply chain
 
@@ -222,10 +303,19 @@ Follow the exception steps in the root `AGENTS.md`. In this crate:
 
 ## Before you finish: run these from `backend/`, all must pass
 
-The tests need PostgreSQL. Database tests use `#[sqlx::test]`, which creates a fresh database per test on the server at `DATABASE_URL`, applies `migrations/`, and drops it afterwards. They fail, rather than skip, when `DATABASE_URL` is not set. Never share data between tests through a common database.
+The tests need PostgreSQL and the local Authelia (§4a). Database tests use `#[sqlx::test]`, which creates a fresh database per test on the server at `DATABASE_URL`, applies `migrations/`, and drops it afterwards. They fail, rather than skip, when `DATABASE_URL` is not set. Never share data between tests through a common database.
+
+Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use domains such as `localhost`, so the name has to resolve to loopback: add this line to `/etc/hosts` once per machine:
+
+```
+127.0.0.1 auth.kanbot.internal
+```
+
+`dev/auth-setup.sh` generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. Until it exists (phase 2.9 of [`docs/plan/auth.md`](../docs/plan/auth.md)), skip that line: `compose.yaml` then starts Postgres only.
 
 ```sh
-docker compose up -d
+sh dev/auth-setup.sh
+docker compose up -d   # Postgres and Authelia
 export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
 
 cargo fmt --all --check
