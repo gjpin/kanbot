@@ -36,6 +36,10 @@ pub enum Rejection {
     /// Valid, but with neither the user nor the admin role: `403`.
     NoRole,
     ClientNotAllowed,
+    /// A kanbot session token that is unknown or expired.
+    SessionInvalid,
+    /// A kanbot session the identity provider ended (refresh refused).
+    SessionEnded,
 }
 
 impl Rejection {
@@ -55,6 +59,8 @@ impl Rejection {
             Self::MissingClaim => "missing_claim",
             Self::NoRole => "no_role",
             Self::ClientNotAllowed => "client_not_allowed",
+            Self::SessionInvalid => "session_invalid",
+            Self::SessionEnded => "session_ended",
         }
     }
 }
@@ -362,6 +368,8 @@ mod tests {
             (Rejection::MissingClaim, "missing_claim"),
             (Rejection::NoRole, "no_role"),
             (Rejection::ClientNotAllowed, "client_not_allowed"),
+            (Rejection::SessionInvalid, "session_invalid"),
+            (Rejection::SessionEnded, "session_ended"),
         ];
         for (rejection, reason) in all {
             assert_eq!(rejection.reason(), reason);

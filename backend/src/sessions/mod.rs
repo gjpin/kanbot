@@ -14,7 +14,9 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::state::AppState;
 
-pub use handlers::{LOGIN_COOKIE, SESSION_COOKIE, TelemetryAvailable, cookie};
+pub use handlers::{
+    LOGIN_COOKIE, SESSION_COOKIE, TelemetryAvailable, clear_session_cookie, cookie,
+};
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()

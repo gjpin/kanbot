@@ -476,6 +476,226 @@ pub async fn redeem_code(
     })
 }
 
+/// Why a session gives no user.
+pub enum SessionRefusal {
+    /// Unknown, idle too long, or past its absolute lifetime.
+    Invalid,
+    /// The identity provider refused to refresh it, or the refreshed token
+    /// was refused: the session has been deleted.
+    Ended,
+    /// The access token is valid but carries no kanbot role.
+    NoRole,
+    /// A failure of the server or the identity provider.
+    Error(AppError),
+}
+
+impl From<AppError> for SessionRefusal {
+    fn from(error: AppError) -> Self {
+        Self::Error(error)
+    }
+}
+
+impl From<sqlx::Error> for SessionRefusal {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Error(error.into())
+    }
+}
+
+/// The user behind a session, and the session.
+pub struct SessionUser {
+    pub user: crate::users::model::AuthenticatedUser,
+    pub session_id: Uuid,
+    pub kind: Platform,
+}
+
+/// The user of a session token (`kbs_...`, from the cookie or a bearer
+/// header). The stored access token is checked with exactly the bearer
+/// rules, after a refresh when it expires within a minute.
+///
+/// # Errors
+///
+/// [`SessionRefusal`].
+pub async fn authenticate_session(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    token: &str,
+) -> Result<SessionUser, SessionRefusal> {
+    let hash = secrets::presented(secrets::SESSION_TOKEN, token).ok_or(SessionRefusal::Invalid)?;
+    let session = repo::find_session(db, &hash)
+        .await?
+        .ok_or(SessionRefusal::Invalid)?;
+    if session.touch_due {
+        repo::touch_session(db, session.id, config.idle_timeout.as_secs_f64()).await?;
+    }
+    let principal = if session.refresh_due {
+        refresh(db, keys, config, session.id).await?
+    } else {
+        verify_stored(keys, config, session.id, &session.idp_access_token).await?
+    };
+    let user = users::authenticate(db, &principal).await?;
+    if user.id.as_uuid() != session.user_id {
+        // Cannot happen unless the issuer or subject claim was reconfigured.
+        tracing::warn!(session.id = %session.id, "session token belongs to another user");
+        return Err(SessionRefusal::Invalid);
+    }
+    let kind = Platform::parse(&session.kind).unwrap_or(Platform::Web);
+    Ok(SessionUser {
+        user,
+        session_id: session.id,
+        kind,
+    })
+}
+
+/// Checks a stored access token with the bearer rules.
+async fn verify_stored(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session_id: Uuid,
+    sealed: &[u8],
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let token = crypto::open(&config.keys, session_id, Field::AccessToken, sealed)
+        .map_err(|_| SessionRefusal::Invalid)?;
+    let (unverified, key) = key_for(keys, token.expose_secret())
+        .await
+        .map_err(|_| SessionRefusal::Invalid)?;
+    unverified
+        .verify(&key, keys.config(), now())
+        .map_err(|rejection| match rejection {
+            Rejection::NoRole => SessionRefusal::NoRole,
+            _ => SessionRefusal::Invalid,
+        })
+}
+
+/// Refreshes the session's access token under a row lock, unless another
+/// request already did. Roles are re-evaluated: the new token passes the
+/// bearer rules or the session ends.
+async fn refresh(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session_id: Uuid,
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let mut tx = db.begin().await?;
+    let locked = repo::lock_tokens(&mut tx, session_id)
+        .await?
+        .ok_or(SessionRefusal::Invalid)?;
+    let (true, Some(sealed_refresh)) = (locked.refresh_due, locked.idp_refresh_token.as_deref())
+    else {
+        // Refreshed meanwhile, or nothing to refresh with: use what is
+        // stored while it is still valid.
+        tx.commit().await?;
+        return verify_stored(keys, config, session_id, &locked.idp_access_token).await;
+    };
+    let refresh_token = crypto::open(
+        &config.keys,
+        session_id,
+        Field::RefreshToken,
+        sealed_refresh,
+    )
+    .map_err(|_| SessionRefusal::Invalid)?;
+    let endpoint = keys
+        .discovery()
+        .and_then(|discovery| discovery.token_endpoint.clone())
+        .ok_or(SessionRefusal::Error(AppError::Unavailable))?;
+    let refreshed: Result<TokenResponse, _> = keys
+        .client()
+        .post_form(
+            endpoint,
+            &config.client_id,
+            &config.client_secret,
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token.expose_secret()),
+            ],
+            MAX_TOKEN_RESPONSE_BYTES,
+        )
+        .await;
+    let tokens = match refreshed {
+        Ok(tokens) => tokens,
+        Err(crate::auth::discovery::FetchError::Status(reqwest::StatusCode::BAD_REQUEST)) => {
+            // invalid_grant: the IdP ended the grant (sign-out, revocation,
+            // expiry). So does kanbot.
+            repo::delete_session_in(&mut tx, session_id).await?;
+            tx.commit().await?;
+            tracing::info!(session.id = %session_id, "session ended: refresh refused");
+            return Err(SessionRefusal::Ended);
+        }
+        Err(error) => {
+            drop(tx);
+            tracing::warn!(%error, session.id = %session_id, "session refresh failed");
+            // The stored token may still be valid for a few seconds.
+            return verify_stored(keys, config, session_id, &locked.idp_access_token)
+                .await
+                .map_err(|refusal| match refusal {
+                    SessionRefusal::Invalid => SessionRefusal::Error(AppError::Unavailable),
+                    other => other,
+                });
+        }
+    };
+    let principal = match key_for(keys, &tokens.access).await {
+        Ok((unverified, key)) => unverified.verify(&key, keys.config(), now()),
+        Err(rejection) => Err(rejection),
+    };
+    let principal = match principal {
+        Ok(principal) => principal,
+        Err(rejection) => {
+            repo::delete_session_in(&mut tx, session_id).await?;
+            tx.commit().await?;
+            tracing::info!(session.id = %session_id, reason = rejection.reason(), "session ended: refreshed token refused");
+            return Err(if rejection == Rejection::NoRole {
+                SessionRefusal::NoRole
+            } else {
+                SessionRefusal::Ended
+            });
+        }
+    };
+    store_refreshed(&mut tx, config, session_id, &tokens, principal.expires_at).await?;
+    tx.commit().await?;
+    tracing::info!(session.id = %session_id, "session refreshed");
+    Ok(principal)
+}
+
+/// Seals and stores refreshed tokens, keeping the stored refresh and ID
+/// tokens when the identity provider sends no new ones.
+async fn store_refreshed(
+    tx: &mut sqlx::PgConnection,
+    config: &SessionConfig,
+    session_id: Uuid,
+    tokens: &TokenResponse,
+    access_expires_at: u64,
+) -> Result<(), AppError> {
+    let seal = |field: Field, value: &str| {
+        crypto::seal(
+            &config.keys,
+            session_id,
+            field,
+            &SecretString::from(value.to_owned()),
+        )
+    };
+    let access = seal(Field::AccessToken, &tokens.access)?;
+    let rotated = tokens
+        .refresh
+        .as_deref()
+        .map(|token| seal(Field::RefreshToken, token))
+        .transpose()?;
+    let id = tokens
+        .id
+        .as_deref()
+        .map(|token| seal(Field::IdToken, token))
+        .transpose()?;
+    repo::store_refreshed(
+        tx,
+        session_id,
+        &access,
+        rotated.as_deref(),
+        id.as_deref(),
+        i64::try_from(access_expires_at).unwrap_or(i64::MAX),
+    )
+    .await?;
+    Ok(())
+}
+
 /// The token's key, refreshing the keys once for an unknown `kid`.
 async fn key_for<'t>(
     keys: &KeyCache,

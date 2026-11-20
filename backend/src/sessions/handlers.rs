@@ -43,6 +43,14 @@ pub fn cookie<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
     values.next().is_none().then_some(value)
 }
 
+/// A `Set-Cookie` value that removes the session cookie.
+#[must_use]
+pub fn clear_session_cookie() -> HeaderValue {
+    HeaderValue::from_static(
+        "__Host-kanbot_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
+    )
+}
+
 /// A `Set-Cookie` header value for a `__Host-` cookie: `Secure`,
 /// `HttpOnly`, `Path=/`, no `Domain`.
 fn set_cookie(

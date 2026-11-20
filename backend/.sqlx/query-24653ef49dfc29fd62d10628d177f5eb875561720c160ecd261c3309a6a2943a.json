@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions\n         SET last_used_at = now(),\n             idle_expires_at = LEAST(now() + make_interval(secs => $2), absolute_expires_at)\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "24653ef49dfc29fd62d10628d177f5eb875561720c160ecd261c3309a6a2943a"
+}

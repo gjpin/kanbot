@@ -1006,3 +1006,385 @@ async fn config_tells_apps_where_to_sign_in(pool: PgPool) {
     let body = problem(get(&with_relay, "/auth/config").await).await;
     assert_eq!(body["telemetry_available"], true);
 }
+
+/// Signs in on the web; returns the session token.
+async fn web_session(app: &Router, idp: &TestIdp, subject: &str) -> String {
+    let started = start(app, "/auth/login?platform=web").await;
+    answer(
+        idp,
+        &issued_claims(&idp.issuer, subject, &["kanbot-user"]),
+        &id_claims(idp, subject, &started.nonce),
+    );
+    let response = callback(app, &started.state, "", started.binding.as_deref()).await;
+    set_cookies(&response)
+        .iter()
+        .find_map(|cookie| cookie.strip_prefix("__Host-kanbot_session="))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+async fn me_with(app: &Router, header_name: header::HeaderName, value: &str) -> Response {
+    app.clone()
+        .oneshot(
+            Request::get("/me")
+                .header(header_name, value)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn me_by_cookie(app: &Router, token: &str) -> Response {
+    me_with(
+        app,
+        header::COOKIE,
+        &format!("__Host-kanbot_session={token}"),
+    )
+    .await
+}
+
+async fn me_by_bearer(app: &Router, token: &str) -> Response {
+    me_with(app, header::AUTHORIZATION, &format!("Bearer {token}")).await
+}
+
+#[sqlx::test]
+async fn sessions_authenticate_by_cookie_and_by_bearer(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let web = web_session(&app, &idp, "alice").await;
+    let code = native_code(&app, &idp, "bob").await;
+    let (_, body) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    let native = body["session_token"].as_str().unwrap().to_owned();
+
+    let response = me_by_cookie(&app, &web).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(problem(response).await["display_name"], "alice (display)");
+    let response = me_by_bearer(&app, &native).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(problem(response).await["display_name"], "bob (display)");
+    // A web token also works as a bearer token (same session).
+    assert_eq!(me_by_bearer(&app, &web).await.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn unknown_sessions_are_refused(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let unknown = secrets::issue(secrets::SESSION_TOKEN).unwrap();
+    let unknown = unknown.value.expose_secret();
+
+    // As a bearer token: 401, like any bad credential.
+    let response = me_by_bearer(&app, unknown).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[header::WWW_AUTHENTICATE],
+        r#"Bearer error="invalid_token""#
+    );
+
+    // As a cookie: the browser forgets it and continues anonymously.
+    let response = me_by_cookie(&app, unknown).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+    assert!(set_cookies(&response).iter().any(|cookie| {
+        cookie.starts_with("__Host-kanbot_session=;") && cookie.contains("Max-Age=0")
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/auth/login?platform=web")
+                .header(header::COOKIE, format!("__Host-kanbot_session={unknown}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "can sign in again"
+    );
+}
+
+#[sqlx::test]
+async fn sessions_end_when_idle_or_too_old(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    for column in ["idle", "absolute"] {
+        let token = web_session(&app, &idp, "alice").await;
+        assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+        let hash = secrets::hash(&token);
+        if column == "idle" {
+            sqlx::query!(
+                "UPDATE sessions SET idle_expires_at = now() - interval '1 second' WHERE token_hash = $1",
+                hash.as_slice()
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query!(
+                "UPDATE sessions SET absolute_expires_at = now() - interval '1 second' WHERE token_hash = $1",
+                hash.as_slice()
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            me_by_bearer(&app, &token).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{column}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn use_extends_the_idle_expiry_at_most_once_a_minute(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let version = || async {
+        sqlx::query_scalar!(r#"SELECT xmin::text AS "v!" FROM sessions"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let before = version().await;
+    me_by_bearer(&app, &token).await;
+    assert_eq!(version().await, before, "used within the minute: no write");
+
+    sqlx::query!(
+        "UPDATE sessions SET last_used_at = now() - interval '2 minutes',
+                             idle_expires_at = now() + interval '1 hour'"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    me_by_bearer(&app, &token).await;
+    let extended = sqlx::query_scalar!(
+        r#"SELECT idle_expires_at > now() + interval '6 days'
+                  AND last_used_at > now() - interval '10 seconds' AS "ok!" FROM sessions"#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(extended);
+
+    // Never past the absolute expiry.
+    sqlx::query!(
+        "UPDATE sessions SET last_used_at = now() - interval '2 minutes',
+                             absolute_expires_at = now() + interval '1 hour'"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    me_by_bearer(&app, &token).await;
+    let capped = sqlx::query_scalar!(
+        r#"SELECT idle_expires_at = absolute_expires_at AS "ok!" FROM sessions"#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(capped);
+}
+
+/// Makes the session's access token due for a refresh.
+async fn expire_soon(pool: &PgPool) {
+    sqlx::query!("UPDATE sessions SET access_expires_at = now() + interval '30 seconds'")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Makes the identity provider answer refreshes with a new access token
+/// for `subject` with `groups`, and `refresh_token` if any.
+fn answer_refresh(
+    idp: &TestIdp,
+    subject: &str,
+    groups: &[&str],
+    refresh_token: Option<&str>,
+) -> Value {
+    let mut access = issued_claims(&idp.issuer, subject, groups);
+    access["exp"] = json!(now().checked_add(900).unwrap());
+    let mut body = json!({
+        "access_token": sign("rsa-a", &access),
+        "token_type": "Bearer",
+        "expires_in": 900,
+    });
+    if let Some(refresh_token) = refresh_token {
+        body["refresh_token"] = json!(refresh_token);
+    }
+    idp.set_token(Reply::Json(body));
+    access
+}
+
+async fn stored_refresh_token(pool: &PgPool) -> String {
+    let row = sqlx::query!("SELECT id, idp_refresh_token FROM sessions")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    crypto::open(
+        &common::session_config().keys,
+        row.id,
+        Field::RefreshToken,
+        &row.idp_refresh_token.unwrap(),
+    )
+    .unwrap()
+    .expose_secret()
+    .to_owned()
+}
+
+#[sqlx::test]
+async fn an_expiring_access_token_is_refreshed_and_rotated(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    let access = answer_refresh(&idp, "alice", &["kanbot-admin"], Some("rotated-refresh"));
+
+    let response = me_by_bearer(&app, &token).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    // Roles come from the new token.
+    assert_eq!(problem(response).await["platform_role"], "admin");
+    let requests = idp.token_requests();
+    assert_eq!(requests.len(), 2);
+    let refresh = &requests[1];
+    assert_eq!(refresh.form["grant_type"], "refresh_token");
+    assert_eq!(refresh.form["refresh_token"], "refresh-from-idp");
+    assert!(
+        refresh
+            .authorization
+            .as_deref()
+            .unwrap()
+            .starts_with("Basic ")
+    );
+    assert_eq!(stored_refresh_token(&pool).await, "rotated-refresh");
+    let expiry_matches = sqlx::query_scalar!(
+        r#"SELECT access_expires_at = to_timestamp($1::bigint) AS "ok!" FROM sessions"#,
+        i64::try_from(access["exp"].as_u64().unwrap()).unwrap()
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(expiry_matches);
+
+    // Not due any more: no new refresh.
+    assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+    assert_eq!(idp.token_requests().len(), 2);
+}
+
+#[sqlx::test]
+async fn a_refresh_without_rotation_keeps_the_refresh_token(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    answer_refresh(&idp, "alice", &["kanbot-user"], None);
+
+    assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+    assert_eq!(stored_refresh_token(&pool).await, "refresh-from-idp");
+}
+
+#[sqlx::test]
+async fn concurrent_requests_refresh_once(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    answer_refresh(&idp, "alice", &["kanbot-user"], Some("rotated-refresh"));
+
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        let token = token.clone();
+        requests.spawn(async move { me_by_bearer(&app, &token).await.status() });
+    }
+    for status in requests.join_all().await {
+        assert_eq!(status, StatusCode::OK);
+    }
+    // The sign-in's code exchange, then one refresh.
+    assert_eq!(idp.token_requests().len(), 2);
+}
+
+#[sqlx::test]
+async fn a_refused_refresh_ends_the_session(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    idp.set_token(Reply::Status(StatusCode::BAD_REQUEST));
+
+    assert_eq!(
+        me_by_bearer(&app, &token).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(session_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn a_refreshed_token_without_a_role_ends_the_session(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    answer_refresh(&idp, "alice", &["staff"], None);
+
+    let response = me_by_bearer(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(session_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn an_unreachable_idp_keeps_a_still_valid_session(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    idp.set_token(Reply::Status(StatusCode::SERVICE_UNAVAILABLE));
+
+    // The stored token is still valid for a few seconds.
+    assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+    assert_eq!(session_count(&pool).await, 1);
+}
+
+#[sqlx::test]
+async fn an_unreachable_idp_with_an_expired_token_is_unavailable(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let mut expired = issued_claims(&idp.issuer, "alice", &["kanbot-user"]);
+    expired["exp"] = json!(now().checked_sub(120).unwrap());
+    let id = sqlx::query_scalar!("SELECT id FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let sealed = crypto::seal(
+        &common::session_config().keys,
+        id,
+        Field::AccessToken,
+        &secrecy::SecretString::from(sign("rsa-a", &expired)),
+    )
+    .unwrap();
+    sqlx::query!(
+        "UPDATE sessions SET idp_access_token = $1, access_expires_at = now() - interval '2 minutes'",
+        sealed
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    idp.set_token(Reply::Status(StatusCode::SERVICE_UNAVAILABLE));
+
+    let response = me_by_bearer(&app, &token).await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        session_count(&pool).await,
+        1,
+        "the session survives an IdP outage"
+    );
+}

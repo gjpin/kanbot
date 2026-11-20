@@ -38,6 +38,7 @@ use crate::{
         },
         problem::{ErrorCode, Problem},
     },
+    sessions::{self, secrets, service::SessionRefusal},
     state::AppState,
     users::{model::AuthenticatedUser, service as users},
 };
@@ -105,10 +106,16 @@ impl Authentication {
     }
 }
 
-/// What the request presented.
+/// What the request presented. `Authorization` wins over the cookie.
 enum Credentials<'a> {
     None,
+    /// An access token from the identity provider (a JWT).
     Bearer(&'a str),
+    /// A kanbot session token, `kbs_...`.
+    Session {
+        token: &'a str,
+        from_cookie: bool,
+    },
     /// An `Authorization` header that is not `Bearer <token>`.
     Unusable,
 }
@@ -116,24 +123,47 @@ enum Credentials<'a> {
 fn credentials(headers: &HeaderMap) -> Credentials<'_> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let Some(value) = values.next() else {
-        return Credentials::None;
+        return match sessions::cookie(headers, sessions::SESSION_COOKIE) {
+            Some(token) => Credentials::Session {
+                token,
+                from_cookie: true,
+            },
+            None => Credentials::None,
+        };
     };
     if values.next().is_some() {
         return Credentials::Unusable;
     }
-    value
-        .to_str()
-        .ok()
-        .and_then(|value| {
-            let (scheme, token) = value.split_once(' ')?;
-            scheme.eq_ignore_ascii_case("bearer").then_some(token)
-        })
-        .map_or(Credentials::Unusable, Credentials::Bearer)
+    let Some(token) = value.to_str().ok().and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    }) else {
+        return Credentials::Unusable;
+    };
+    if token.starts_with(secrets::SESSION_TOKEN) {
+        Credentials::Session {
+            token,
+            from_cookie: false,
+        }
+    } else {
+        Credentials::Bearer(token)
+    }
+}
+
+/// The session behind the request, for logout and CSRF checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CurrentSession {
+    pub id: uuid::Uuid,
+    pub kind: sessions::model::Platform,
+    /// Sent as the cookie (a browser), not a bearer header.
+    pub from_cookie: bool,
 }
 
 /// Why a request with credentials got no user.
 enum Refusal {
     Token(Rejection),
+    /// A session cookie that no longer works: not an error.
+    StaleCookie(Rejection),
     Error(AppError),
 }
 
@@ -153,11 +183,10 @@ pub async fn authenticate(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let token = match credentials(request.headers()) {
-        Credentials::None => return next.run(request).await,
-        Credentials::Unusable => None,
-        Credentials::Bearer(token) => Some(token),
-    };
+    let credentials = credentials(request.headers());
+    if let Credentials::None = credentials {
+        return next.run(request).await;
+    }
     let Some(client) = client_key(&request, &auth.trusted_proxies) else {
         tracing::error!("authentication: no peer address (served without connect info)");
         return Problem::new(ErrorCode::Internal).into_response();
@@ -165,16 +194,62 @@ pub async fn authenticate(
     if let Err(wait) = auth.failures.peek(&client, Instant::now()) {
         return too_many_requests(whole_seconds(wait));
     }
-    let result = match token {
-        Some(token) => user(&auth.app, token).await,
-        None => Err(Refusal::Token(Rejection::Malformed)),
+    let result = match credentials {
+        Credentials::None | Credentials::Unusable => Err(Refusal::Token(Rejection::Malformed)),
+        Credentials::Bearer(token) => user(&auth.app, token).await.map(|user| (user, None)),
+        Credentials::Session { token, from_cookie } => {
+            session_user(&auth.app, token, from_cookie).await
+        }
     };
     match result {
-        Ok(user) => {
+        Ok((user, session)) => {
             request.extensions_mut().insert(user);
+            if let Some(session) = session {
+                request.extensions_mut().insert(session);
+            }
             next.run(request).await
         }
+        Err(Refusal::StaleCookie(rejection)) => {
+            // A browser still holding a session that ended: forget it and
+            // carry on anonymously, so it can sign in again.
+            auth.metrics.rejected(rejection.reason());
+            let mut response = next.run(request).await;
+            response
+                .headers_mut()
+                .append(header::SET_COOKIE, sessions::clear_session_cookie());
+            response
+        }
         Err(refusal) => refuse(&auth, client, refusal).into_response(),
+    }
+}
+
+/// The user of a session token, and the session.
+async fn session_user(
+    state: &AppState,
+    token: &str,
+    from_cookie: bool,
+) -> Result<(AuthenticatedUser, Option<CurrentSession>), Refusal> {
+    match sessions::service::authenticate_session(&state.db, &state.keys, &state.sessions, token)
+        .await
+    {
+        Ok(session) => Ok((
+            session.user,
+            Some(CurrentSession {
+                id: session.session_id,
+                kind: session.kind,
+                from_cookie,
+            }),
+        )),
+        Err(SessionRefusal::Invalid) if from_cookie => {
+            Err(Refusal::StaleCookie(Rejection::SessionInvalid))
+        }
+        Err(SessionRefusal::Ended) if from_cookie => {
+            Err(Refusal::StaleCookie(Rejection::SessionEnded))
+        }
+        Err(SessionRefusal::Invalid) => Err(Rejection::SessionInvalid.into()),
+        Err(SessionRefusal::Ended) => Err(Rejection::SessionEnded.into()),
+        Err(SessionRefusal::NoRole) => Err(Rejection::NoRole.into()),
+        Err(SessionRefusal::Error(error)) => Err(Refusal::Error(error)),
     }
 }
 
@@ -199,6 +274,8 @@ fn refuse(auth: &Authentication, client: IpAddr, refusal: Refusal) -> AppError {
             AppError::AccountDisabled
         }
         Refusal::Error(error) => error,
+        // Handled by the caller; never an error response.
+        Refusal::StaleCookie(_) => AppError::InvalidToken,
     }
 }
 

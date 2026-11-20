@@ -659,7 +659,10 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     `post_logout_redirect_uri` when discovery advertises one (Authelia does not).
 - [x] **3.9 `GET /auth/config`** (public): the login URL, whether telemetry is
   available on this instance, and the server version.
-- [ ] **3.10 Sessions in the authentication middleware:**
+- [x] **3.10 Sessions in the authentication middleware:** (a stale session
+  *cookie* makes the request anonymous and clears the cookie, so the browser can
+  sign in again; a bad `kbs_` bearer token is a 401. New metric reasons:
+  `session_invalid`, `session_ended`)
   - accept `__Host-kanbot_session` or `Authorization: Bearer kbs_...`;
   - look up the hash, check expiry, update `last_used_at` at most once a minute;
   - refresh the IdP access token when it expires within 60 s, under a row lock
@@ -927,7 +930,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [ ] 3.8 [x] 3.9 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [ ] 3.8 [x] 3.9 [x] 3.10 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

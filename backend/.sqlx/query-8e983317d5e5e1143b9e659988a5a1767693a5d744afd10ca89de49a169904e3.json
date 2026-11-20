@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT idp_access_token, idp_refresh_token,\n                  access_expires_at < now() + make_interval(secs => $2) AS \"refresh_due!\"\n           FROM sessions WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "idp_access_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "idp_access_token"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "idp_refresh_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "idp_refresh_token"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "refresh_due!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "8e983317d5e5e1143b9e659988a5a1767693a5d744afd10ca89de49a169904e3"
+}
