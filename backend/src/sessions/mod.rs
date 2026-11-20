@@ -2,3 +2,5 @@
 //! it creates for kanbot's own apps.
 
 pub mod config;
+pub mod crypto;
+pub mod secrets;

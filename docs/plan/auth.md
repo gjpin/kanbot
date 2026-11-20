@@ -617,7 +617,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     `idle_expires_at`, `absolute_expires_at`.
   - `login_codes`: one-time codes for native: `code_hash`, `session_id`,
     `app_code_challenge`, `expires_at` (60 s), `used_at`.
-- [ ] **3.4 Formats:**
+- [x] **3.4 Formats:**
   - session tokens: `kbs_` plus 32 random bytes in base64url;
   - one-time codes: `kbc_` plus 32 bytes;
   - only SHA-256 hashes are stored;
@@ -929,7 +929,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5
