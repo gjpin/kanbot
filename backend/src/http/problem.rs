@@ -45,6 +45,7 @@ pub enum ErrorCode {
     RateLimited,
     Internal,
     Unavailable,
+    AccountDisabled,
 }
 
 impl ErrorCode {
@@ -55,7 +56,7 @@ impl ErrorCode {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::AccountDisabled => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::Conflict => StatusCode::CONFLICT,
@@ -111,6 +112,7 @@ impl ErrorCode {
             Self::RateLimited => "Too many requests",
             Self::Internal => "Internal error",
             Self::Unavailable => "Service unavailable",
+            Self::AccountDisabled => "Account disabled",
         }
     }
 
@@ -128,6 +130,7 @@ impl ErrorCode {
             Self::RateLimited => "urn:kanbot:problem:rate_limited",
             Self::Internal => "urn:kanbot:problem:internal",
             Self::Unavailable => "urn:kanbot:problem:unavailable",
+            Self::AccountDisabled => "urn:kanbot:problem:account_disabled",
         }
     }
 }
@@ -268,6 +271,11 @@ mod tests {
         ErrorCode::Unavailable,
     ];
 
+    /// Codes that refine another code's status; a bare status never maps
+    /// to them.
+    const REFINED_CODES: [(ErrorCode, ErrorCode); 1] =
+        [(ErrorCode::AccountDisabled, ErrorCode::Forbidden)];
+
     #[test]
     fn every_code_round_trips_through_its_status() {
         for code in ALL_CODES {
@@ -276,8 +284,28 @@ mod tests {
     }
 
     #[test]
+    fn refined_codes_share_their_base_status() {
+        for (code, base) in REFINED_CODES {
+            assert_eq!(code.status(), base.status(), "{code:?}");
+            assert_eq!(ErrorCode::for_status(code.status()), base, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn refined_codes_have_their_wire_form() {
+        assert_eq!(
+            serde_json::to_value(ErrorCode::AccountDisabled).unwrap(),
+            "account_disabled"
+        );
+        assert_eq!(ErrorCode::AccountDisabled.title(), "Account disabled");
+    }
+
+    #[test]
     fn type_uri_and_wire_code_match() {
-        for code in ALL_CODES {
+        for code in ALL_CODES
+            .into_iter()
+            .chain(REFINED_CODES.map(|(code, _)| code))
+        {
             let wire = serde_json::to_value(code).unwrap();
             let wire = wire.as_str().unwrap();
             assert_eq!(code.type_uri(), format!("urn:kanbot:problem:{wire}"));

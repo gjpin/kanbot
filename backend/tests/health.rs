@@ -26,7 +26,9 @@ async fn health_returns_ok() {
 }
 
 /// One migration, not applied by `#[sqlx::test]` (which applies only
-/// `migrations/`).
+/// `migrations/`). Tests that run these fixture migrators start from an
+/// empty database (`migrations = false`): sqlx refuses to run a migrator
+/// that lacks migrations already applied.
 static PENDING: Migrator = sqlx::migrate!("tests/fixtures/readiness_migrations");
 static REVERSIBLE: Migrator = sqlx::migrate!("tests/fixtures/reversible_migrations");
 
@@ -80,7 +82,7 @@ async fn ready_is_unavailable_without_keys_even_before_the_database() {
     assert_eq!(ready_status(app).await, StatusCode::SERVICE_UNAVAILABLE);
 }
 
-#[sqlx::test]
+#[sqlx::test(migrations = false)]
 async fn ready_is_unavailable_until_migrations_are_applied(pool: PgPool) {
     let response = common::app_with(pool.clone(), &PENDING)
         .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
@@ -99,7 +101,7 @@ async fn ready_is_unavailable_until_migrations_are_applied(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[sqlx::test(migrations = false)]
 async fn ready_is_unavailable_when_an_applied_migration_changed(pool: PgPool) {
     PENDING.run(&pool).await.unwrap();
     let applied = PENDING.iter().next().unwrap();
@@ -118,7 +120,7 @@ async fn ready_is_unavailable_when_an_applied_migration_changed(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[sqlx::test(migrations = false)]
 async fn ready_is_unavailable_with_a_half_applied_migration(pool: PgPool) {
     PENDING.run(&pool).await.unwrap();
     sqlx::query("UPDATE _sqlx_migrations SET success = false")
@@ -132,7 +134,7 @@ async fn ready_is_unavailable_with_a_half_applied_migration(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[sqlx::test(migrations = false)]
 async fn ready_ignores_down_migrations(pool: PgPool) {
     REVERSIBLE.run(&pool).await.unwrap();
 

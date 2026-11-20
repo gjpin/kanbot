@@ -269,7 +269,7 @@ the table above in phase 3.
   the full `Debug` of `sqlx::Error` (`src/error.rs`, the
   `tracing::error!(error = ?self, ...)` line). Postgres error details can contain
   row values (for example `Key (subject)=(...) already exists`). Log the error
-  kind, SQLSTATE and constraint name only, with a test.
+  kind, SQLSTATE and constraint name only, with a test. (Done in 2.5.)
 
 ## Phase 1: rules and docs
 
@@ -380,7 +380,7 @@ consent, applies rate limits and runs against a local Authelia.
      name (`name`, then `preferred_username`), and groups (for phase 4).
 
 ### 2.5 Users
-- [ ] **Migration:**
+- [x] **Migration:**
 
   ```sql
   CREATE TABLE users (
@@ -397,13 +397,13 @@ consent, applies rate limits and runs against a local Authelia.
   );
   ```
 
-- [ ] **`users/repo.rs`:** one query per authenticated request. It inserts, or
+- [x] **`users/repo.rs`:** one query per authenticated request. It inserts, or
   updates only when `last_seen_at` is more than 5 minutes old or the display name
   or role changed. It always returns `(id, disabled_at, telemetry_opt_in)`.
   - Pattern: a CTE with `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE ...
     RETURNING`, combined with a `SELECT` for the row that was not updated.
-- [ ] **Disabled user** → `403` with the new error code `account_disabled`.
-- [ ] **Endpoints:**
+- [x] **Disabled user** → `403` with the new error code `account_disabled`.
+- [ ] **Endpoints** (moved to 2.6: they need the authentication middleware):
   - `GET /me`: `{ id, display_name, platform_role, telemetry_opt_in }`.
   - `PUT /me/preferences`: `{ telemetry_opt_in: bool }`, with
     `deny_unknown_fields`.
@@ -911,7 +911,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

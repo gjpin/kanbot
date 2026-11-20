@@ -10,6 +10,7 @@ pub mod http;
 pub mod state;
 pub mod telemetry;
 pub mod telemetry_relay;
+pub mod users;
 
 use std::{net::SocketAddr, sync::Arc};
 

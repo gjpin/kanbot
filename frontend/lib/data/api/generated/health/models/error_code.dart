@@ -12,7 +12,8 @@ enum ErrorCodeValue {
   validationFailed('validation_failed'),
   rateLimited('rate_limited'),
   internal('internal'),
-  unavailable('unavailable');
+  unavailable('unavailable'),
+  accountDisabled('account_disabled');
 
   const ErrorCodeValue(this.value);
   final String value;
@@ -38,6 +39,7 @@ sealed class ErrorCode {
   static const rateLimited = ErrorCodeKnown(ErrorCodeValue.rateLimited);
   static const internal = ErrorCodeKnown(ErrorCodeValue.internal);
   static const unavailable = ErrorCodeKnown(ErrorCodeValue.unavailable);
+  static const accountDisabled = ErrorCodeKnown(ErrorCodeValue.accountDisabled);
   factory ErrorCode.fromJson(Object? json) {
     if (json is! String) {
       throw ArgumentError.value(json, 'ErrorCode');
