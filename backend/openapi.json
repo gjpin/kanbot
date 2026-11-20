@@ -1,0 +1,139 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "kanbot API",
+    "description": "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness: the process is up and serving HTTP.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The server is up.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness: the database is reachable and every migration has been\napplied. Until `kanbot-backend migrate` has run, the old schema is in\nplace and requests could fail, so the instance takes no traffic.",
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "description": "Ready to take traffic."
+          },
+          "503": {
+            "description": "Not ready: the database is unreachable or migrations are pending.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorCode": {
+        "type": "string",
+        "description": "Stable, machine-readable error codes. Clients depend on these strings:\nadd new codes, but never rename or reuse one.",
+        "enum": [
+          "bad_request",
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "method_not_allowed",
+          "conflict",
+          "payload_too_large",
+          "unsupported_media_type",
+          "validation_failed",
+          "rate_limited",
+          "internal",
+          "unavailable"
+        ]
+      },
+      "FieldError": {
+        "type": "object",
+        "description": "One invalid field of a request.",
+        "required": [
+          "pointer",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Why it is invalid, as a stable `snake_case` code (`too_long`,\n`required`, ...). Never the invalid value itself."
+          },
+          "pointer": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the field in the request body, for example\n`/title` or `/labels/2`."
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "A problem details body (RFC 9457), with the `code` and `errors`\nextension members.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "description": "The invalid fields of a `validation_failed` problem."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Always the status of the response that carries the problem.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The W3C trace id of the request (32 hex digits), when telemetry is\non. Lets support find the request's trace and logs.",
+            "example": "4bf92f3577b34da6a3ce929d0e0e4736"
+          },
+          "type": {
+            "type": "string",
+            "description": "`urn:kanbot:problem:<code>`.",
+            "example": "urn:kanbot:problem:not_found"
+          }
+        }
+      }
+    }
+  }
+}

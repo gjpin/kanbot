@@ -1,0 +1,12 @@
+# Tests may panic: a panic is how a test fails.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+disallowed-methods = [
+    { path = "std::process::exit", reason = "return Err from main instead" },
+    { path = "std::thread::sleep", reason = "blocks the async runtime; use tokio::time::sleep" },
+]

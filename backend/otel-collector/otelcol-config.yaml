@@ -1,0 +1,83 @@
+# OpenTelemetry Collector for local development (compose.yaml, inside the
+# grafana/otel-lgtm image, replacing its /otel-lgtm/otelcol-config.yaml).
+# Based on the image's own config, with the protections a collector that
+# receives the app's telemetry (through the API's relay) needs. A production
+# collector needs at least the same processors.
+#
+# - memory_limiter: refuses data instead of running out of memory.
+# - filter/kanbot: keeps only telemetry from our own services. The relay is
+#   public, so anyone can send OTLP to it; data claiming to be another
+#   service is dropped instead of polluting dashboards.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        # No CORS: browsers send telemetry to the API's relay, never here.
+  prometheus/collector:
+    config:
+      scrape_configs:
+        - job_name: "opentelemetry-collector"
+          scrape_interval: 10s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: "/ready"
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  filter/kanbot:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["service.name"] != "kanbot-backend" and resource.attributes["service.name"] != "kanbot-app"'
+    metrics:
+      metric:
+        - 'resource.attributes["service.name"] != "kanbot-backend" and resource.attributes["service.name"] != "kanbot-app"'
+    logs:
+      log_record:
+        - 'resource.attributes["service.name"] != "kanbot-backend" and resource.attributes["service.name"] != "kanbot-app"'
+  batch:
+
+exporters:
+  otlp_http/metrics:
+    endpoint: http://127.0.0.1:9090/api/v1/otlp
+    tls:
+      insecure: true
+  otlp_http/traces:
+    endpoint: http://127.0.0.1:4418
+    tls:
+      insecure: true
+  otlp_http/logs:
+    endpoint: http://127.0.0.1:3100/otlp
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/kanbot, batch]
+      exporters: [otlp_http/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/kanbot, batch]
+      exporters: [otlp_http/metrics]
+    metrics/collector:
+      receivers: [prometheus/collector]
+      processors: [batch]
+      exporters: [otlp_http/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/kanbot, batch]
+      exporters: [otlp_http/logs]

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver",
+    "docker:pinDigests",
+    ":semanticCommits"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "One PR for all non-major updates per ecosystem.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "{{manager}} non-major",
+      "groupSlug": "{{manager}}-non-major"
+    },
+    {
+      "description": "Keep the PostgreSQL image identical in compose.yaml and CI.",
+      "matchDepNames": ["postgres"],
+      "groupName": "postgres",
+      "groupSlug": "postgres"
+    },
+    {
+      "description": "The Rust toolchain, Flutter and Dart SDKs get their own PRs.",
+      "matchDepNames": ["rust", "flutter", "dart"],
+      "groupName": null,
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Ships inside the Flutter SDK (includeBuild), not a registry. It updates with Flutter.",
+      "matchManagers": ["gradle"],
+      "matchDepNames": ["dev.flutter.flutter-plugin-loader"],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions in workflow env: blocks, marked with a `# renovate:` comment.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+[A-Z_]+: \"(?<currentValue>[^\"]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Cargo tools installed by taiki-e/install-action (`tool: <crate>@<version>`).",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "tool: (?<depName>[a-z0-9_-]+)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "crate"
+    },
+    {
+      "customType": "regex",
+      "description": "The pinned Rust toolchain, and the crate's rust-version kept equal to it (same dep, same PR).",
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/", "/^backend/Cargo\\.toml$/"],
+      "matchStrings": [
+        "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "rust",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "rust-lang/rust"
+    }
+  ]
+}

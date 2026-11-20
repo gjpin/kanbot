@@ -1,0 +1,20 @@
+# Generates the API client from the backend's OpenAPI document. Do not run
+# swagger_parser directly; from frontend/, run
+#
+#   dart run tool/generate_api_client.dart
+#
+# which also applies `dart fix` and `dart format`, so the output passes the
+# analyzer like hand-written code. Commit the result; CI fails if it is
+# stale. Never edit generated files.
+swagger_parser:
+  schema_path: ../backend/openapi.json
+  output_directory: lib/data/api/generated
+  generation:
+    root_api_class_name: KanbotApi
+    # package:http, through the injected ApiClient (auth, timeout, errors,
+    # tracing). No build_runner step.
+    http_client: http
+    # Plain Dart codecs: no serializer package at runtime.
+    serializer: plain
+    # A value added on the server must not break older app versions.
+    unknown_enum_values: preserve

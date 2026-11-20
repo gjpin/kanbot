@@ -1,0 +1,148 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its previous run. Runs on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+  COVERAGE_MIN_LINES: "80"
+  # Server for #[sqlx::test], which creates a fresh database per test.
+  DATABASE_URL: postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
+  # renovate: datasource=crate depName=sqlx-cli
+  SQLX_CLI_VERSION: "0.9.1"
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61
+        env:
+          POSTGRES_USER: kanbot
+          POSTGRES_PASSWORD: kanbot
+          POSTGRES_DB: kanbot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kanbot"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: Install sqlx-cli
+        run: cargo install "sqlx-cli@$SQLX_CLI_VERSION" --locked --no-default-features --features postgres,rustls
+      # Fails if a query changed without `cargo sqlx prepare` (.sqlx/ is stale).
+      - name: Offline query data is up to date
+        env:
+          SQLX_OFFLINE: "false"
+        run: cargo sqlx prepare --check -- --all-targets --all-features
+      - name: Tests with coverage threshold
+        run: cargo llvm-cov --all-features --locked --fail-under-lines "$COVERAGE_MIN_LINES"
+
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
+        with:
+          manifest-path: backend/Cargo.toml
+          command: check
+
+  migrations:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Committed migrations are unchanged
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=DMRT "origin/$BASE_REF...HEAD" -- 'migrations/*.sql')
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "::error::Committed migrations must never change. Add a new migration instead (backend/AGENTS.md)."
+            exit 1
+          fi
+
+  mutants:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Mutants in database code are caught only by tests that use the database.
+    services:
+      postgres:
+        image: postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61
+        env:
+          POSTGRES_USER: kanbot
+          POSTGRES_PASSWORD: kanbot
+          POSTGRES_DB: kanbot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kanbot"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Mutation-test changed code
+        # --relative makes the paths relative to backend/, where cargo mutants
+        # runs. With repo-root paths (backend/src/...) it matches no files and
+        # passes without testing anything.
+        run: |
+          git diff --relative "origin/${{ github.base_ref }}...HEAD" -- . > "$RUNNER_TEMP/pr.diff"
+          cargo mutants --no-shuffle --in-diff "$RUNNER_TEMP/pr.diff" -- --all-features

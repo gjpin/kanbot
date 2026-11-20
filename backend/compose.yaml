@@ -1,0 +1,35 @@
+# Local development services.
+#
+# Database (what the tests need): `docker compose up -d`, then
+#   export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
+# Tests (#[sqlx::test]) create and drop their own databases on this server.
+#
+# Observability (optional): `docker compose --profile observability up -d`
+# adds an OpenTelemetry Collector with Grafana, Tempo (traces), Loki (logs)
+# and Prometheus (metrics) at http://127.0.0.1:3001. The backend exports to
+# its default OTLP endpoint, http://localhost:4318; to relay the app's
+# telemetry too, run the backend with
+#   TELEMETRY_RELAY_UPSTREAM=http://127.0.0.1:4318
+services:
+  postgres:
+    image: postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61
+    environment:
+      POSTGRES_USER: kanbot
+      POSTGRES_PASSWORD: kanbot
+      POSTGRES_DB: kanbot
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+
+  observability:
+    profiles: [observability]
+    image: grafana/otel-lgtm:0.41.1@sha256:1b852b77d7bcadb7699bfe7c78a51d059dff85168de674728cf7abf4474645e5
+    ports:
+      - "127.0.0.1:3001:3000" # Grafana (3000 is the backend)
+      - "127.0.0.1:4318:4318" # OTLP/HTTP
+    volumes:
+      - ./otel-collector/otelcol-config.yaml:/otel-lgtm/otelcol-config.yaml:ro
+
+volumes:
+  postgres-data:

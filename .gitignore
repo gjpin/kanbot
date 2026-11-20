@@ -1,0 +1,14 @@
+# Rules for the whole repository. backend/ and frontend/ add their own.
+
+# Secrets and local environment (AGENTS.md §3). Commit example files only.
+.env
+.env.*
+!.env.example
+
+# Per-user Claude Code settings
+.claude/settings.local.json
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp

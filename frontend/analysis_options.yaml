@@ -1,0 +1,95 @@
+# Analyzer and lint configuration. `flutter analyze` must report no issues;
+# infos and warnings are fatal.
+#
+# Do not change this file without a maintainer's approval, and do not
+# suppress its diagnostics. See frontend/AGENTS.md §1 and §12.
+
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    # Generated code. Never hand-written code.
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "**/*.mocks.dart"
+    - "lib/src/third_party/**"
+    # Platform folders (flutter create output).
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+  language:
+    # No silent dynamic inference. Casts and raw types are covered by the
+    # no_dynamic_casts and no_raw_types lints below.
+    strict-inference: true
+  errors:
+    no_dynamic_casts: error
+    no_raw_types: error
+    deprecated_member_use: error
+    deprecated_member_use_from_same_package: error
+    unawaited_futures: error
+    discarded_futures: error
+    avoid_dynamic_calls: error
+    use_build_context_synchronously: error
+    cancel_subscriptions: error
+    close_sinks: error
+    avoid_print: error
+    only_throw_errors: error
+    avoid_catches_without_on_clauses: error
+    avoid_catching_errors: error
+    avoid_void_async: error
+    throw_in_finally: error
+    prefer_const_constructors: error
+    secure_pubspec_urls: error
+
+# Rules added on top of package:flutter_lints. https://dart.dev/lints
+linter:
+  rules:
+    # Types and nullability
+    - always_declare_return_types
+    - avoid_dynamic_calls
+    - avoid_type_to_string
+    - no_dynamic_casts
+    - no_raw_types
+    - test_types_in_equals
+
+    # Async
+    - avoid_slow_async_io
+    - avoid_void_async
+    - cancel_subscriptions
+    - close_sinks
+    - discarded_futures
+    - unawaited_futures
+    - use_build_context_synchronously
+
+    # Errors
+    - avoid_catches_without_on_clauses
+    - avoid_catching_errors
+    - only_throw_errors
+    - throw_in_finally
+
+    # Dead or suspicious code
+    - avoid_print
+    - comment_references
+    - literal_only_boolean_expressions
+    - no_adjacent_strings_in_list
+    - unnecessary_statements
+
+    # Security
+    - secure_pubspec_urls
+
+    # Performance
+    - prefer_const_constructors
+
+    # Style
+    - always_use_package_imports
+    - directives_ordering
+    - prefer_final_in_for_each
+    - prefer_final_locals
+    - prefer_single_quotes
+    - unnecessary_lambdas
+    - unnecessary_parenthesis
+    - use_named_constants

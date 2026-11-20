@@ -1,0 +1,76 @@
+[package]
+name = "kanbot-backend"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100.0"
+publish = false
+default-run = "kanbot-backend"
+
+[dependencies]
+axum = "0.8.9"
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "logs", "metrics"] }
+opentelemetry-appender-tracing = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "logs", "metrics"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "logs", "metrics"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls"] }
+secrecy = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "uuid"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower-http = { version = "0.7.1", features = ["catch-panic", "cors", "limit", "sensitive-headers", "set-header", "timeout"] }
+tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
+tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+utoipa = "6.0.0"
+utoipa-axum = "0.3.0"
+uuid = { version = "1.29.3", features = ["v4", "serde"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "logs", "metrics", "testing"] }
+proptest = "1.12.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-util", "process", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# No panics outside tests (test exemptions live in clippy.toml).
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"        # no v[i]; use .get(i)
+string_slice = "deny"            # &s[..n] panics on UTF-8 boundaries
+
+# Numeric correctness.
+arithmetic_side_effects = "deny" # use checked_/saturating_ math
+as_conversions = "deny"          # silent truncation; use try_from
+
+# Async correctness.
+await_holding_lock = "deny"      # deadlocks in async
+
+# Output goes through tracing.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Lint exceptions must be #[expect(..., reason = "...")].
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+[profile.release]
+overflow-checks = true # costs little, catches silent wraparound
+lto = "fat"
+codegen-units = 1
+# Do not set panic = "abort": CatchPanicLayer needs unwinding.
