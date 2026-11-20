@@ -302,7 +302,7 @@ Goal: the API accepts IdP JWT bearer tokens, knows the user, enforces telemetry
 consent, applies rate limits and runs against a local Authelia.
 
 ### 2.1 Dependencies
-- [ ] Add `jsonwebtoken` (`rust_crypto`, no default features), tokio `sync`, and
+- [x] Add `jsonwebtoken` (`rust_crypto`, no default features), tokio `sync`, and
   `tower` (`limit`, `load-shed`). Run `cargo deny check`.
 
 ### 2.2 Configuration
@@ -908,7 +908,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [ ] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
