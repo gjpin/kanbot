@@ -331,6 +331,29 @@ fn crit_headers_are_refused() {
 }
 
 #[test]
+fn tokens_up_to_16_kib_are_read() {
+    // A real, large token (big claims are common with many groups).
+    let large = with(claims(), "pad", json!("x".repeat(10_000)));
+    assert!(validate(&sign("rsa-a", &large)).is_ok());
+    // Exactly at the limit: refused for its shape, not its size.
+    assert_eq!(
+        validate(&"a".repeat(MAX_TOKEN_BYTES)),
+        Err(Rejection::Malformed)
+    );
+    assert_eq!(
+        validate(&"a".repeat(MAX_TOKEN_BYTES + 1)),
+        Err(Rejection::TooLarge)
+    );
+}
+
+#[test]
+fn an_empty_signature_is_malformed() {
+    let valid = sign("rsa-a", &claims());
+    let (unsigned, _) = valid.rsplit_once('.').unwrap();
+    assert_eq!(validate(&format!("{unsigned}.")), Err(Rejection::Malformed));
+}
+
+#[test]
 fn malformed_input_is_refused() {
     let valid = sign("rsa-a", &claims());
     let oversized = with(claims(), "pad", json!("x".repeat(MAX_TOKEN_BYTES)));

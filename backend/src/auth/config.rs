@@ -532,6 +532,12 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_subject_claim_setting_means_sub() {
+        let config = read(&[("OIDC_SUBJECT_CLAIM", " ")]).unwrap();
+        assert_eq!(config.subject_claim.segments(), ["sub"]);
+    }
+
+    #[test]
     fn reads_the_subject_claim() {
         let config = read(&[("OIDC_SUBJECT_CLAIM", "oid")]).unwrap();
         assert_eq!(config.subject_claim.segments(), ["oid"]);
@@ -631,6 +637,12 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_ca_file_setting_means_none() {
+        let config = read(&[("OIDC_CA_FILE", "  ")]).unwrap();
+        assert_eq!(config.extra_root_certificates.len(), 0);
     }
 
     #[test]

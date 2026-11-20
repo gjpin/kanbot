@@ -265,6 +265,18 @@ async fn per_user(
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn spawn_periodic_runs_the_task_every_interval() {
+        let runs = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&runs);
+        spawn_periodic(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        // The first tick is immediate, then one per interval.
+        tokio::time::sleep(CLEANUP_INTERVAL.saturating_mul(2) + Duration::from_millis(1)).await;
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
     #[test]
     fn rounds_waits_up_to_whole_seconds() {
         assert_eq!(whole_seconds(Duration::ZERO), 0);

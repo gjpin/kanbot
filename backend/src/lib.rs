@@ -49,13 +49,12 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             migrator: &db::MIGRATOR,
             keys,
         },
-        http::HttpSettings {
-            allowed_origins: config.cors_allowed_origins,
-            trusted_proxies: Arc::new(config.trusted_proxies),
-            rate_limits: config.rate_limits,
-            max_in_flight_requests: config.max_in_flight_requests,
-            ..http::HttpSettings::new()
-        },
+        http::HttpSettings::configured(
+            config.cors_allowed_origins,
+            config.trusted_proxies,
+            config.rate_limits,
+            config.max_in_flight_requests,
+        ),
         relay,
     )?;
 

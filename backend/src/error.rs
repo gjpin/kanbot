@@ -456,6 +456,19 @@ mod tests {
                 "database.tls",
             ),
             (
+                AppError::Database(sqlx::Error::ColumnDecode {
+                    index: "0".to_owned(),
+                    source: "x".into(),
+                }),
+                "database.column_decode",
+            ),
+            (
+                AppError::Database(sqlx::Error::Migrate(Box::new(
+                    sqlx::migrate::MigrateError::VersionMissing(1),
+                ))),
+                "database.migrate",
+            ),
+            (
                 AppError::Database(sqlx::Error::InvalidSavePointStatement),
                 "database.other",
             ),

@@ -190,9 +190,15 @@ mod tests {
         limiter.check("a", start).unwrap();
         limiter.check("b", at(start, 900)).unwrap();
         assert_eq!(limiter.len(), 2);
-        limiter.retain_recent(at(start, 1000));
+        assert!(!limiter.is_empty());
+        // a is back to a full burst at 1000 ms, b only at 1900 ms.
+        limiter.retain_recent(at(start, 1500));
         assert_eq!(limiter.len(), 1);
-        limiter.retain_recent(at(start, 1900));
+        assert!(limiter.check("b", at(start, 1500)).is_ok());
+        // b's next arrival is now 2900 ms: kept just before, dropped at it.
+        limiter.retain_recent(at(start, 2899));
+        assert_eq!(limiter.len(), 1);
+        limiter.retain_recent(at(start, 2900));
         assert!(limiter.is_empty());
     }
 }

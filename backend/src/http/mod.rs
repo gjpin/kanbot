@@ -123,11 +123,28 @@ impl HttpSettings {
     /// browsers, no trusted proxies, the default limits.
     #[must_use]
     pub fn new() -> Self {
+        Self::configured(
+            Vec::new(),
+            TrustedProxies::default(),
+            RateLimits::DEFAULT,
+            NonZeroUsize::new(512).unwrap_or(NonZeroUsize::MIN),
+        )
+    }
+
+    /// The settings from the configuration, with metrics on the global
+    /// meter.
+    #[must_use]
+    pub fn configured(
+        allowed_origins: Vec<HeaderValue>,
+        trusted_proxies: TrustedProxies,
+        rate_limits: RateLimits,
+        max_in_flight_requests: NonZeroUsize,
+    ) -> Self {
         Self {
-            allowed_origins: Vec::new(),
-            trusted_proxies: Arc::new(TrustedProxies::default()),
-            rate_limits: RateLimits::DEFAULT,
-            max_in_flight_requests: NonZeroUsize::new(512).unwrap_or(NonZeroUsize::MIN),
+            allowed_origins,
+            trusted_proxies: Arc::new(trusted_proxies),
+            rate_limits,
+            max_in_flight_requests,
             auth_metrics: AuthMetrics::global(),
         }
     }
@@ -246,4 +263,44 @@ pub fn with_middleware(app: Router, allowed_origins: &[HeaderValue]) -> Router {
         HttpMetrics::global(),
         trace_request,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use super::*;
+    use crate::http::middleware::rate_limit::RateLimit;
+
+    #[test]
+    fn configured_settings_keep_every_value() {
+        let limit = RateLimit {
+            per_second: NonZeroU32::new(3).unwrap(),
+            burst: NonZeroU32::new(4).unwrap(),
+        };
+        let limits = RateLimits {
+            ip: limit,
+            ..RateLimits::DEFAULT
+        };
+        let proxies = TrustedProxies::parse_list("10.0.0.0/8").unwrap();
+        let settings = HttpSettings::configured(
+            vec![HeaderValue::from_static("https://app.example.com")],
+            proxies.clone(),
+            limits,
+            NonZeroUsize::new(7).unwrap(),
+        );
+        assert_eq!(settings.allowed_origins, ["https://app.example.com"]);
+        assert_eq!(*settings.trusted_proxies, proxies);
+        assert_eq!(settings.rate_limits, limits);
+        assert_eq!(settings.max_in_flight_requests.get(), 7);
+    }
+
+    #[test]
+    fn default_settings() {
+        let settings = HttpSettings::default();
+        assert_eq!(settings.allowed_origins, Vec::<HeaderValue>::new());
+        assert_eq!(*settings.trusted_proxies, TrustedProxies::default());
+        assert_eq!(settings.rate_limits, RateLimits::DEFAULT);
+        assert_eq!(settings.max_in_flight_requests.get(), 512);
+    }
 }

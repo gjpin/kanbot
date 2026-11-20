@@ -74,12 +74,7 @@ impl IdpClient {
         if response.status() != StatusCode::OK {
             return Err(FetchError::Status(response.status()));
         }
-        if response
-            .content_length()
-            .is_some_and(|length| usize::try_from(length).map_or(true, |length| length > max_bytes))
-        {
-            return Err(FetchError::TooLarge(max_bytes));
-        }
+        // Read in chunks, whatever Content-Length says: a server can lie.
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(FetchError::Request)? {
             if body.len().saturating_add(chunk.len()) > max_bytes {

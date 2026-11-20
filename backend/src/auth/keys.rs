@@ -155,6 +155,12 @@ fn rsa_modulus_bits(key: &DecodingKey) -> Option<usize> {
         .checked_add(usize::try_from(8_u32.checked_sub(first.leading_zeros())?).ok()?)
 }
 
+/// Whether an unknown-`kid` refresh at `now` is too soon after the one at
+/// `last`: they are at least [`UNKNOWN_KEY_REFRESH_INTERVAL`] apart.
+fn throttled(last: Option<Instant>, now: Instant) -> bool {
+    last.is_some_and(|last| now.saturating_duration_since(last) < UNKNOWN_KEY_REFRESH_INTERVAL)
+}
+
 /// Why the keys could not be refreshed. The previous keys stay in use.
 #[derive(Debug, thiserror::Error)]
 pub enum RefreshError {
@@ -258,9 +264,9 @@ impl KeyCache {
         let seen = self.refreshes.load(Ordering::Acquire);
         let mut last = self.refresh.lock().await;
         let refreshed_meanwhile = self.refreshes.load(Ordering::Acquire) != seen;
-        let throttled = last.is_some_and(|last| last.elapsed() < UNKNOWN_KEY_REFRESH_INTERVAL);
-        if !refreshed_meanwhile && !throttled {
-            *last = Some(Instant::now());
+        let now = Instant::now();
+        if !refreshed_meanwhile && !throttled(*last, now) {
+            *last = Some(now);
             if let Err(error) = self.refresh_locked(false).await {
                 tracing::warn!(%error, "signing keys could not be refreshed for an unknown key id");
             }
@@ -443,6 +449,7 @@ mod tests {
             json!({ "kty": "oct", "kid": "hmac", "k": "c2VjcmV0" }),
             json!({ "kty": "EC", "kid": "p521", "crv": "P-521", "x": "AA", "y": "AA" }),
             json!({ "kty": "OKP", "kid": "x25519", "crv": "X25519", "x": "AA" }),
+            json!({ "kty": "OKP", "kid": "okp-p256", "crv": "P-256", "x": "AA" }),
             json!({ "kty": "RSA", "kid": "broken", "n": "!!!", "e": "AQAB" }),
             json!({ "kid": "no-type" }),
             json!("not an object"),
@@ -460,6 +467,17 @@ mod tests {
             KeySet::from_jwks(&[fixture("p256"), with(fixture("p384"), "kid", json!("p256"))]);
         assert_eq!(set.len(), 1);
         assert_eq!(set.get("p256").unwrap().algorithm(), Algorithm::ES256);
+    }
+
+    #[test]
+    fn unknown_key_refreshes_are_at_least_a_second_apart() {
+        let start = Instant::now();
+        let after = |millis: u64| start.checked_add(Duration::from_millis(millis)).unwrap();
+        assert!(!throttled(None, start));
+        assert!(throttled(Some(start), start));
+        assert!(throttled(Some(start), after(999)));
+        assert!(!throttled(Some(start), after(1000)));
+        assert!(!throttled(Some(start), after(5000)));
     }
 
     #[test]

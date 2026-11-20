@@ -235,6 +235,32 @@ async fn oversized_bodies_are_refused_with_or_without_a_length() {
 }
 
 #[tokio::test]
+async fn a_large_jwks_is_read() {
+    let idp = TestIdp::start().await;
+    let keys: Vec<Value> = common::idp::DEFAULT_KEYS
+        .iter()
+        .map(|name| common::idp::jwk(name))
+        .collect();
+    // Well above any small limit, below the 256 KiB one.
+    let jwks = json!({ "keys": keys, "pad": "x".repeat(200_000) });
+    idp.set_jwks(Reply::Chunked(jwks.to_string().into_bytes()));
+
+    assert_eq!(idp.key_cache(&[]).refresh().await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn a_large_discovery_document_is_read() {
+    let idp = TestIdp::start().await;
+    let mut document = idp.discovery_document();
+    document["pad"] = json!("x".repeat(50_000));
+    idp.set_discovery(Reply::Bytes(document.to_string().into_bytes()));
+
+    discover(&IdpClient::new(&[]).unwrap(), &idp.config(&[]))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn slow_responses_time_out() {
     let idp = TestIdp::start().await;
     idp.set_discovery(Reply::Slow(Duration::from_secs(30), Value::Null));
