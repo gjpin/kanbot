@@ -293,7 +293,7 @@ the table above in phase 3.
     cookie and sends the CSRF header. Native stores only the kanbot session token,
     in `TokenStore`.
   - **Telemetry:** export starts only after login and opt-in, and stops on logout.
-- [ ] **1.3** Commit `docs/oidc.md` and `README.md` (already written), with any
+- [x] **1.3** Commit `docs/oidc.md` and `README.md` (already written), with any
   wording changes needed to match this plan.
 
 ## Phase 2: identity
@@ -907,7 +907,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 Tick as steps land (each step is one commit on `auth/oidc`).
 
-- Phase 1: [x] 1.1 [x] 1.2 [ ] 1.3
+- Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [ ] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
