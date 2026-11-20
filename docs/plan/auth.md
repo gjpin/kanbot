@@ -691,7 +691,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     single source; API responses keep `default-src 'none'`;
   - with same-origin serving, `CORS_ALLOWED_ORIGINS` becomes optional.
 - [x] **3.15 Rate limits:** login endpoints get the per-IP login limiter.
-- [ ] **3.16 OpenAPI:** add a `session` security scheme (cookie) next to `bearer`.
+- [x] **3.16 OpenAPI:** add a `session` security scheme (cookie) next to `bearer`.
   Extend the public list and the secure-by-default test.
 - [ ] **3.17 Tests:**
   - the full web flow against Authelia end to end;
@@ -935,7 +935,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
-- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 [x] 3.13 [x] 3.14 [x] 3.15 … [ ] 3.18
+- Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 [x] 3.13 [x] 3.14 [x] 3.15 [x] 3.16 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8
 - Phase 6: [ ] 6.1 … [ ] 6.5

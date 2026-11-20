@@ -10,7 +10,7 @@ use axum::{
 };
 use kanbot_backend::{
     db,
-    http::{self, BEARER_SCHEME, HttpSettings, middleware::rate_limit::RateLimits},
+    http::{self, BEARER_SCHEME, HttpSettings, SESSION_SCHEME, middleware::rate_limit::RateLimits},
     state::AppState,
     telemetry_relay,
 };
@@ -83,12 +83,14 @@ fn protected_operations_declare_bearer_security_and_its_errors() {
             continue;
         }
         let security = operation["security"].as_array();
-        assert!(
-            security.is_some_and(|requirements| requirements
-                .iter()
-                .any(|requirement| requirement.get(BEARER_SCHEME).is_some())),
-            "{name} must declare security(({BEARER_SCHEME:?} = []))"
-        );
+        for scheme in [BEARER_SCHEME, SESSION_SCHEME] {
+            assert!(
+                security.is_some_and(|requirements| requirements
+                    .iter()
+                    .any(|requirement| requirement.get(scheme).is_some())),
+                "{name} must declare security((\"bearer\" = []), (\"session\" = []))"
+            );
+        }
         for status in ["401", "403"] {
             assert!(
                 operation["responses"].get(status).is_some(),
@@ -125,12 +127,14 @@ async fn protected_operations_refuse_requests_without_credentials() {
 }
 
 #[test]
-fn the_bearer_scheme_is_a_jwt() {
+fn the_security_schemes_are_bearer_and_the_session_cookie() {
     let document = serde_json::to_value(http::openapi()).unwrap();
-    let scheme = &document["components"]["securitySchemes"][BEARER_SCHEME];
-    assert_eq!(scheme["type"], "http");
-    assert_eq!(scheme["scheme"], "bearer");
-    assert_eq!(scheme["bearerFormat"], "JWT");
+    let schemes = &document["components"]["securitySchemes"];
+    assert_eq!(schemes[BEARER_SCHEME]["type"], "http");
+    assert_eq!(schemes[BEARER_SCHEME]["scheme"], "bearer");
+    assert_eq!(schemes[SESSION_SCHEME]["type"], "apiKey");
+    assert_eq!(schemes[SESSION_SCHEME]["in"], "cookie");
+    assert_eq!(schemes[SESSION_SCHEME]["name"], "__Host-kanbot_session");
 }
 
 /// The telemetry relay follows OTLP/HTTP, not the contract, so it is not in

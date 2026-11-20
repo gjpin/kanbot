@@ -17,7 +17,7 @@ use crate::{
     get,
     path = "/me",
     tag = "users",
-    security(("bearer" = [])),
+    security(("bearer" = []), ("session" = [])),
     responses(
         (status = OK, description = "The signed-in user.", body = Me),
         (status = UNAUTHORIZED, description = "No valid credentials.",
@@ -35,7 +35,7 @@ pub(super) async fn me(AuthUser(user): AuthUser) -> Json<Me> {
     put,
     path = "/me/preferences",
     tag = "users",
-    security(("bearer" = [])),
+    security(("bearer" = []), ("session" = [])),
     request_body = Preferences,
     responses(
         (status = OK, description = "The user, with the new preferences.", body = Me),

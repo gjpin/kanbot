@@ -27,7 +27,7 @@ use tower_http::{
 
 use utoipa::{
     Modify, OpenApi,
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme},
 };
 use utoipa_axum::router::OpenApiRouter;
 
@@ -67,30 +67,40 @@ const CORS_MAX_AGE: Duration = Duration::from_secs(3600);
 )]
 struct ApiDoc;
 
-/// Name of the security scheme for IdP-issued JWT access tokens. Protected
-/// operations declare `security(("bearer" = []))`.
+/// Name of the security scheme for bearer tokens: an identity provider's
+/// JWT access token, or a native app's kanbot session token (`kbs_...`).
+/// Protected operations declare `security(("bearer" = []), ("session" =
+/// []))`: either one.
 pub const BEARER_SCHEME: &str = "bearer";
+/// Name of the security scheme for the web app's session cookie.
+pub const SESSION_SCHEME: &str = "session";
 
 /// Adds the security schemes, which the derive cannot express.
 struct SecuritySchemes;
 
 impl Modify for SecuritySchemes {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        openapi
-            .components
-            .get_or_insert_with(Default::default)
-            .add_security_scheme(
-                BEARER_SCHEME,
-                SecurityScheme::Http(
-                    HttpBuilder::new()
-                        .scheme(HttpAuthScheme::Bearer)
-                        .bearer_format("JWT")
-                        .description(Some(
-                            "An access token from the deployment's OIDC identity provider.",
-                        ))
-                        .build(),
-                ),
-            );
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            BEARER_SCHEME,
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "An access token (JWT) from the deployment's OIDC identity provider, \
+                         or a native app's kanbot session token (`kbs_...`).",
+                    ))
+                    .build(),
+            ),
+        );
+        components.add_security_scheme(
+            SESSION_SCHEME,
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+                crate::sessions::SESSION_COOKIE,
+                "The web app's session (HttpOnly). State-changing requests also need \
+                 `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
+            ))),
+        );
     }
 }
 

@@ -26,14 +26,19 @@ class UsersClient {
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
+        {'session': <String>[]},
       ],
       'openapi.securitySchemes': {
         'bearer': {
           'type': 'http',
           'scheme': 'bearer',
-          'bearerFormat': 'JWT',
-          'description':
-              "An access token from the deployment's OIDC identity provider.",
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
         },
       },
     },
@@ -75,14 +80,19 @@ class UsersClient {
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
+        {'session': <String>[]},
       ],
       'openapi.securitySchemes': {
         'bearer': {
           'type': 'http',
           'scheme': 'bearer',
-          'bearerFormat': 'JWT',
-          'description':
-              "An access token from the deployment's OIDC identity provider.",
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
         },
       },
     },

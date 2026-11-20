@@ -253,7 +253,7 @@ pub(super) async fn config(
     post,
     path = "/auth/logout",
     tag = "auth",
-    security(("bearer" = [])),
+    security(("bearer" = []), ("session" = [])),
     responses(
         (status = OK, description = "Signed out.", body = LogoutResponse),
         (status = BAD_REQUEST, description = "The request was not made with a kanbot session.",
