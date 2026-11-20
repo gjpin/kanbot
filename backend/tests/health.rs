@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 
 use axum::{
     Router,
@@ -43,6 +43,41 @@ async fn ready_is_ok_with_database(pool: PgPool) {
         ready_status(common::app_with_pool(pool)).await,
         StatusCode::OK
     );
+}
+
+#[sqlx::test]
+async fn ready_is_unavailable_until_signing_keys_load(pool: PgPool) {
+    let idp = common::idp::TestIdp::start().await;
+    let keys = idp.key_cache(&[]);
+    let app = || common::app_with_keys(pool.clone(), &kanbot_backend::db::MIGRATOR, keys.clone());
+
+    let response = app()
+        .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["code"], "unavailable");
+
+    keys.refresh().await.unwrap();
+
+    assert_eq!(ready_status(app()).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn ready_is_unavailable_without_keys_even_before_the_database() {
+    // The database is unreachable: the key check comes first, and fails.
+    let keys = common::idp::unloaded_key_cache();
+    let options = sqlx::postgres::PgConnectOptions::new_without_pgpass()
+        .host("127.0.0.1")
+        .port(1);
+    let app = common::app_with_keys(
+        kanbot_backend::db::pool_with(options),
+        &kanbot_backend::db::MIGRATOR,
+        keys,
+    );
+    assert_eq!(ready_status(app).await, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[sqlx::test]

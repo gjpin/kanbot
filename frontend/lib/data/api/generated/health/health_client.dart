@@ -48,9 +48,11 @@ class HealthClient {
     return await convert.utf8.decoder.bind(response.stream).join();
   }
 
-  /// Readiness: the database is reachable and every migration has been
-  /// applied. Until `kanbot-backend migrate` has run, the old schema is in
-  /// place and requests could fail, so the instance takes no traffic.
+  /// Readiness: the database is reachable, every migration has been applied,
+  /// and the identity provider's signing keys have been loaded. Until
+  /// `kanbot-backend migrate` has run, the old schema is in place and
+  /// requests could fail; until the keys load, no request can be
+  /// authenticated. Either way the instance takes no traffic.
   Future<void> ready({
     Map<String, Object?> extra = const {},
     Future<void>? abortTrigger,

@@ -22,20 +22,26 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Readiness: the database is reachable and every migration has been
-/// applied. Until `kanbot-backend migrate` has run, the old schema is in
-/// place and requests could fail, so the instance takes no traffic.
+/// Readiness: the database is reachable, every migration has been applied,
+/// and the identity provider's signing keys have been loaded. Until
+/// `kanbot-backend migrate` has run, the old schema is in place and
+/// requests could fail; until the keys load, no request can be
+/// authenticated. Either way the instance takes no traffic.
 #[utoipa::path(
     get,
     path = "/ready",
     tag = "health",
     responses(
         (status = OK, description = "Ready to take traffic."),
-        (status = SERVICE_UNAVAILABLE, description = "Not ready: the database is unreachable or migrations are pending.",
+        (status = SERVICE_UNAVAILABLE, description = "Not ready: the database is unreachable, migrations are pending, or the identity provider's keys have not loaded.",
          body = Problem, content_type = "application/problem+json"),
     ),
 )]
 async fn ready(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+    if !state.keys.is_loaded() {
+        tracing::warn!("not ready: the identity provider's signing keys have not loaded");
+        return Err(AppError::Unavailable);
+    }
     let mut conn = state.db.acquire().await?;
     if db::migrations_are_current(&mut conn, state.migrator).await? {
         Ok(StatusCode::OK)

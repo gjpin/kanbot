@@ -6,8 +6,12 @@
 //! `DATABASE_URL` is not set. `docker compose up -d` in `backend/` starts a
 //! server; CI always sets it.
 
+pub mod idp;
+
+use std::sync::Arc;
+
 use axum::Router;
-use kanbot_backend::{db, http, state::AppState};
+use kanbot_backend::{auth::keys::KeyCache, db, http, state::AppState};
 use sqlx::{PgPool, migrate::Migrator, postgres::PgConnectOptions};
 
 /// The full router, backed by a lazy pool that points at a closed port. Fine
@@ -24,7 +28,22 @@ pub fn app_with_pool(pool: PgPool) -> Router {
     app_with(pool, &db::MIGRATOR)
 }
 
-/// The full router, backed by `pool`, expecting `migrator`'s migrations.
+/// The full router, backed by `pool`, expecting `migrator`'s migrations,
+/// with the test identity provider's default keys loaded (see [`idp::static_key_cache`]).
 pub fn app_with(pool: PgPool, migrator: &'static Migrator) -> Router {
-    http::router(AppState { db: pool, migrator }, &[], None)
+    app_with_keys(pool, migrator, idp::static_key_cache())
+}
+
+/// The full router, backed by `pool`, expecting `migrator`'s migrations,
+/// with `keys`.
+pub fn app_with_keys(pool: PgPool, migrator: &'static Migrator, keys: Arc<KeyCache>) -> Router {
+    http::router(
+        AppState {
+            db: pool,
+            migrator,
+            keys,
+        },
+        &[],
+        None,
+    )
 }

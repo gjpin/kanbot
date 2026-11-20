@@ -1,0 +1,7 @@
+{
+  "kty": "RSA",
+  "kid": "rsa-1024",
+  "use": "sig",
+  "n": "zrXiEZdumg0AdH85N4nhyseiHwL3_ZlvFwtNJ0tR5hEzwuHIoNxil7HwA9MPkPZRQPHxUWhHQKifDx-TxBSFB4F5jEBL-VHdy_EBMTmN4LR5UvOLEEVs2FIx6XHRokZDSJYBEO3ZyYnwOrJkp2w-B8ITkSyUhkys8BOtXf39VXs",
+  "e": "AQAB"
+}

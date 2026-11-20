@@ -15,7 +15,12 @@ use std::{net::SocketAddr, sync::Arc};
 
 use tokio::net::TcpListener;
 
-use crate::{config::Config, error::StartupError, state::AppState};
+use crate::{
+    auth::{discovery::IdpClient, keys::KeyCache},
+    config::Config,
+    error::StartupError,
+    state::AppState,
+};
 
 /// Connects to the database, binds the listener and serves until Ctrl+C or
 /// SIGTERM.
@@ -27,6 +32,12 @@ use crate::{config::Config, error::StartupError, state::AppState};
 pub async fn run(config: Config) -> Result<(), StartupError> {
     let db = db::pool(&config.database_url)?;
     db::observe_pool(&opentelemetry::global::meter(telemetry::SCOPE), db.clone());
+    let client =
+        IdpClient::new(&config.oidc.extra_root_certificates).map_err(StartupError::IdpClient)?;
+    let keys = Arc::new(KeyCache::new(Arc::new(config.oidc), client));
+    // The server starts even if the identity provider is unreachable: it
+    // reports not ready until the keys load.
+    keys.spawn_refresh();
     let relay = config
         .telemetry_relay_upstream
         .map(|upstream| telemetry_relay::routes(upstream, Arc::new(config.trusted_proxies)))
@@ -35,6 +46,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
         AppState {
             db,
             migrator: &db::MIGRATOR,
+            keys,
         },
         &config.cors_allowed_origins,
         relay,

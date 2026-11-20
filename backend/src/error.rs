@@ -128,6 +128,8 @@ pub enum StartupError {
     Telemetry(#[from] crate::telemetry::TelemetryError),
     #[error("failed to set up the telemetry relay")]
     Relay(#[from] crate::telemetry_relay::RelayError),
+    #[error("failed to build the identity provider's HTTP client")]
+    IdpClient(#[source] reqwest::Error),
 }
 
 #[cfg(test)]

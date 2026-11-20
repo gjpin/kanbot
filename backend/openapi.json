@@ -32,14 +32,14 @@
         "tags": [
           "health"
         ],
-        "summary": "Readiness: the database is reachable and every migration has been\napplied. Until `kanbot-backend migrate` has run, the old schema is in\nplace and requests could fail, so the instance takes no traffic.",
+        "summary": "Readiness: the database is reachable, every migration has been applied,\nand the identity provider's signing keys have been loaded. Until\n`kanbot-backend migrate` has run, the old schema is in place and\nrequests could fail; until the keys load, no request can be\nauthenticated. Either way the instance takes no traffic.",
         "operationId": "ready",
         "responses": {
           "200": {
             "description": "Ready to take traffic."
           },
           "503": {
-            "description": "Not ready: the database is unreachable or migrations are pending.",
+            "description": "Not ready: the database is unreachable, migrations are pending, or the identity provider's keys have not loaded.",
             "content": {
               "application/problem+json": {
                 "schema": {

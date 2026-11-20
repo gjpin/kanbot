@@ -324,15 +324,15 @@ consent, applies rate limits and runs against a local Authelia.
   parsing.
 
 ### 2.3 Discovery and keys (`src/auth/discovery.rs`, `src/auth/keys.rs`)
-- [ ] **HTTP client:** a dedicated `reqwest` client with a 2 s connect timeout, a
+- [x] **HTTP client:** a dedicated `reqwest` client with a 2 s connect timeout, a
   5 s total timeout, no redirects, and the extra CA from `OIDC_CA_FILE`. Bodies
   are read in chunks and capped at 64 KiB for discovery and 256 KiB for the JWKS.
-- [ ] **Discovery** (`<issuer>/.well-known/openid-configuration`): its `issuer`
+- [x] **Discovery** (`<issuer>/.well-known/openid-configuration`): its `issuer`
   must equal `OIDC_ISSUER` byte for byte. `jwks_uri` must be HTTPS (or allowed
   loopback HTTP) on the issuer's origin or in `OIDC_JWKS_ALLOWED_ORIGINS`. Keep
   `token_endpoint`, `authorization_endpoint` and `end_session_endpoint` (if
   present) for phase 3.
-- [ ] **JWKS:**
+- [x] **JWKS:**
   - keep only keys with `use` = `sig` or absent;
   - accepted key types: RSA with a modulus of at least 2048 bits, EC P-256 and
     P-384, and OKP Ed25519;
@@ -341,16 +341,17 @@ consent, applies rate limits and runs against a local Authelia.
   Each key's algorithm is its `alg` if present (it must be on the allowed list:
   RS256/384/512, PS256/384/512, ES256, ES384, EdDSA). Otherwise derive it: RSA →
   RS256, P-256 → ES256, P-384 → ES384, Ed25519 → EdDSA.
-- [ ] **Key cache:**
+- [x] **Key cache:**
   - Readers never hold a lock across `.await`.
   - A background task refreshes every `OIDC_JWKS_TTL`.
   - An unknown `kid` triggers a single refresh shared by all waiting requests, at
     most once per second.
   - A failed refresh, or one that yields no usable keys, keeps the last good set.
-- [ ] **Startup:** the server starts even if the IdP is unreachable, retrying with
+- [x] **Startup:** the server starts even if the IdP is unreachable, retrying with
   backoff. Until keys are loaded:
   - `/ready` returns `503`;
-  - authenticated requests get `503 unavailable` (not `401`).
+  - authenticated requests get `503 unavailable` (not `401`). (Lands with the
+    middleware in 2.6: `KeyLookup::NotLoaded`.)
 
 ### 2.4 Token validation (`src/auth/token.rs`)
 - [ ] A pure function: token, key set, config and the current time go in; a
@@ -908,7 +909,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [ ] 2.4 [ ] 2.5 [ ] 2.6 [ ] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

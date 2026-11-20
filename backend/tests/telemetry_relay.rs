@@ -1,6 +1,8 @@
 //! The telemetry relay: forwarding OTLP/HTTP batches to the collector, and
 //! the limits that keep a public endpoint from being abused.
 
+pub mod common;
+
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -79,6 +81,7 @@ fn app(upstream: Url, trusted: TrustedProxies, peer: SocketAddr) -> Router {
         AppState {
             db: db::pool_with(options),
             migrator: &db::MIGRATOR,
+            keys: common::idp::static_key_cache(),
         },
         &[],
         Some(relay),
@@ -418,6 +421,7 @@ async fn relay_routes_exist_only_when_configured() {
         AppState {
             db: db::pool_with(options),
             migrator: &db::MIGRATOR,
+            keys: common::idp::static_key_cache(),
         },
         &[],
         None,
@@ -457,6 +461,7 @@ async fn without_connect_info_requests_fail_closed() {
         AppState {
             db: db::pool_with(options),
             migrator: &db::MIGRATOR,
+            keys: common::idp::static_key_cache(),
         },
         &[],
         Some(relay),
