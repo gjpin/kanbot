@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM sessions WHERE id = $1 RETURNING idp_id_token",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "idp_id_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "idp_id_token"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3a59d227bcb2fdc0ac6a4f071d65b497dc82ba65b12406dcee9f987262d10855"
+}

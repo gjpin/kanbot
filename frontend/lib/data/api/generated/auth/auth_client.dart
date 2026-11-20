@@ -9,6 +9,9 @@ import 'package:kanbot/data/api/generated/auth/models/auth_config.dart'
 import 'package:kanbot/data/api/generated/auth/models/login_platform.dart'
     as models
     show LoginPlatform;
+import 'package:kanbot/data/api/generated/auth/models/logout_response.dart'
+    as models
+    show LogoutResponse;
 import 'package:kanbot/data/api/generated/auth/models/token_request.dart'
     as models
     show TokenRequest;
@@ -199,6 +202,57 @@ class AuthClient {
       throw http.ClientException('HTTP $status', url);
     }
     await response.stream.drain<void>();
+  }
+
+  /// Signs out: ends the current kanbot session (and clears the web
+  /// app's cookie). Needs a session; an identity provider's access token
+  /// has none.
+  Future<models.LogoutResponse> logout({
+    Map<String, Object?> extra = const {
+      'openapi.security': [
+        {'bearer': <String>[]},
+      ],
+      'openapi.securitySchemes': {
+        'bearer': {
+          'type': 'http',
+          'scheme': 'bearer',
+          'bearerFormat': 'JWT',
+          'description':
+              "An access token from the deployment's OIDC identity provider.",
+        },
+      },
+    },
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+  }) async {
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    final url = Uri.parse('$base/auth/logout');
+    final request = http.AbortableRequest(
+      'POST',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return models.LogoutResponse.fromJson(value as Map<String, Object?>);
+    });
   }
 
   /// Redeems a native app's one-time code for its session token.

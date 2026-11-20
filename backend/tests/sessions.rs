@@ -1388,3 +1388,78 @@ async fn an_unreachable_idp_with_an_expired_token_is_unavailable(pool: PgPool) {
         "the session survives an IdP outage"
     );
 }
+
+async fn logout(app: &Router, credentials: (header::HeaderName, String)) -> Response {
+    app.clone()
+        .oneshot(
+            Request::post("/auth/logout")
+                .header(credentials.0, credentials.1)
+                .header(header::ORIGIN, "http://localhost:3000")
+                .header("x-kanbot-csrf", "1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+async fn logout_ends_the_session(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let cookie = (header::COOKIE, format!("__Host-kanbot_session={token}"));
+
+    let response = logout(&app, cookie.clone()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(set_cookies(&response).iter().any(|cookie| {
+        cookie.starts_with("__Host-kanbot_session=;") && cookie.contains("Max-Age=0")
+    }));
+    assert_eq!(problem(response).await["logout_url"], Value::Null);
+    assert_eq!(session_count(&pool).await, 0);
+    assert_eq!(
+        me_by_bearer(&app, &token).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // Signing out again: the cookie is just stale now.
+    assert_eq!(
+        logout(&app, cookie).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn logout_returns_the_idp_logout_url_when_there_is_one(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let mut document = idp.discovery_document();
+    document["end_session_endpoint"] = json!(format!("{}/logout", idp.issuer));
+    idp.set_discovery(Reply::Json(document));
+    let app = app(pool.clone(), &idp).await;
+    let code = native_code(&app, &idp, "bob").await;
+    let (_, body) = redeem(&app, &json!({ "code": code, "code_verifier": VERIFIER })).await;
+    let token = body["session_token"].as_str().unwrap();
+
+    let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {token}"))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::SET_COOKIE), None);
+    let url = Url::parse(problem(response).await["logout_url"].as_str().unwrap()).unwrap();
+    assert_eq!(url.path(), "/logout");
+    assert_eq!(query(&url, "client_id").as_deref(), Some("kanbot"));
+    assert_eq!(
+        query(&url, "post_logout_redirect_uri").as_deref(),
+        Some("http://localhost:3000/")
+    );
+    let hint = query(&url, "id_token_hint").unwrap();
+    assert_eq!(hint.split('.').count(), 3, "the ID token from the sign-in");
+    assert_eq!(session_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn logout_needs_a_session(pool: PgPool) {
+    let app = common::app_with_pool(pool);
+    let jwt = common::idp::access_token("alice", &["kanbot-user"]);
+    let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {jwt}"))).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

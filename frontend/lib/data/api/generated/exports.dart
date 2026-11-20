@@ -5,6 +5,7 @@ export 'auth/models/auth_config.dart';
 export 'auth/models/error_code.dart';
 export 'auth/models/field_error.dart';
 export 'auth/models/login_platform.dart';
+export 'auth/models/logout_response.dart';
 export 'auth/models/problem.dart';
 export 'auth/models/token_request.dart';
 export 'auth/models/token_response.dart';

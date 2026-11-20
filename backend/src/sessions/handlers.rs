@@ -16,7 +16,7 @@ use crate::{
     error::AppError,
     http::problem::Problem,
     sessions::{
-        dto::{AuthConfig, LoginQuery, TokenRequest, TokenResponse},
+        dto::{AuthConfig, LoginQuery, LogoutResponse, TokenRequest, TokenResponse},
         model::LoginRequest,
         service::{self, CallbackParams, Destination, LoginOutcome},
     },
@@ -244,4 +244,41 @@ pub(super) async fn config(
         telemetry_available,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     })
+}
+
+/// Signs out: ends the current kanbot session (and clears the web
+/// app's cookie). Needs a session; an identity provider's access token
+/// has none.
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    security(("bearer" = [])),
+    responses(
+        (status = OK, description = "Signed out.", body = LogoutResponse),
+        (status = BAD_REQUEST, description = "The request was not made with a kanbot session.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = UNAUTHORIZED, description = "No valid credentials.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = FORBIDDEN, description = "The user has no kanbot role or is disabled.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn logout(
+    State(state): State<AppState>,
+    crate::http::extract::AuthUser(_): crate::http::extract::AuthUser,
+    session: Option<axum::Extension<crate::auth::middleware::CurrentSession>>,
+) -> Result<Response, AppError> {
+    let axum::Extension(session) = session.ok_or(AppError::BadRequest)?;
+    let logout_url = service::logout(&state.db, &state.keys, &state.sessions, session.id).await?;
+    let mut response = Json(LogoutResponse {
+        logout_url: logout_url.map(String::from),
+    })
+    .into_response();
+    if session.from_cookie {
+        response
+            .headers_mut()
+            .append(header::SET_COOKIE, clear_session_cookie());
+    }
+    Ok(response)
 }

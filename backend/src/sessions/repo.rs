@@ -300,3 +300,17 @@ pub(super) async fn delete_session_in(
         .await?;
     Ok(())
 }
+
+/// Deletes a session; returns its sealed ID token, if it existed.
+#[tracing::instrument(skip_all, fields(session.id = %id))]
+pub(super) async fn delete_session(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<Option<Vec<u8>>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "DELETE FROM sessions WHERE id = $1 RETURNING idp_id_token",
+        id
+    )
+    .fetch_optional(db)
+    .await
+}

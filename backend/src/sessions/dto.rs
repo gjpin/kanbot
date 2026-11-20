@@ -169,3 +169,11 @@ pub struct AuthConfig {
     /// The server's version.
     pub version: String,
 }
+
+/// The outcome of a sign-out.
+#[derive(Serialize, ToSchema)]
+pub struct LogoutResponse {
+    /// Where to send the browser to sign out of the identity provider too,
+    /// when it supports that (RP-initiated logout). `null` otherwise.
+    pub logout_url: Option<String>,
+}

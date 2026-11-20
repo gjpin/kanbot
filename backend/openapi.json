@@ -194,6 +194,62 @@
         }
       }
     },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Signs out: ends the current kanbot session (and clears the web\napp's cookie). Needs a session; an identity provider's access token\nhas none.",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not made with a kanbot session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role or is disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/auth/token": {
       "post": {
         "tags": [
@@ -464,6 +520,19 @@
           "pointer": {
             "type": "string",
             "description": "JSON Pointer (RFC 6901) to the field in the request body, for example\n`/title` or `/labels/2`."
+          }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "description": "The outcome of a sign-out.",
+        "properties": {
+          "logout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to send the browser to sign out of the identity provider too,\nwhen it supports that (RP-initiated logout). `null` otherwise."
           }
         }
       },

@@ -696,6 +696,43 @@ async fn store_refreshed(
     Ok(())
 }
 
+/// Ends a session. Returns the identity provider's logout URL (with
+/// `id_token_hint` and `post_logout_redirect_uri`) when discovery lists an
+/// `end_session_endpoint`, so the app can end that session too.
+///
+/// # Errors
+///
+/// A database error.
+pub async fn logout(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session_id: Uuid,
+) -> Result<Option<Url>, AppError> {
+    let Some(sealed_id_token) = repo::delete_session(db, session_id).await? else {
+        return Ok(None);
+    };
+    tracing::info!(session.id = %session_id, "signed out");
+    let Some(mut url) = keys
+        .discovery()
+        .and_then(|discovery| discovery.end_session_endpoint.clone())
+    else {
+        return Ok(None);
+    };
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("client_id", &config.client_id)
+            .append_pair("post_logout_redirect_uri", &config.public_url.join(""));
+        if let Some(id_token) = sealed_id_token
+            .and_then(|sealed| crypto::open(&config.keys, session_id, Field::IdToken, &sealed).ok())
+        {
+            query.append_pair("id_token_hint", id_token.expose_secret());
+        }
+    }
+    Ok(Some(url))
+}
+
 /// The token's key, refreshing the keys once for an unknown `kid`.
 async fn key_for<'t>(
     keys: &KeyCache,
