@@ -21,7 +21,7 @@ use common::idp::access_token;
 use http_body_util::BodyExt;
 use kanbot_backend::{
     db,
-    http::{self, middleware::rate_limit::RateLimit},
+    http::{HttpSettings, middleware::rate_limit::RateLimit},
     state::AppState,
     telemetry_relay::{self, MAX_BODY_BYTES},
 };
@@ -82,13 +82,13 @@ const GENEROUS: RateLimit = RateLimit {
 /// The full app with the relay to `upstream`, limited per user by `limit`.
 fn app_limited(pool: &PgPool, upstream: Url, limit: RateLimit) -> Router {
     let relay = telemetry_relay::routes(upstream, limit).unwrap();
-    http::router(
+    common::serve(
         AppState {
             db: pool.clone(),
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
         },
-        &[],
+        HttpSettings::new(),
         Some(relay),
     )
 }
@@ -375,13 +375,13 @@ async fn large_collector_responses_are_dropped(pool: PgPool) {
 
 #[sqlx::test]
 async fn relay_routes_exist_only_when_configured(pool: PgPool) {
-    let app = http::router(
+    let app = common::serve(
         AppState {
             db: pool,
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
         },
-        &[],
+        HttpSettings::new(),
         None,
     );
 

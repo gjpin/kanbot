@@ -96,7 +96,38 @@ impl RateLimits {
 /// its memory does not grow with every address that ever connected.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Keys requests by client IP address.
+/// The rate-limit key of a client address: an IPv4 address as is, an IPv6
+/// address by its /64 prefix, since one client usually holds a whole /64.
+#[must_use]
+pub fn ip_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            for segment in segments.iter_mut().skip(4) {
+                *segment = 0;
+            }
+            IpAddr::from(segments)
+        }
+        v4 @ IpAddr::V4(_) => v4,
+    }
+}
+
+/// The rate-limit key of the client that sent `request` (see [`ip_key`]),
+/// or `None` if the server provided no peer address.
+pub fn client_key<T>(request: &Request<T>, trusted_proxies: &TrustedProxies) -> Option<IpAddr> {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()?
+        .0
+        .ip();
+    Some(ip_key(client_ip(
+        peer,
+        request.headers().get_all("x-forwarded-for"),
+        trusted_proxies,
+    )))
+}
+
+/// Keys requests by client (see [`client_key`]).
 #[derive(Clone)]
 pub struct ClientIpKey {
     trusted_proxies: Arc<TrustedProxies>,
@@ -106,17 +137,7 @@ impl KeyExtractor for ClientIpKey {
     type Key = IpAddr;
 
     fn extract<T>(&self, request: &Request<T>) -> Result<IpAddr, GovernorError> {
-        let peer = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .ok_or(GovernorError::UnableToExtractKey)?
-            .0
-            .ip();
-        Ok(client_ip(
-            peer,
-            request.headers().get_all("x-forwarded-for"),
-            &self.trusted_proxies,
-        ))
+        client_key(request, &self.trusted_proxies).ok_or(GovernorError::UnableToExtractKey)
     }
 }
 
@@ -124,26 +145,25 @@ impl KeyExtractor for ClientIpKey {
 #[error("invalid rate limit: the period and burst size must be positive")]
 pub struct InvalidRateLimit;
 
-/// Limits every route of `router` per client: a burst of `burst` requests,
-/// refilled at one request per `period`. Spawns a task (on the current
-/// Tokio runtime) that periodically drops idle clients.
+/// Limits every route of `router` per client (see [`client_key`]).
+/// Spawns a task (on the current Tokio runtime) that periodically drops
+/// idle clients. Requests without a peer address fail closed (`500`).
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRateLimit`] if `period` or `burst` is zero.
+/// Returns [`InvalidRateLimit`] if the limit's period rounds to zero.
 pub fn limit_per_client<S>(
     router: Router<S>,
     trusted_proxies: Arc<TrustedProxies>,
-    period: Duration,
-    burst: u32,
+    limit: RateLimit,
 ) -> Result<Router<S>, InvalidRateLimit>
 where
     S: Clone + Send + Sync + 'static,
 {
     let config = GovernorConfigBuilder::default()
         .key_extractor(ClientIpKey { trusted_proxies })
-        .period(period)
-        .burst_size(burst)
+        .period(limit.period())
+        .burst_size(limit.burst.get())
         .finish()
         .ok_or(InvalidRateLimit)?;
     let limiter = Arc::clone(config.limiter());
@@ -157,8 +177,10 @@ where
     Ok(router.layer(GovernorLayer::new(config).error_handler(|error| rejection(&error))))
 }
 
-/// A `429 rate_limited` problem asking to retry after `seconds`.
-fn too_many_requests(seconds: u64) -> Response {
+/// A `429 rate_limited` problem asking to retry after `seconds` (at least
+/// one).
+#[must_use]
+pub fn too_many_requests(seconds: u64) -> Response {
     let mut response = Problem::new(ErrorCode::RateLimited).into_response();
     response
         .headers_mut()
@@ -219,6 +241,24 @@ impl<K: Eq + Hash> KeyedLimiter<K> {
         Ok(())
     }
 
+    /// Whether a request for `key` at `now` would be admitted, without
+    /// spending any budget.
+    ///
+    /// # Errors
+    ///
+    /// The time until a request for `key` would be admitted.
+    pub fn peek(&self, key: &K, now: Instant) -> Result<(), Duration> {
+        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        let ahead = arrivals
+            .get(key)
+            .map_or(Duration::ZERO, |at| at.saturating_duration_since(now));
+        if ahead > self.tolerance {
+            Err(ahead.saturating_sub(self.tolerance))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Forgets keys that are back to a full burst at `now`, so memory does
     /// not grow with every key ever seen.
     pub fn retain_recent(&self, now: Instant) {
@@ -252,15 +292,30 @@ where
     S: Clone + Send + Sync + 'static,
 {
     let limiter = Arc::new(KeyedLimiter::<UserId>::new(limit));
-    let cleanup = Arc::clone(&limiter);
+    spawn_cleanup(&limiter);
+    router.layer(axum::middleware::from_fn_with_state(limiter, per_user))
+}
+
+/// `wait` in whole seconds, rounded up.
+#[must_use]
+pub fn whole_seconds(wait: Duration) -> u64 {
+    wait.as_secs()
+        .saturating_add(u64::from(wait.subsec_nanos() > 0))
+}
+
+/// Spawns a task that periodically calls `retain_recent` on `limiter`.
+pub fn spawn_cleanup<K>(limiter: &Arc<KeyedLimiter<K>>)
+where
+    K: Eq + Hash + Send + 'static,
+{
+    let limiter = Arc::clone(limiter);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
         loop {
             interval.tick().await;
-            cleanup.retain_recent(Instant::now());
+            limiter.retain_recent(Instant::now());
         }
     });
-    router.layer(axum::middleware::from_fn_with_state(limiter, per_user))
 }
 
 async fn per_user(
@@ -273,13 +328,7 @@ async fn per_user(
     };
     match limiter.check(user.id, Instant::now()) {
         Ok(()) => next.run(request).await,
-        Err(wait) => {
-            // Whole seconds, rounded up.
-            let seconds = wait
-                .as_secs()
-                .saturating_add(u64::from(wait.subsec_nanos() > 0));
-            too_many_requests(seconds)
-        }
+        Err(wait) => too_many_requests(whole_seconds(wait)),
     }
 }
 
@@ -347,6 +396,39 @@ mod tests {
             assert!(limiter.check("a", at(start, 100)).is_err());
         }
         assert_eq!(limiter.check("a", at(start, 1000)), Ok(()));
+    }
+
+    #[test]
+    fn peek_does_not_spend_budget() {
+        let limiter = limiter(1, 2);
+        let start = Instant::now();
+        assert_eq!(limiter.peek(&"a", start), Ok(()));
+        assert!(limiter.is_empty());
+        limiter.check("a", start).unwrap();
+        assert_eq!(limiter.peek(&"a", start), Ok(()));
+        limiter.check("a", start).unwrap();
+        assert_eq!(limiter.peek(&"a", start), Err(Duration::from_secs(1)));
+        assert_eq!(limiter.peek(&"a", at(start, 1000)), Ok(()));
+        assert_eq!(limiter.check("a", at(start, 1000)), Ok(()));
+    }
+
+    #[test]
+    fn rounds_waits_up_to_whole_seconds() {
+        assert_eq!(whole_seconds(Duration::ZERO), 0);
+        assert_eq!(whole_seconds(Duration::from_millis(1)), 1);
+        assert_eq!(whole_seconds(Duration::from_secs(1)), 1);
+        assert_eq!(whole_seconds(Duration::from_millis(1001)), 2);
+    }
+
+    #[test]
+    fn keys_ipv4_by_address_and_ipv6_by_slash_64() {
+        let key = |ip: &str| ip_key(ip.parse().unwrap()).to_string();
+        assert_eq!(key("203.0.113.9"), "203.0.113.9");
+        assert_eq!(key("::ffff:203.0.113.9"), "203.0.113.9");
+        assert_eq!(key("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), "2001:db8:1:2::");
+        assert_eq!(key("2001:db8:1:2::1"), "2001:db8:1:2::");
+        assert_eq!(key("2001:db8:1:3::1"), "2001:db8:1:3::");
+        assert_eq!(key("::1"), "::");
     }
 
     #[test]

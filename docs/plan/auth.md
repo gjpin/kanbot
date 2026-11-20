@@ -443,18 +443,19 @@ consent, applies rate limits and runs against a local Authelia.
   longer true).
 
 ### 2.8 Rate limits and load shedding
-- [ ] **IPv6 keying:** change the IP key extractor in
+- [x] **IPv6 keying:** change the IP key extractor in
   `http/middleware/rate_limit.rs` to key IPv6 by /64.
-- [ ] **Layers on the API router:**
+- [x] **Layers on the API router:**
   - per-IP limiter;
   - failed-authentication limiter (checked before validating credentials);
   - per-user limiter (keyed by the user ID from request extensions, after
     authentication);
   - global in-flight cap: `tower` `ConcurrencyLimit` + `LoadShed`, turned into
-    `503` with `Retry-After` by `ensure_problem_body`.
-- [ ] **Pool size:** `db::pool` uses `DATABASE_MAX_CONNECTIONS`.
-- [ ] **Readiness:** `/ready` requires migrations applied **and** keys loaded.
-- [ ] **Metric:** `kanbot.auth.token.rejections` (counter), with a `reason`
+    `503` with `Retry-After` by `ensure_problem_body`. (`GlobalConcurrencyLimit`:
+    `Router::layer` wraps each route separately.)
+- [x] **Pool size:** `db::pool` uses `DATABASE_MAX_CONNECTIONS`.
+- [x] **Readiness:** `/ready` requires migrations applied **and** keys loaded.
+- [x] **Metric:** `kanbot.auth.token.rejections` (counter), with a `reason`
   attribute from a fixed list:
   - `malformed`, `too_large`, `unknown_key`, `bad_signature`, `bad_algorithm`;
   - `expired`, `not_yet_valid`, `wrong_issuer`, `wrong_audience`;
@@ -914,7 +915,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 Tick as steps land (each step is one commit on `auth/oidc`).
 
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
-- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [ ] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
+- Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [ ] 2.9 [ ] 2.10 [ ] 2.11
 - Phase 3: [ ] 3.1 … [ ] 3.18
 - Phase 4: [ ] 4.1 … [ ] 4.8
 - Phase 5: [ ] 5.1 … [ ] 5.8

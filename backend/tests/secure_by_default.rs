@@ -10,7 +10,7 @@ use axum::{
 };
 use kanbot_backend::{
     db,
-    http::{self, BEARER_SCHEME, middleware::rate_limit::RateLimits},
+    http::{self, BEARER_SCHEME, HttpSettings, middleware::rate_limit::RateLimits},
     state::AppState,
     telemetry_relay,
 };
@@ -137,13 +137,13 @@ async fn telemetry_relay_routes_refuse_requests_without_credentials() {
     let options = sqlx::postgres::PgConnectOptions::new_without_pgpass()
         .host("127.0.0.1")
         .port(1);
-    let app = http::router(
+    let app = common::serve(
         AppState {
             db: db::pool_with(options),
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
         },
-        &[],
+        HttpSettings::new(),
         Some(relay),
     );
     for signal in ["traces", "logs", "metrics"] {

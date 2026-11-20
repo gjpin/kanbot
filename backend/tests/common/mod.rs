@@ -8,11 +8,45 @@
 
 pub mod idp;
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
-use axum::Router;
-use kanbot_backend::{auth::keys::KeyCache, db, http, state::AppState};
+use axum::{Extension, Router, extract::ConnectInfo};
+use kanbot_backend::{
+    auth::keys::KeyCache,
+    db,
+    http::{self, HttpSettings},
+    state::AppState,
+};
 use sqlx::{PgPool, migrate::Migrator, postgres::PgConnectOptions};
+
+/// The client address requests come from, unless a test chooses another.
+pub const PEER: &str = "203.0.113.9:50000";
+
+/// The full router as the real server serves it, with requests coming from
+/// `peer` (what `into_make_service_with_connect_info` provides).
+///
+/// # Panics
+///
+/// If a rate limit is invalid.
+pub fn serve_from(
+    peer: SocketAddr,
+    state: AppState,
+    settings: HttpSettings,
+    relay: Option<Router>,
+) -> Router {
+    http::router(state, settings, relay)
+        .unwrap()
+        .layer(Extension(ConnectInfo(peer)))
+}
+
+/// [`serve_from`] [`PEER`].
+///
+/// # Panics
+///
+/// If a rate limit is invalid.
+pub fn serve(state: AppState, settings: HttpSettings, relay: Option<Router>) -> Router {
+    serve_from(PEER.parse().unwrap(), state, settings, relay)
+}
 
 /// The full router, backed by a lazy pool that points at a closed port. Fine
 /// for routes that never touch the database.
@@ -37,13 +71,13 @@ pub fn app_with(pool: PgPool, migrator: &'static Migrator) -> Router {
 /// The full router, backed by `pool`, expecting `migrator`'s migrations,
 /// with `keys`.
 pub fn app_with_keys(pool: PgPool, migrator: &'static Migrator, keys: Arc<KeyCache>) -> Router {
-    http::router(
+    serve(
         AppState {
             db: pool,
             migrator,
             keys,
         },
-        &[],
+        HttpSettings::new(),
         None,
     )
 }

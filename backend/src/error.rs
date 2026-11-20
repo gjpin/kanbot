@@ -215,6 +215,8 @@ pub enum StartupError {
     Relay(#[from] crate::telemetry_relay::RelayError),
     #[error("failed to build the identity provider's HTTP client")]
     IdpClient(#[source] reqwest::Error),
+    #[error("invalid rate limit")]
+    RateLimit(#[from] crate::http::middleware::rate_limit::InvalidRateLimit),
 }
 
 #[cfg(test)]

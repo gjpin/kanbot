@@ -31,7 +31,7 @@ use crate::{
 /// Returns [`StartupError`] if the database options are invalid, the listener
 /// cannot bind, or the server fails.
 pub async fn run(config: Config) -> Result<(), StartupError> {
-    let db = db::pool(&config.database_url)?;
+    let db = db::pool(&config.database_url, config.database_max_connections)?;
     db::observe_pool(&opentelemetry::global::meter(telemetry::SCOPE), db.clone());
     let client =
         IdpClient::new(&config.oidc.extra_root_certificates).map_err(StartupError::IdpClient)?;
@@ -49,9 +49,15 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             migrator: &db::MIGRATOR,
             keys,
         },
-        &config.cors_allowed_origins,
+        http::HttpSettings {
+            allowed_origins: config.cors_allowed_origins,
+            trusted_proxies: Arc::new(config.trusted_proxies),
+            rate_limits: config.rate_limits,
+            max_in_flight_requests: config.max_in_flight_requests,
+            ..http::HttpSettings::new()
+        },
         relay,
-    );
+    )?;
 
     let listener = TcpListener::bind(config.listen_addr)
         .await

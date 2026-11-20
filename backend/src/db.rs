@@ -1,7 +1,7 @@
 //! Database connection pool and schema migrations. Feature `repo` modules
 //! take a `&PgPool`.
 
-use std::time::Duration;
+use std::{num::NonZeroU32, time::Duration};
 
 use opentelemetry::{KeyValue, metrics::Meter};
 use secrecy::{ExposeSecret, SecretString};
@@ -11,7 +11,8 @@ use sqlx::{
     postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions},
 };
 
-const MAX_CONNECTIONS: u32 = 10;
+/// Pool size when none is configured (`DATABASE_MAX_CONNECTIONS`).
+const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 const STATEMENT_TIMEOUT: &str = "5s";
 
@@ -30,21 +31,29 @@ const UNDEFINED_TABLE: &str = "42P01";
 /// The migrations in `migrations/`, embedded at compile time.
 pub static MIGRATOR: Migrator = sqlx::migrate!();
 
-/// Builds the pool from a connection string. Connections are opened lazily,
-/// on first use.
+/// Builds the pool from a connection string, with up to `max_connections`
+/// connections. Connections are opened lazily, on first use.
 ///
 /// # Errors
 ///
 /// Returns an error if `url` is not a valid PostgreSQL connection string.
-pub fn pool(url: &SecretString) -> Result<PgPool, sqlx::Error> {
-    Ok(pool_with(connect_options(url)?))
+pub fn pool(url: &SecretString, max_connections: NonZeroU32) -> Result<PgPool, sqlx::Error> {
+    Ok(sized_pool(connect_options(url)?, max_connections))
 }
 
-/// Builds the pool from parsed options, adding the statement timeout.
+/// Builds the pool from parsed options, with the default size and the
+/// statement timeout.
 #[must_use]
 pub fn pool_with(options: PgConnectOptions) -> PgPool {
+    sized_pool(
+        options,
+        NonZeroU32::new(DEFAULT_MAX_CONNECTIONS).unwrap_or(NonZeroU32::MIN),
+    )
+}
+
+fn sized_pool(options: PgConnectOptions, max_connections: NonZeroU32) -> PgPool {
     PgPoolOptions::new()
-        .max_connections(MAX_CONNECTIONS)
+        .max_connections(max_connections.get())
         .acquire_timeout(ACQUIRE_TIMEOUT)
         .connect_lazy_with(options.options([("statement_timeout", STATEMENT_TIMEOUT)]))
 }
@@ -151,4 +160,18 @@ async fn applied_migrations(conn: &mut PgConnection) -> Result<Vec<(i64, Vec<u8>
         .into_iter()
         .map(|applied| (applied.version, applied.checksum.into_owned()))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_pool_has_the_configured_size() {
+        let url = SecretString::from("postgres://kanbot@127.0.0.1:1/kanbot");
+        let pool = pool(&url, NonZeroU32::new(7).unwrap()).unwrap();
+        assert_eq!(pool.options().get_max_connections(), 7);
+        let default = pool_with(connect_options(&url).unwrap());
+        assert_eq!(default.options().get_max_connections(), 10);
+    }
 }

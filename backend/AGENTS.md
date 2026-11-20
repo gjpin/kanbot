@@ -172,9 +172,10 @@ Tests (`#[test]`, `#[cfg(test)]`) may use `unwrap`, `expect`, `panic!`, indexing
 - `RequestBodyLimitLayer` + `DefaultBodyLimit`: a body size limit.
 - Database pool: `max_connections`, `acquire_timeout` and a PostgreSQL `statement_timeout`.
 
-- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`. Applied to every route from phase 2.8 (below).
-- Per-user rate limiting (`rate_limit::limit_per_user`, an in-memory GCRA limiter keyed by user ID), inside the authentication middleware. Applied to the telemetry relay (`RATE_LIMIT_TELEMETRY_*`), and to every route from phase 2.8 (`RATE_LIMIT_USER_*`).
-- Load shedding: a global cap on requests in flight (`tower` `ConcurrencyLimit` + `LoadShed`). Above it, requests get `503` with `Retry-After`.
+- Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`; without it, requests fail closed (`500`). Applied to every route.
+- Per-user rate limiting (`rate_limit::limit_per_user`, an in-memory GCRA limiter keyed by user ID), inside the authentication middleware. Applied to every route (`RATE_LIMIT_USER_*`), and to the telemetry relay (`RATE_LIMIT_TELEMETRY_*`).
+- Failed-authentication limiting (`auth/middleware.rs`), per client IP: every refused credential (`401`) spends budget; a client over budget gets `429` for any request with credentials, before they are checked.
+- Load shedding: a global cap on requests in flight (`tower` `GlobalConcurrencyLimit` + `LoadShed`; a plain `ConcurrencyLimit` added with `Router::layer` would cap each route separately). Above it, requests get `503` with `Retry-After`.
 
 ### Rate limits
 
