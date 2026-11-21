@@ -5,7 +5,9 @@
 //!   user refuse it through the [`AuthUser`](crate::http::extract::AuthUser)
 //!   extractor.
 //! - Invalid credentials: `401` at once, never treated as anonymous.
-//! - Valid credentials: the user is recorded and attached to the request.
+//! - Valid credentials: the user is recorded, their IdP-synced team
+//!   memberships are brought up to date, and the user is attached to the
+//!   request.
 
 use std::{
     net::IpAddr,
@@ -40,6 +42,7 @@ use crate::{
     },
     sessions::{self, secrets, service::SessionRefusal},
     state::AppState,
+    teams::service as teams,
     users::{model::AuthenticatedUser, service as users},
 };
 
@@ -201,6 +204,15 @@ pub async fn authenticate(
         Credentials::Session { token, from_cookie } => {
             session_user(&auth.app, token, from_cookie).await
         }
+    };
+    let result = match result {
+        Ok((user, session)) => {
+            match teams::sync_idp_groups(&auth.app.db, user.id, &user.groups).await {
+                Ok(()) => Ok((user, session)),
+                Err(error) => Err(Refusal::Error(error)),
+            }
+        }
+        Err(refusal) => Err(refusal),
     };
     match result {
         Ok((_, Some(session)))
