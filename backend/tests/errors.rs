@@ -207,3 +207,49 @@ async fn successful_responses_are_untouched() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body.as_ref(), b"x");
 }
+
+/// What a failed write becomes, for real Postgres errors.
+#[sqlx::test]
+async fn failed_writes_map_to_conflict_not_found_or_database(pool: sqlx::PgPool) {
+    let write = |slug: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query!(
+                "INSERT INTO organizations (id, slug, name) VALUES ($1, $2, 'Org')",
+                uuid::Uuid::new_v4(),
+                slug
+            )
+            .execute(&pool)
+            .await
+            .map(|_| ())
+        }
+    };
+    // The Default organization already has this slug.
+    let duplicate = write("default").await.unwrap_err();
+    assert!(matches!(
+        AppError::from_write(duplicate),
+        AppError::Conflict
+    ));
+    let missing_user = sqlx::query!(
+        "INSERT INTO organization_admins (organization_id, user_id) VALUES ($1, $2)",
+        uuid::Uuid::from_u128(1),
+        uuid::Uuid::new_v4()
+    )
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        AppError::from_write(missing_user),
+        AppError::NotFound
+    ));
+    // Neither: a check constraint stays a database error (a bug: 500).
+    let invalid = write("Not A Slug").await.unwrap_err();
+    assert!(matches!(
+        AppError::from_write(invalid),
+        AppError::Database(_)
+    ));
+    assert!(matches!(
+        AppError::from_write(sqlx::Error::PoolTimedOut),
+        AppError::Database(sqlx::Error::PoolTimedOut)
+    ));
+}

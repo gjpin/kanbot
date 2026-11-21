@@ -629,3 +629,36 @@ async fn delete_idp_group_stops_syncing(pool: PgPool) {
         StatusCode::FORBIDDEN
     );
 }
+
+#[sqlx::test]
+async fn renaming_and_setting_the_group_needs_both_permissions(pool: PgPool) {
+    use kanbot_backend::authz::policies::Policies;
+    // Nobody may manage teams, platform admins included; setting the group
+    // stays allowed.
+    let policies = Policies::with_deployer(
+        r#"@id("frozen-teams") forbid (principal, action == Kanbot::Action::"manageTeam", resource);"#,
+    )
+    .unwrap();
+    let api = Api::of(common::app_with_policies(
+        pool.clone(),
+        std::sync::Arc::new(policies),
+    ));
+    let root = admin("root");
+    let team = insert_team(&pool, "platform", None).await;
+    let uri = format!("/teams/{team}");
+    for body in [
+        json!({ "name": "Renamed", "idp_group": "g" }),
+        json!({ "slug": "renamed", "idp_group": "g" }),
+        json!({ "name": "Renamed" }),
+        json!({}),
+    ] {
+        assert_eq!(
+            api.patch(&uri, &root, body.clone()).await.0,
+            StatusCode::FORBIDDEN,
+            "{body}"
+        );
+    }
+    let (status, body) = api.patch(&uri, &root, json!({ "idp_group": "g" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["idp_group"], "g");
+}
