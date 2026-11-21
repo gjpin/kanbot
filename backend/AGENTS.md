@@ -333,7 +333,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 127.0.0.1 auth.kanbot.internal
 ```
 
-`dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`.
+`dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`. With `--sign-in <url>`, the same example plays the system browser for a native app's sign-in (the frontend's Linux end-to-end test uses it).
 
 ```sh
 sh dev/auth-setup.sh

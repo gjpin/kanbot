@@ -344,7 +344,9 @@ collector directly: the app cannot hold collector credentials, §2). Setup is in
 - Key screens have golden tests (`matchesGoldenFile`). Update goldens only
   when the visual change is intended, and say so in the commit message.
 - Key user flows have integration tests, including at least one
-  `traceAction` performance test on the main scrolling screen.
+  `traceAction` performance test on the main scrolling screen. Sign-in has
+  one on Linux desktop against the local stack
+  (`integration_test/README.md`, CI job `linux-sign-in`).
 - Coverage must not go down. CI does not enforce a threshold yet, so check
   `flutter test --coverage` yourself.
 

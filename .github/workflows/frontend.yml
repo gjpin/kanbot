@@ -55,3 +55,54 @@ jobs:
       # dependencies.
       - name: Release web build
         run: dart run tool/build_web.dart
+
+  # Signs in on Linux desktop against the local stack: the real app, backend
+  # and Authelia, with a stand-in system browser (integration_test/README.md).
+  linux-sign-in:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+      - name: Linux desktop, virtual display and secret store
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev xvfb dbus gnome-keyring
+      - name: Local stack
+        working-directory: backend
+        run: |
+          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
+          sh dev/auth-setup.sh
+          docker compose up -d --wait
+      - name: Backend
+        working-directory: backend
+        env:
+          SQLX_OFFLINE: "true"
+        run: |
+          cargo build --locked --bin kanbot-backend --example dev-token
+          set -a; . dev/dev.env; set +a
+          ./target/debug/kanbot-backend migrate
+          nohup ./target/debug/kanbot-backend >"$RUNNER_TEMP/backend.log" 2>&1 &
+          for _ in $(seq 60); do
+            curl -sf http://localhost:3000/ready >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:3000/ready
+      - run: flutter pub get --enforce-lockfile
+      - name: Sign in end to end
+        run: sh integration_test/run_linux.sh
+      - name: Backend log
+        if: failure()
+        run: cat "$RUNNER_TEMP/backend.log"
+
