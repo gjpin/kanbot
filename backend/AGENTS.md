@@ -323,6 +323,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 sh dev/auth-setup.sh
 docker compose up -d   # Postgres and Authelia
 export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
+sqlx migrate run       # the SQL macros check queries against this database
 
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
