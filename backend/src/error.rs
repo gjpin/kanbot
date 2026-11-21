@@ -112,6 +112,21 @@ impl AppError {
 }
 
 impl AppError {
+    /// A failed write: a unique violation (a duplicate slug) is a
+    /// [`AppError::Conflict`], a foreign key violation (the user or team it
+    /// refers to does not exist) is [`AppError::NotFound`], anything else a
+    /// database error.
+    #[must_use]
+    pub fn from_write(error: sqlx::Error) -> Self {
+        match error.as_database_error() {
+            Some(database) if database.is_unique_violation() => Self::Conflict,
+            Some(database) if database.is_foreign_key_violation() => Self::NotFound,
+            _ => Self::Database(error),
+        }
+    }
+}
+
+impl AppError {
     /// What may be logged about the error: its kind, and for a database
     /// error its SQLSTATE and constraint name. Never the error's message
     /// or `Debug` form: Postgres puts row values in them (`Key

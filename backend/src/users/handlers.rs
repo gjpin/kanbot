@@ -1,13 +1,17 @@
 //! Handlers of the users routes.
 
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::{Query, State},
+};
 
 use crate::{
-    error::AppError,
-    http::{extract::AuthUser, problem::Problem},
+    error::{AppError, FieldError},
+    http::{extract::Caller, problem::Problem},
     state::AppState,
     users::{
-        dto::{Me, Preferences},
+        dto::{Me, Preferences, UserSearch, UserSummaryDto},
+        model::UserQuery,
         service,
     },
 };
@@ -26,8 +30,12 @@ use crate::{
          body = Problem, content_type = "application/problem+json"),
     ),
 )]
-pub(super) async fn me(AuthUser(user): AuthUser) -> Json<Me> {
-    Json(user.into())
+pub(super) async fn me(
+    State(state): State<AppState>,
+    Caller(actor): Caller,
+) -> Result<Json<Me>, AppError> {
+    let permissions = service::platform_permissions(&state.db, &state.authz, &actor).await?;
+    Ok(Json(Me::new(actor.user, &permissions)))
 }
 
 /// Updates the signed-in user's preferences.
@@ -49,10 +57,41 @@ pub(super) async fn me(AuthUser(user): AuthUser) -> Json<Me> {
 )]
 pub(super) async fn update_preferences(
     State(state): State<AppState>,
-    AuthUser(mut user): AuthUser,
+    Caller(mut actor): Caller,
     Json(preferences): Json<Preferences>,
 ) -> Result<Json<Me>, AppError> {
-    service::set_telemetry_opt_in(&state.db, user.id, preferences.telemetry_opt_in).await?;
-    user.telemetry_opt_in = preferences.telemetry_opt_in;
-    Ok(Json(user.into()))
+    service::set_telemetry_opt_in(&state.db, actor.user.id, preferences.telemetry_opt_in).await?;
+    actor.user.telemetry_opt_in = preferences.telemetry_opt_in;
+    let permissions = service::platform_permissions(&state.db, &state.authz, &actor).await?;
+    Ok(Json(Me::new(actor.user, &permissions)))
+}
+
+/// Users who have signed in, by display name (at most 20), to add as
+/// organization admins or team members. Disabled users are left out.
+#[utoipa::path(
+    get,
+    path = "/users",
+    operation_id = "search_users",
+    tag = "users",
+    params(UserSearch),
+    security(("bearer" = []), ("session" = [])),
+    responses(
+        (status = OK, description = "The matching users.", body = Vec<UserSummaryDto>),
+        (status = UNAUTHORIZED, description = "No valid credentials.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = FORBIDDEN, description = "Only platform admins, organization admins and team maintainers may search users.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = UNPROCESSABLE_ENTITY, description = "`query` is longer than 100 characters.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn search(
+    State(state): State<AppState>,
+    Caller(actor): Caller,
+    Query(search): Query<UserSearch>,
+) -> Result<Json<Vec<UserSummaryDto>>, AppError> {
+    let query = UserQuery::parse(search.query.as_deref().unwrap_or_default())
+        .ok_or_else(|| AppError::Validation(vec![FieldError::new("/query", "too_long")]))?;
+    let users = service::search(&state.db, &state.authz, &actor, &query).await?;
+    Ok(Json(users.into_iter().map(UserSummaryDto::from).collect()))
 }

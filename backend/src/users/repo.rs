@@ -4,7 +4,7 @@ use sqlx::PgPool;
 
 use crate::{
     auth::token::Principal,
-    users::model::{SeenUser, UserId},
+    users::model::{SeenUser, UserId, UserQuery, UserSummary},
 };
 
 /// Records that the principal's user was seen, creating the user on first
@@ -100,4 +100,43 @@ pub(super) async fn delete_sessions(db: &PgPool, id: UserId) -> Result<u64, sqlx
             .await?
             .rows_affected(),
     )
+}
+
+/// Up to `limit` users who are not disabled and whose display name
+/// contains `query` (any case), by display name.
+#[tracing::instrument(skip_all)]
+pub(super) async fn search(
+    db: &PgPool,
+    query: &UserQuery,
+    limit: i64,
+) -> Result<Vec<UserSummary>, sqlx::Error> {
+    // LIKE's wildcards in the query match themselves.
+    let pattern = format!(
+        "%{}%",
+        query
+            .as_str()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, display_name
+        FROM users
+        WHERE disabled_at IS NULL AND COALESCE(display_name, '') ILIKE $1
+        ORDER BY display_name NULLS LAST, id
+        LIMIT $2
+        "#,
+        pattern,
+        limit,
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| UserSummary {
+            id: UserId::from_uuid(row.id),
+            display_name: row.display_name,
+        })
+        .collect())
 }

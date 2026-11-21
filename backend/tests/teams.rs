@@ -7,8 +7,12 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use common::idp::access_token;
+use common::{
+    api::{Api, admin, user},
+    idp::access_token,
+};
 use kanbot_backend::{teams::service, users::model::UserId};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -188,4 +192,404 @@ async fn every_authenticated_request_syncs_the_groups(pool: PgPool) {
         StatusCode::OK
     );
     assert_eq!(memberships(&pool, alice).await, []);
+}
+
+fn team_slugs(list: &Value) -> Vec<&str> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["slug"].as_str().unwrap())
+        .collect()
+}
+
+/// The members as (display name, role, source).
+async fn member_list(api: &Api, team: Uuid, token: &str) -> Vec<(String, String, String)> {
+    let (status, list) = api.get(&format!("/teams/{team}/members"), token).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|member| {
+            (
+                member["user"]["display_name"].as_str().unwrap().to_owned(),
+                member["role"].as_str().unwrap().to_owned(),
+                member["source"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn row(name: &str, role: &str, source: &str) -> (String, String, String) {
+    (name.to_owned(), role.to_owned(), source.to_owned())
+}
+
+#[sqlx::test]
+async fn organization_admins_create_teams_and_maintain_them(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    let bob = user("bob", &[]);
+    assert_eq!(
+        api.post("/teams", &bob, json!({ "slug": "x", "name": "X" }))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    // An organization admin may create teams.
+    api.put(
+        &format!("/organizations/00000000-0000-0000-0000-000000000001/admins/{carol_id}"),
+        &root,
+        None,
+    )
+    .await;
+    let (status, body) = api
+        .post(
+            "/teams",
+            &carol,
+            json!({ "slug": "platform", "name": "Platform" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["idp_group"], Value::Null);
+    assert_eq!(body["permissions"], json!(["manage", "manage_members"]));
+    let team: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        member_list(&api, team, &carol).await,
+        [row("carol (display)", "maintainer", "manual")]
+    );
+    let (status, body) = api
+        .post(
+            "/teams",
+            &carol,
+            json!({ "slug": "platform", "name": "Again" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = api
+        .post("/teams", &carol, json!({ "slug": "", "name": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/slug", "code": "required" }])
+    );
+}
+
+#[sqlx::test]
+async fn maintainers_manage_members(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    let dave = user("dave", &[]);
+    let dave_id = api.user_id(&dave).await;
+    let eve = user("eve", &[]);
+    let members = format!("/teams/{team}/members");
+
+    // Strangers do not know the team exists.
+    assert_eq!(
+        api.get(&format!("/teams/{team}"), &bob).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(api.get("/teams", &bob).await.1, json!([]));
+
+    let (status, _) = api
+        .put(
+            &format!("{members}/{bob_id}"),
+            &root,
+            Some(json!({ "role": "maintainer" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = api.get(&format!("/teams/{team}"), &bob).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["permissions"], json!(["manage", "manage_members"]));
+    assert_eq!(team_slugs(&api.get("/teams", &bob).await.1), ["platform"]);
+
+    // Bob, a maintainer, adds Dave; Dave, a member, may only look.
+    assert_eq!(
+        api.put(
+            &format!("{members}/{dave_id}"),
+            &bob,
+            Some(json!({ "role": "member" }))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api.get(&format!("/teams/{team}"), &dave).await.1["permissions"],
+        json!([])
+    );
+    assert_eq!(
+        api.delete(&format!("{members}/{bob_id}"), &dave).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        member_list(&api, team, &dave).await,
+        [
+            row("bob (display)", "maintainer", "manual"),
+            row("root (display)", "maintainer", "manual"),
+            row("dave (display)", "member", "manual"),
+        ]
+    );
+    // Strangers get 404, whatever they try.
+    assert_eq!(api.get(&members, &eve).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        api.delete(&format!("{members}/{dave_id}"), &eve).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Bob promotes Dave, then removes him.
+    api.put(
+        &format!("{members}/{dave_id}"),
+        &bob,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+    api.put(
+        &format!("{members}/{dave_id}"),
+        &bob,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+    assert_eq!(
+        api.delete(&format!("{members}/{dave_id}"), &bob).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api.delete(&format!("{members}/{dave_id}"), &bob).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        api.put(
+            &format!("{members}/{}", Uuid::new_v4()),
+            &bob,
+            Some(json!({ "role": "member" }))
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    let audit: Vec<(String, Value)> =
+        sqlx::query!(r#"SELECT action, details::text AS "details!" FROM audit_log ORDER BY id"#)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.action, serde_json::from_str(&row.details).unwrap()))
+            .collect();
+    assert_eq!(
+        audit,
+        [
+            ("team.created".to_owned(), json!({})),
+            (
+                "team.member_set".to_owned(),
+                json!({ "user_id": bob_id, "role": "maintainer" })
+            ),
+            (
+                "team.member_set".to_owned(),
+                json!({ "user_id": dave_id, "role": "member" })
+            ),
+            (
+                "team.member_set".to_owned(),
+                json!({ "user_id": dave_id, "role": "maintainer" })
+            ),
+            (
+                "team.member_removed".to_owned(),
+                json!({ "user_id": dave_id })
+            ),
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn maintainers_rename_and_delete_their_team(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    api.team(&root, "taken").await;
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    api.put(
+        &format!("/teams/{team}/members/{bob_id}"),
+        &root,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+    let uri = format!("/teams/{team}");
+
+    let (status, body) = api
+        .patch(&uri, &bob, json!({ "name": "Platform team" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "Platform team");
+    assert_eq!(
+        api.patch(&uri, &bob, json!({ "slug": "taken" })).await.0,
+        StatusCode::CONFLICT
+    );
+    // The IdP group is for platform admins only.
+    assert_eq!(
+        api.patch(&uri, &bob, json!({ "idp_group": "platform" }))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api.patch(&uri, &bob, json!({ "idp_group": null })).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Deleting the team removes its links.
+    let acme = api.organization(&root, "acme").await;
+    api.put(
+        &format!("/organizations/{acme}/teams/{team}"),
+        &root,
+        Some(json!({ "access": "write" })),
+    )
+    .await;
+    assert_eq!(api.delete(&uri, &bob).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(api.get(&uri, &root).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        api.get(&format!("/organizations/{acme}/teams"), &root)
+            .await
+            .1,
+        json!([])
+    );
+}
+
+#[sqlx::test]
+async fn synced_teams_take_their_members_from_the_identity_provider(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let root_id = api.user_id(&root).await;
+    let team = api.team(&root, "platform").await;
+    let uri = format!("/teams/{team}");
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    api.put(
+        &format!("{uri}/members/{bob_id}"),
+        &root,
+        Some(json!({ "role": "member" })),
+    )
+    .await;
+
+    // Setting a group replaces the manual members.
+    let (status, body) = api
+        .patch(&uri, &root, json!({ "idp_group": "platform-team" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["idp_group"], "platform-team");
+    assert_eq!(body["permissions"], json!(["manage", "set_idp_group"]));
+    assert_eq!(member_list(&api, team, &root).await, []);
+
+    // Members join as they make requests with the group.
+    let dave = user("dave", &["platform-team"]);
+    let dave_id = api.user_id(&dave).await;
+    assert_eq!(
+        member_list(&api, team, &dave).await,
+        [row("dave (display)", "member", "idp")]
+    );
+
+    // Their memberships cannot be edited, nor can anyone be added.
+    for (method, member) in [
+        ("put", dave_id),
+        ("delete", dave_id),
+        ("put", bob_id),
+        ("put", root_id),
+    ] {
+        let member = format!("{uri}/members/{member}");
+        let status = if method == "put" {
+            api.put(&member, &root, Some(json!({ "role": "maintainer" })))
+                .await
+                .0
+        } else {
+            api.delete(&member, &root).await.0
+        };
+        assert_eq!(status, StatusCode::CONFLICT, "{method} {member}");
+    }
+
+    // The group is unique.
+    let other = api.team(&root, "other").await;
+    assert_eq!(
+        api.patch(
+            &format!("/teams/{other}"),
+            &root,
+            json!({ "idp_group": "platform-team" })
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (status, body) = api
+        .patch(
+            &format!("/teams/{other}"),
+            &root,
+            json!({ "idp_group": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/idp_group", "code": "required" }])
+    );
+
+    // A rename leaves the group and its members alone; clearing the group
+    // removes the synced members.
+    let (status, body) = api.patch(&uri, &root, json!({ "name": "Renamed" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["idp_group"], "platform-team");
+    assert_eq!(member_list(&api, team, &root).await.len(), 1);
+    let (status, body) = api.patch(&uri, &root, json!({ "idp_group": null })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["idp_group"], Value::Null);
+    assert_eq!(member_list(&api, team, &root).await, []);
+    assert_eq!(
+        api.put(
+            &format!("{uri}/members/{dave_id}"),
+            &root,
+            Some(json!({ "role": "member" }))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+
+    let fields: Vec<Value> = sqlx::query_scalar!(
+        r#"SELECT details::text AS "details!" FROM audit_log WHERE action = 'team.updated' ORDER BY id"#
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|details| serde_json::from_str::<Value>(&details).unwrap()["fields"].clone())
+    .collect();
+    assert_eq!(
+        fields,
+        [json!(["idp_group"]), json!(["name"]), json!(["idp_group"])]
+    );
+}
+
+#[sqlx::test]
+async fn organization_admins_see_every_team(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    api.team(&root, "b-team").await;
+    api.team(&root, "a-team").await;
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    assert_eq!(api.get("/teams", &carol).await.1, json!([]));
+    api.put(
+        &format!("/organizations/00000000-0000-0000-0000-000000000001/admins/{carol_id}"),
+        &root,
+        None,
+    )
+    .await;
+    assert_eq!(
+        team_slugs(&api.get("/teams", &carol).await.1),
+        ["a-team", "b-team"]
+    );
 }

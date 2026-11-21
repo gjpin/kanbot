@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT action, policy_ids, details::text AS \"details!\" FROM audit_log ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "policy_ids",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "policy_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "details!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "de2c471855cc3fc09dc9466e001dbf03fa1e4babd5a9ae84010b02dee67a8a40"
+}

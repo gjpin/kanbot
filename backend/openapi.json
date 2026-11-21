@@ -6,6 +6,77 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "The audit log, newest first. Platform admins only.",
+        "operationId": "list_audit_entries",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only entries older than this entry ID (the previous page's\n`next_before`).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Entries per page, 1 to 100 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the audit log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to read the audit log.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/auth/callback": {
       "get": {
         "tags": [
@@ -444,6 +515,824 @@
         ]
       }
     },
+    "/organizations": {
+      "get": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "The organizations the caller may read, by slug.",
+        "operationId": "list_organizations",
+        "responses": {
+          "200": {
+            "description": "The organizations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationSummaryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Creates an organization. Platform admins only.",
+        "operationId": "create_organization",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOrganizationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new organization.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to create organizations.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The slug is taken.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The slug or name is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/organizations/{id}": {
+      "get": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "An organization, and what the caller may do to it.",
+        "operationId": "get_organization",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The organization.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Deletes an organization, its admins and its team links. Platform\nadmins only; the Default organization cannot be deleted.",
+        "operationId": "delete_organization",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to delete the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Default organization cannot be deleted.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Renames an organization or changes its slug.",
+        "operationId": "update_organization",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationChangesDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The organization, changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The slug is taken.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The slug or name is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/organizations/{id}/admins": {
+      "get": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "The organization's admins, by display name.",
+        "operationId": "list_organization_admins",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The admins.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserSummaryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/organizations/{id}/admins/{user_id}": {
+      "put": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Makes a user an admin of the organization.",
+        "operationId": "add_organization_admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The user is an admin."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the organization's admins.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization or user, or not allowed to read the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Removes a user from the organization's admins.",
+        "operationId": "remove_organization_admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The user is no longer an admin."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the organization's admins.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, the user is not an admin, or not allowed to read the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/organizations/{id}/teams": {
+      "get": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "The teams linked to the organization, by slug.",
+        "operationId": "list_organization_teams",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The linked teams.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamLinkDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/organizations/{id}/teams/{team_id}": {
+      "put": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Links a team to the organization, or changes its access.",
+        "operationId": "link_organization_team",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamLinkChangeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The team is linked with this access."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the organization's team links.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization or team, or not allowed to read the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not a team link.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Unlinks a team from the organization.",
+        "operationId": "unlink_organization_team",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The team is no longer linked."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the organization's team links.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, the team is not linked, or not allowed to read the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/ready": {
       "get": {
         "tags": [
@@ -467,10 +1356,779 @@
           }
         }
       }
+    },
+    "/teams": {
+      "get": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "The teams the caller may see, by slug: their own, or all of them for\nplatform and organization admins.",
+        "operationId": "list_teams",
+        "responses": {
+          "200": {
+            "description": "The teams.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamSummaryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Creates a team, with the caller as its maintainer. Platform admins and\norganization admins only.",
+        "operationId": "create_team",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTeamDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new team.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to create teams.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The slug is taken.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The slug or name is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/teams/{id}": {
+      "get": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "A team, and what the caller may do to it.",
+        "operationId": "get_team",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The team.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Deletes a team, its memberships and its links.",
+        "operationId": "delete_team",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to delete the team.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Renames a team, changes its slug, or sets or clears its identity\nprovider group (platform admins only).",
+        "operationId": "update_team",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamChangesDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The team, changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to make this change.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The slug or the identity provider group is taken.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/teams/{id}/members": {
+      "get": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "The team's members: maintainers first, then by display name.",
+        "operationId": "list_team_members",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The members.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MemberDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/teams/{id}/members/{user_id}": {
+      "put": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Adds a user to the team with a role, or changes their role.",
+        "operationId": "set_team_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberChangeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The user is a member with this role."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the team's members.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team or user, or not allowed to see the team.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The membership comes from the identity provider.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not a member change.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Removes a user from the team.",
+        "operationId": "remove_team_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The user is no longer a member."
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to manage the team's members.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, the user is not a member, or not allowed to see the team.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The membership comes from the identity provider.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Users who have signed in, by display name (at most 20), to add as\norganization admins or team members. Disabled users are left out.",
+        "operationId": "search_users",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Part of the display name, any case, at most 100 characters. Empty\nor absent: the first users by name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The matching users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserSummaryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only platform admins, organization admins and team maintainers may search users.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`query` is longer than 100 characters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccessDto": {
+        "type": "string",
+        "description": "What a linked team's members may do in the organization. `write`\nincludes `read`.",
+        "enum": [
+          "read",
+          "write"
+        ]
+      },
+      "AuditEntryDto": {
+        "type": "object",
+        "description": "One change to an organization or a team.",
+        "required": [
+          "id",
+          "at",
+          "actor",
+          "action",
+          "target_type",
+          "target_id",
+          "policy_ids",
+          "details"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "What happened, as `<target type>.<event>`, for example\n`organization.team_linked`."
+          },
+          "actor": {
+            "$ref": "#/components/schemas/UserSummaryDto",
+            "description": "Who made the change."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When, in RFC 3339 (UTC)."
+          },
+          "details": {
+            "type": "object",
+            "description": "IDs and enumerated values describing the change."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "policy_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The policies that allowed the change."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_type": {
+            "type": "string",
+            "description": "`organization` or `team`."
+          }
+        }
+      },
+      "AuditPage": {
+        "type": "object",
+        "description": "A page of the audit log, newest first.",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryDto"
+            }
+          },
+          "next_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before` for the next page; absent on the last one."
+          }
+        }
+      },
       "AuthConfig": {
         "type": "object",
         "description": "What an app needs to know before signing in.",
@@ -551,7 +2209,8 @@
         "required": [
           "id",
           "platform_role",
-          "telemetry_opt_in"
+          "telemetry_opt_in",
+          "permissions"
         ],
         "properties": {
           "display_name": {
@@ -565,6 +2224,13 @@
             "type": "string",
             "format": "uuid"
           },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlatformPermissionDto"
+            },
+            "description": "What the user may do across the instance."
+          },
           "platform_role": {
             "$ref": "#/components/schemas/PlatformRoleDto"
           },
@@ -573,6 +2239,174 @@
             "description": "Whether the app may send telemetry. Off until the user opts in."
           }
         }
+      },
+      "MemberChangeDto": {
+        "type": "object",
+        "description": "The role to give a member.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/TeamRoleDto"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemberDto": {
+        "type": "object",
+        "description": "A member of a team.",
+        "required": [
+          "user",
+          "role",
+          "source"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/TeamRoleDto"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MembershipSourceDto"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSummaryDto"
+          }
+        }
+      },
+      "MembershipSourceDto": {
+        "type": "string",
+        "description": "How a member got into the team.",
+        "enum": [
+          "manual",
+          "idp"
+        ]
+      },
+      "NewOrganizationDto": {
+        "type": "object",
+        "description": "A new organization.",
+        "required": [
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 200 characters."
+          },
+          "slug": {
+            "type": "string",
+            "description": "1 to 63 lowercase letters, digits and hyphens, not starting or\nending with a hyphen. Unique."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewTeamDto": {
+        "type": "object",
+        "description": "A new team. Its creator becomes its maintainer.",
+        "required": [
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 200 characters."
+          },
+          "slug": {
+            "type": "string",
+            "description": "1 to 63 lowercase letters, digits and hyphens, not starting or\nending with a hyphen. Unique."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrganizationChangesDto": {
+        "type": "object",
+        "description": "The fields to change; absent fields stay as they are.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrganizationDto": {
+        "type": "object",
+        "description": "An organization, and what the caller may do to it.",
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "permissions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrganizationPermissionDto"
+            }
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "OrganizationPermissionDto": {
+        "type": "string",
+        "description": "Something the caller may do to an organization besides reading it.\nThe app shows only the controls the user can use; the server checks\nevery request anyway.",
+        "enum": [
+          "write",
+          "manage",
+          "manage_admins",
+          "manage_team_links",
+          "delete"
+        ]
+      },
+      "OrganizationSummaryDto": {
+        "type": "object",
+        "description": "An organization in a list.",
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "PlatformPermissionDto": {
+        "type": "string",
+        "description": "Something the user may do across the instance. The app shows only the\ncontrols the user can use; the server checks every request anyway.",
+        "enum": [
+          "create_organization",
+          "create_team",
+          "search_users",
+          "view_audit"
+        ]
       },
       "PlatformRoleDto": {
         "type": "string",
@@ -640,6 +2474,141 @@
           }
         }
       },
+      "TeamChangesDto": {
+        "type": "object",
+        "description": "The fields to change; absent fields stay as they are.",
+        "properties": {
+          "idp_group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An identity provider group to sync the members with, or `null` to\nstop syncing. Platform admins only. Setting a group removes the\ncurrent members; the group's members join as they sign in.\nClearing it removes the synced members."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "TeamDto": {
+        "type": "object",
+        "description": "A team, and what the caller may do to it.",
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "permissions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idp_group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set: the members are the users whose groups claim contains this\nidentity provider group, and they cannot be edited."
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamPermissionDto"
+            }
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "TeamLinkChangeDto": {
+        "type": "object",
+        "description": "The access to give a linked team.",
+        "required": [
+          "access"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/AccessDto"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TeamLinkDto": {
+        "type": "object",
+        "description": "A team linked to an organization.",
+        "required": [
+          "team",
+          "access"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/AccessDto"
+          },
+          "team": {
+            "$ref": "#/components/schemas/TeamSummaryDto"
+          }
+        }
+      },
+      "TeamPermissionDto": {
+        "type": "string",
+        "description": "Something the caller may do to a team besides seeing it. The app shows\nonly the controls the user can use; the server checks every request\nanyway.",
+        "enum": [
+          "manage",
+          "manage_members",
+          "set_idp_group"
+        ]
+      },
+      "TeamRoleDto": {
+        "type": "string",
+        "description": "A team member's role.",
+        "enum": [
+          "member",
+          "maintainer"
+        ]
+      },
+      "TeamSummaryDto": {
+        "type": "object",
+        "description": "A team in a list.",
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idp_group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set: the members are the users whose groups claim contains this\nidentity provider group, and they cannot be edited."
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
       "TokenRequest": {
         "type": "object",
         "description": "`POST /auth/token`: a native app redeems its one-time code.",
@@ -674,6 +2643,26 @@
           "session_token": {
             "type": "string",
             "description": "Send as `Authorization: Bearer <session_token>`. Store it only in\nthe platform's secure storage."
+          }
+        }
+      },
+      "UserSummaryDto": {
+        "type": "object",
+        "description": "A user, as other users see them.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From the identity provider."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       }

@@ -537,3 +537,158 @@ async fn preferences_need_credentials(pool: PgPool) {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(challenge.as_deref(), Some("Bearer"));
 }
+
+mod search_and_permissions {
+    use axum::http::StatusCode;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+
+    use super::common::api::{Api, admin, user};
+
+    fn names(list: &Value) -> Vec<&str> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|user| user["display_name"].as_str().unwrap())
+            .collect()
+    }
+
+    #[sqlx::test]
+    async fn me_lists_the_platform_permissions(pool: PgPool) {
+        let api = Api::new(pool);
+        let root = admin("root");
+        assert_eq!(
+            api.get("/me", &root).await.1["permissions"],
+            json!([
+                "create_organization",
+                "create_team",
+                "search_users",
+                "view_audit"
+            ])
+        );
+        let carol = user("carol", &[]);
+        assert_eq!(api.get("/me", &carol).await.1["permissions"], json!([]));
+        let carol_id = api.user_id(&carol).await;
+        api.put(
+            &format!("/organizations/00000000-0000-0000-0000-000000000001/admins/{carol_id}"),
+            &root,
+            None,
+        )
+        .await;
+        assert_eq!(
+            api.get("/me", &carol).await.1["permissions"],
+            json!(["create_team", "search_users"])
+        );
+        let (status, me) = api
+            .call(
+                axum::http::Method::PUT,
+                "/me/preferences",
+                &carol,
+                Some(json!({ "telemetry_opt_in": true })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(me["permissions"], json!(["create_team", "search_users"]));
+        assert_eq!(me["telemetry_opt_in"], true);
+    }
+
+    #[sqlx::test]
+    async fn user_search_finds_users_by_name(pool: PgPool) {
+        let api = Api::new(pool.clone());
+        let root = admin("root");
+        for subject in ["alice", "alina", "bob", "100%_sure"] {
+            api.user_id(&user(subject, &[])).await;
+        }
+        let (status, found) = api.get("/users?query=ALI", &root).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(names(&found), ["alice (display)", "alina (display)"]);
+        assert_eq!(
+            found[0].as_object().unwrap().len(),
+            2,
+            "id and display_name only"
+        );
+
+        // LIKE wildcards match only themselves.
+        assert_eq!(
+            names(&api.get("/users?query=%25_", &root).await.1),
+            ["100%_sure (display)"]
+        );
+        assert_eq!(
+            names(&api.get("/users?query=a_i", &root).await.1),
+            Vec::<&str>::new()
+        );
+
+        // Everyone, by name, without a query.
+        assert_eq!(
+            api.get("/users", &root).await.1.as_array().unwrap().len(),
+            5
+        );
+
+        // Disabled users are left out.
+        sqlx::query!("UPDATE users SET disabled_at = now() WHERE subject = 'alina'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            names(&api.get("/users?query=ali", &root).await.1),
+            ["alice (display)"]
+        );
+
+        let (status, body) = api
+            .get(&format!("/users?query={}", "x".repeat(101)), &root)
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body["errors"],
+            json!([{ "pointer": "/query", "code": "too_long" }])
+        );
+        assert_eq!(
+            api.get(&format!("/users?query={}", "x".repeat(100)), &root)
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+
+    #[sqlx::test]
+    async fn user_search_returns_at_most_twenty(pool: PgPool) {
+        let api = Api::new(pool);
+        let root = admin("root");
+        for index in 0..25 {
+            api.user_id(&user(&format!("user{index:02}"), &[])).await;
+        }
+        let (_, found) = api.get("/users?query=user", &root).await;
+        assert_eq!(found.as_array().unwrap().len(), 20);
+        assert_eq!(found[0]["display_name"], "user00 (display)");
+    }
+
+    #[sqlx::test]
+    async fn only_admins_and_maintainers_search_users(pool: PgPool) {
+        let api = Api::new(pool);
+        let root = admin("root");
+        let bob = user("bob", &[]);
+        let bob_id = api.user_id(&bob).await;
+        assert_eq!(
+            api.get("/users?query=a", &bob).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let team = api.team(&root, "platform").await;
+        api.put(
+            &format!("/teams/{team}/members/{bob_id}"),
+            &root,
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+        assert_eq!(
+            api.get("/users?query=a", &bob).await.0,
+            StatusCode::FORBIDDEN
+        );
+        api.put(
+            &format!("/teams/{team}/members/{bob_id}"),
+            &root,
+            Some(json!({ "role": "maintainer" })),
+        )
+        .await;
+        assert_eq!(api.get("/users?query=a", &bob).await.0, StatusCode::OK);
+    }
+}

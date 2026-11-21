@@ -120,7 +120,10 @@ fn api_parts() -> (OpenApiRouter<AppState>, OpenApiRouter<AppState>) {
     let routes = OpenApiRouter::with_openapi(doc)
         .merge(health::routes())
         .merge(crate::users::routes())
-        .merge(crate::sessions::routes());
+        .merge(crate::sessions::routes())
+        .merge(crate::organizations::routes())
+        .merge(crate::teams::routes())
+        .merge(crate::audit::routes());
     (routes, crate::sessions::login_routes())
 }
 

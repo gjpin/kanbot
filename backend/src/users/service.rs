@@ -4,12 +4,20 @@ use sqlx::PgPool;
 
 use crate::{
     auth::token::Principal,
+    authz::{
+        model::{Action, Actor, Resource},
+        policies::Policies,
+        service::{self as authz, allowed_actions},
+    },
     error::AppError,
     users::{
-        model::{AuthenticatedUser, UserId},
+        model::{AuthenticatedUser, UserId, UserQuery, UserSummary},
         repo,
     },
 };
+
+/// Most users a search returns.
+pub const SEARCH_LIMIT: i64 = 20;
 
 /// The user for a validated principal, created on first sight.
 ///
@@ -86,4 +94,43 @@ pub async fn end_sessions(db: &PgPool, id: UserId) -> Result<(), AppError> {
         "sessions of a disabled user ended"
     );
     Ok(())
+}
+
+/// Users whose display name contains `query`, for adding admins and
+/// members. Disabled users are left out.
+///
+/// # Errors
+///
+/// [`AppError::Forbidden`] unless `actor` may `searchUsers` (platform
+/// admins, organization admins and team maintainers), or a database error.
+pub async fn search(
+    db: &PgPool,
+    policies: &Policies,
+    actor: &Actor,
+    query: &UserQuery,
+) -> Result<Vec<UserSummary>, AppError> {
+    authz::require(db, policies, actor, Action::SearchUsers, Resource::Platform).await?;
+    Ok(repo::search(db, query, SEARCH_LIMIT).await?)
+}
+
+/// The instance-wide actions `actor` may do (`createOrganization`,
+/// `createTeam`, `searchUsers`, `viewAudit`).
+///
+/// # Errors
+///
+/// A database error.
+pub async fn platform_permissions(
+    db: &PgPool,
+    policies: &Policies,
+    actor: &Actor,
+) -> Result<Vec<Action>, AppError> {
+    let actions = [
+        Action::CreateOrganization,
+        Action::CreateTeam,
+        Action::SearchUsers,
+        Action::ViewAudit,
+    ];
+    let requests = actions.map(|action| (action, Resource::Platform));
+    let decisions = authz::decisions(db, policies, actor, &requests).await?;
+    Ok(allowed_actions(&actions, &decisions))
 }

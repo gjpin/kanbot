@@ -85,6 +85,18 @@ pub async fn decisions(
     decide_all(policies, actor, &facts, requests)
 }
 
+/// The actions among `actions` that `decisions` (made in the same order)
+/// allow.
+#[must_use]
+pub fn allowed_actions(actions: &[Action], decisions: &[Decision]) -> Vec<Action> {
+    actions
+        .iter()
+        .zip(decisions)
+        .filter(|(_, decision)| decision.allowed)
+        .map(|(action, _)| *action)
+        .collect()
+}
+
 /// Whether `actor` may do `action` to `resource`.
 ///
 /// # Errors

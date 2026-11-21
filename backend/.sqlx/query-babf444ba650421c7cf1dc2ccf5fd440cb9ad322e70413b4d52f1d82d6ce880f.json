@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM team_members WHERE team_id = $1 AND ($2 OR source = 'idp')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "babf444ba650421c7cf1dc2ccf5fd440cb9ad322e70413b4d52f1d82d6ce880f"
+}

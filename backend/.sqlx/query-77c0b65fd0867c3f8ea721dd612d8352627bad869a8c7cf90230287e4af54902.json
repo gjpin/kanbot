@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET disabled_at = now() WHERE subject = 'alina'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "77c0b65fd0867c3f8ea721dd612d8352627bad869a8c7cf90230287e4af54902"
+}

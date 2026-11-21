@@ -78,3 +78,22 @@ fn rejects_missing_or_extra_arguments() {
         assert!(stderr.contains("Usage"), "{stderr}");
     }
 }
+
+/// Generated clients name a method after each operation ID: two
+/// operations with the same ID cannot both be generated.
+#[test]
+fn operation_ids_are_unique() {
+    let doc: Value = serde_json::from_str(&generate()).unwrap();
+    let mut ids: Vec<&str> = doc["paths"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|item| item.as_object().unwrap().values())
+        .filter_map(|operation| operation["operationId"].as_str())
+        .collect();
+    let count = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), count, "duplicate operation IDs");
+    assert!(count >= 30, "{count}");
+}

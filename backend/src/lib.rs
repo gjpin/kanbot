@@ -1,6 +1,7 @@
 //! kanbot backend: configuration, application state and the HTTP API.
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod auth;
 pub mod authz;
 pub mod base64;
@@ -9,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod names;
 pub mod organizations;
 pub mod sessions;
 pub mod state;

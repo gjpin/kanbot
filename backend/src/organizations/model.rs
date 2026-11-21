@@ -2,6 +2,11 @@
 
 use uuid::Uuid;
 
+use crate::{
+    names::{Name, Slug},
+    teams::model::Team,
+};
+
 /// An organization's ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OrganizationId(Uuid);
@@ -60,4 +65,40 @@ impl Access {
             _ => None,
         }
     }
+}
+
+/// An organization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Organization {
+    pub id: OrganizationId,
+    pub slug: Slug,
+    pub name: Name,
+}
+
+/// A change to an organization: the fields to set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OrganizationChanges {
+    pub slug: Option<Slug>,
+    pub name: Option<Name>,
+}
+
+impl OrganizationChanges {
+    /// The names of the fields that change, for the audit log.
+    #[must_use]
+    pub fn fields(&self) -> Vec<&'static str> {
+        [
+            self.slug.as_ref().map(|_| "slug"),
+            self.name.as_ref().map(|_| "name"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+/// A team linked to an organization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamLink {
+    pub team: Team,
+    pub access: Access,
 }

@@ -2,6 +2,9 @@
 
 pub mod common;
 
+use axum::http::StatusCode;
+use common::api::{Api, admin, user};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -108,4 +111,374 @@ async fn deleting_an_organization_removes_its_links_and_admins(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(teams, 1, "the team itself stays");
+}
+
+/// The audit log's actions, oldest first.
+async fn audit_actions(pool: &PgPool) -> Vec<(String, Vec<String>, Value)> {
+    sqlx::query!(
+        r#"SELECT action, policy_ids, details::text AS "details!" FROM audit_log ORDER BY id"#
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|row| {
+        (
+            row.action,
+            row.policy_ids,
+            serde_json::from_str(&row.details).unwrap(),
+        )
+    })
+    .collect()
+}
+
+fn slugs(list: &Value) -> Vec<&str> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["slug"].as_str().unwrap())
+        .collect()
+}
+
+#[sqlx::test]
+async fn platform_admins_create_organizations(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let (status, body) = api
+        .post(
+            "/organizations",
+            &root,
+            json!({ "slug": "acme", "name": " Acme Inc. " }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["slug"], "acme");
+    assert_eq!(body["name"], "Acme Inc.");
+    assert_eq!(
+        body["permissions"],
+        json!([
+            "write",
+            "manage",
+            "manage_admins",
+            "manage_team_links",
+            "delete"
+        ])
+    );
+    let (_, list) = api.get("/organizations", &root).await;
+    assert_eq!(slugs(&list), ["acme", "default"]);
+
+    assert_eq!(
+        audit_actions(&pool).await,
+        [(
+            "organization.created".to_owned(),
+            vec!["builtin.platform-admins".to_owned()],
+            json!({})
+        )]
+    );
+}
+
+#[sqlx::test]
+async fn plain_users_cannot_create_or_see_organizations(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let bob = user("bob", &[]);
+    let (status, body) = api
+        .post(
+            "/organizations",
+            &bob,
+            json!({ "slug": "acme", "name": "Acme" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+    let (status, list) = api.get("/organizations", &bob).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list, json!([]));
+    let (status, _) = api
+        .get(&format!("/organizations/{DEFAULT_ORGANIZATION}"), &bob)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(audit_actions(&pool).await, []);
+}
+
+#[sqlx::test]
+async fn organization_fields_are_validated(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    let (status, body) = api
+        .post(
+            "/organizations",
+            &root,
+            json!({ "slug": "-Bad", "name": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([
+            { "pointer": "/slug", "code": "invalid" },
+            { "pointer": "/name", "code": "required" }
+        ])
+    );
+    let (status, _) = api
+        .post(
+            "/organizations",
+            &root,
+            json!({ "slug": "a", "name": "A", "extra": 1 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    api.organization(&root, "acme").await;
+    let (status, body) = api
+        .post(
+            "/organizations",
+            &root,
+            json!({ "slug": "acme", "name": "Again" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "conflict");
+}
+
+#[sqlx::test]
+async fn team_links_give_read_or_write(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    let acme = api.organization(&root, "acme").await;
+    let team = api.team(&root, "engineering").await;
+    let (status, _) = api
+        .put(
+            &format!("/teams/{team}/members/{bob_id}"),
+            &root,
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let organization = format!("/organizations/{acme}");
+    assert_eq!(api.get(&organization, &bob).await.0, StatusCode::NOT_FOUND);
+
+    let link = format!("{organization}/teams/{team}");
+    let (status, _) = api
+        .put(&link, &root, Some(json!({ "access": "read" })))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = api.get(&organization, &bob).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["permissions"], json!([]));
+    assert_eq!(slugs(&api.get("/organizations", &bob).await.1), ["acme"]);
+
+    api.put(&link, &root, Some(json!({ "access": "write" })))
+        .await;
+    assert_eq!(
+        api.get(&organization, &bob).await.1["permissions"],
+        json!(["write"])
+    );
+    let (status, links) = api.get(&format!("{organization}/teams"), &bob).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(links[0]["team"]["slug"], "engineering");
+    assert_eq!(links[0]["access"], "write");
+
+    // A reader may not change the links.
+    let (status, _) = api
+        .put(&link, &bob, Some(json!({ "access": "read" })))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = api.delete(&link, &root).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(api.delete(&link, &root).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(api.get(&organization, &bob).await.0, StatusCode::NOT_FOUND);
+
+    let unknown = format!("{organization}/teams/{}", Uuid::new_v4());
+    assert_eq!(
+        api.put(&unknown, &root, Some(json!({ "access": "read" })))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = api
+        .put(&link, &root, Some(json!({ "access": "admin" })))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let actions: Vec<(String, Value)> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .filter(|(action, _, _)| action.starts_with("organization.team"))
+        .map(|(action, _, details)| (action, details))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            (
+                "organization.team_linked".to_owned(),
+                json!({ "team_id": team, "access": "read" })
+            ),
+            (
+                "organization.team_linked".to_owned(),
+                json!({ "team_id": team, "access": "write" })
+            ),
+            (
+                "organization.team_unlinked".to_owned(),
+                json!({ "team_id": team })
+            ),
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn organization_admins_manage_their_organization(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    let dave = user("dave", &[]);
+    let dave_id = api.user_id(&dave).await;
+    let acme = api.organization(&root, "acme").await;
+    let admins = format!("/organizations/{acme}/admins");
+
+    let (status, _) = api.put(&format!("{admins}/{carol_id}"), &root, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Already an admin: no change, no second audit entry.
+    api.put(&format!("{admins}/{carol_id}"), &root, None).await;
+
+    let (status, body) = api.get(&format!("/organizations/{acme}"), &carol).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["permissions"],
+        json!(["write", "manage", "manage_admins", "manage_team_links"])
+    );
+    let (status, list) = api.get(&admins, &carol).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        list,
+        json!([{ "id": carol_id, "display_name": "carol (display)" }])
+    );
+
+    // Carol renames it and adds Dave; Dave removes Carol.
+    let (status, body) = api
+        .patch(
+            &format!("/organizations/{acme}"),
+            &carol,
+            json!({ "name": "ACME" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (body["slug"].as_str(), body["name"].as_str()),
+        (Some("acme"), Some("ACME"))
+    );
+    assert_eq!(
+        api.put(&format!("{admins}/{dave_id}"), &carol, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api.delete(&format!("{admins}/{carol_id}"), &dave).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api.delete(&format!("{admins}/{carol_id}"), &dave).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        api.get(&format!("/organizations/{acme}"), &carol).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Only platform admins delete organizations.
+    assert_eq!(
+        api.delete(&format!("/organizations/{acme}"), &dave).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let unknown_user = format!("{admins}/{}", Uuid::new_v4());
+    assert_eq!(
+        api.put(&unknown_user, &dave, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let actions: Vec<String> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .map(|(action, _, _)| action)
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "organization.created",
+            "organization.admin_added",
+            "organization.updated",
+            "organization.admin_added",
+            "organization.admin_removed",
+        ]
+    );
+    let updated = &audit_actions(&pool).await[2];
+    assert_eq!(updated.1, ["builtin.organization-admins"]);
+    assert_eq!(updated.2, json!({ "fields": ["name"] }));
+}
+
+#[sqlx::test]
+async fn organization_changes_are_validated(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    api.organization(&root, "taken").await;
+    let uri = format!("/organizations/{acme}");
+    let (status, body) = api.patch(&uri, &root, json!({ "slug": "Nope" })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/slug", "code": "invalid" }])
+    );
+    assert_eq!(
+        api.patch(&uri, &root, json!({ "slug": "taken" })).await.0,
+        StatusCode::CONFLICT
+    );
+    let (status, body) = api.patch(&uri, &root, json!({ "slug": "renamed" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (body["slug"].as_str(), body["name"].as_str()),
+        (Some("renamed"), Some("acme"))
+    );
+    let missing = format!("/organizations/{}", Uuid::new_v4());
+    assert_eq!(
+        api.patch(&missing, &root, json!({ "name": "x" })).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[sqlx::test]
+async fn the_default_organization_cannot_be_deleted(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let default = format!("/organizations/{DEFAULT_ORGANIZATION}");
+    let (status, body) = api.get(&default, &root).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["permissions"],
+        json!(["write", "manage", "manage_admins", "manage_team_links"])
+    );
+    let (status, body) = api.delete(&default, &root).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "conflict");
+    assert_eq!(api.get(&default, &root).await.0, StatusCode::OK);
+
+    let acme = api.organization(&root, "acme").await;
+    assert_eq!(
+        api.delete(&format!("/organizations/{acme}"), &root).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api.delete(&format!("/organizations/{acme}"), &root).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let actions: Vec<String> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .map(|(action, _, _)| action)
+        .collect();
+    assert_eq!(actions, ["organization.created", "organization.deleted"]);
 }

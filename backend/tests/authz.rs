@@ -536,3 +536,56 @@ async fn visible_lists_are_sorted_by_slug(pool: PgPool) {
     }
     assert_eq!(listed, slugs("teams").await);
 }
+
+#[sqlx::test]
+async fn a_deployer_forbid_applies_to_the_api(pool: PgPool) {
+    use axum::http::StatusCode;
+    use common::api::{Api, admin, user};
+    use serde_json::json;
+
+    let policies = Policies::with_deployer(
+        r#"
+        @id("contractors-create-nothing")
+        forbid (principal, action == Kanbot::Action::"createTeam", resource)
+        when { principal.groups.contains("contractors") };
+        "#,
+    )
+    .unwrap();
+    let api = Api::of(common::app_with_policies(
+        pool.clone(),
+        std::sync::Arc::new(policies),
+    ));
+    let root = admin("root");
+    let mut admins = Vec::new();
+    for (subject, groups) in [("dave", &["contractors"][..]), ("erin", &[][..])] {
+        let token = user(subject, groups);
+        let id = api.user_id(&token).await;
+        api.put(
+            &format!(
+                "/organizations/{}/admins/{id}",
+                OrganizationId::DEFAULT.as_uuid()
+            ),
+            &root,
+            None,
+        )
+        .await;
+        admins.push(token);
+    }
+    let [dave, erin] = admins.try_into().unwrap();
+
+    let new_team = json!({ "slug": "x", "name": "X" });
+    let (status, body) = api.post("/teams", &dave, new_team.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        api.get("/me", &dave).await.1["permissions"],
+        json!(["search_users"])
+    );
+    assert_eq!(
+        api.post("/teams", &erin, new_team).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        api.get("/me", &erin).await.1["permissions"],
+        json!(["create_team", "search_users"])
+    );
+}

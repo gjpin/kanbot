@@ -6,6 +6,7 @@
 //! `DATABASE_URL` is not set. `docker compose up -d` in `backend/` starts a
 //! server; CI always sets it.
 
+pub mod api;
 pub mod authelia;
 pub mod base64url;
 pub mod idp;
@@ -141,6 +142,21 @@ pub fn app_with_pool(pool: PgPool) -> Router {
 /// with the test identity provider's default keys loaded (see [`idp::static_key_cache`]).
 pub fn app_with(pool: PgPool, migrator: &'static Migrator) -> Router {
     app_with_keys(pool, migrator, idp::static_key_cache())
+}
+
+/// The full router, backed by `pool`, deciding with `policies`.
+pub fn app_with_policies(pool: PgPool, policies: Arc<Policies>) -> Router {
+    serve(
+        AppState {
+            db: pool,
+            migrator: &db::MIGRATOR,
+            keys: idp::static_key_cache(),
+            sessions: session_config(),
+            authz: policies,
+        },
+        HttpSettings::new(),
+        None,
+    )
 }
 
 /// The full router, backed by `pool`, expecting `migrator`'s migrations,

@@ -4,6 +4,9 @@ import 'dart:convert' as convert;
 
 import 'package:http/http.dart' as http;
 
+import 'package:kanbot/data/api/generated/audit/models/user_summary_dto.dart'
+    as models
+    show UserSummaryDto;
 import 'package:kanbot/data/api/generated/http_request_options.dart';
 import 'package:kanbot/data/api/generated/users/models/me.dart'
     as models
@@ -20,6 +23,28 @@ class UsersClient {
   final Uri baseUrl;
 
   final void Function(http.BaseRequest, Map<String, Object?>)? prepareRequest;
+
+  static String _httpQuery(Map<String, Object?> fields) {
+    final entries = <String>[];
+    void add(String key, Object? value) {
+      if (value is Iterable) {
+        for (final item in value) {
+          add(key, item);
+        }
+      } else if (value is Map) {
+        for (final entry in value.entries) {
+          add('$key[${entry.key}]', entry.value);
+        }
+      } else {
+        entries.add(
+          '${Uri.encodeQueryComponent(key)}=${Uri.encodeQueryComponent(value?.toString() ?? '')}',
+        );
+      }
+    }
+
+    fields.forEach(add);
+    return entries.join('&');
+  }
 
   /// The signed-in user.
   Future<models.Me> me({
@@ -129,6 +154,76 @@ class UsersClient {
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
       return models.Me.fromJson(value as Map<String, Object?>);
+    });
+  }
+
+  /// Users who have signed in, by display name (at most 20), to add as
+  /// organization admins or team members. Disabled users are left out.
+  Future<List<models.UserSummaryDto>> searchUsers({
+    Map<String, Object?> extra = const {
+      'openapi.security': [
+        {'bearer': <String>[]},
+        {'session': <String>[]},
+      ],
+      'openapi.securitySchemes': {
+        'bearer': {
+          'type': 'http',
+          'scheme': 'bearer',
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
+        },
+      },
+    },
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+
+    /// Part of the display name, any case, at most 100 characters. Empty
+    /// or absent: the first users by name.
+    String? query2,
+  }) async {
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    var url = Uri.parse('$base/users');
+    final query = _httpQuery(<String, Object?>{'query': ?query2});
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
+    final request = http.AbortableRequest(
+      'GET',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return (value as List<Object?>)
+          .map(
+            (item) =>
+                models.UserSummaryDto.fromJson(item as Map<String, Object?>),
+          )
+          .toList();
     });
   }
 }

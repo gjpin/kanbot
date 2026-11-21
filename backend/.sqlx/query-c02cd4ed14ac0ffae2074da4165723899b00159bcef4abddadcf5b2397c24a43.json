@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT access FROM organization_teams\n        WHERE organization_id = $1 AND team_id = $2\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "access",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "organization_teams",
+            "name": "access"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c02cd4ed14ac0ffae2074da4165723899b00159bcef4abddadcf5b2397c24a43"
+}

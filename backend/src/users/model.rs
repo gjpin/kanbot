@@ -52,3 +52,31 @@ pub struct SeenUser {
     pub disabled: bool,
     pub telemetry_opt_in: bool,
 }
+
+/// A user as other users see them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserSummary {
+    pub id: UserId,
+    /// From the identity provider. Personal data: never log it.
+    pub display_name: Option<String>,
+}
+
+/// A user search: part of a display name, at most 100 characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserQuery(String);
+
+impl UserQuery {
+    const MAX_CHARS: usize = 100;
+
+    /// Trims `raw`. `None` if it is longer than 100 characters.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        (trimmed.chars().count() <= Self::MAX_CHARS).then(|| Self(trimmed.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
