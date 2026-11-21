@@ -1,0 +1,153 @@
+{
+  "realm": "kanbot",
+  "displayName": "kanbot (development)",
+  "enabled": true,
+  "sslRequired": "external",
+  "accessTokenLifespan": 300,
+  "groups": [
+    {
+      "name": "kanbot-admin"
+    },
+    {
+      "name": "kanbot-user"
+    },
+    {
+      "name": "contractors"
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@kanbot.internal",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kanbot-admin"
+      ],
+      "realmRoles": [
+        "default-roles-kanbot"
+      ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@kanbot.internal",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kanbot-user"
+      ],
+      "realmRoles": [
+        "default-roles-kanbot"
+      ]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@kanbot.internal",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Outsider",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [],
+      "realmRoles": [
+        "default-roles-kanbot"
+      ]
+    },
+    {
+      "username": "dave",
+      "enabled": true,
+      "email": "dave@kanbot.internal",
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Contractor",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dave-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kanbot-user",
+        "/contractors"
+      ],
+      "realmRoles": [
+        "default-roles-kanbot"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "kanbot",
+      "name": "kanbot",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "kanbot-dev-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": false,
+      "redirectUris": [
+        "http://localhost:3000/auth/callback",
+        "https://localhost:3000/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "kanbot-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "kanbot-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -10,6 +10,7 @@ pub mod api;
 pub mod authelia;
 pub mod base64url;
 pub mod idp;
+pub mod keycloak;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -49,6 +50,37 @@ pub fn session_config() -> Arc<SessionConfig> {
         SessionConfig::from_lookup(&|name| {
             vars.get(name)
                 .map(|value| (*value).to_owned())
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap(),
+    )
+}
+
+/// [`session_config`] with other `OIDC_SCOPES` (Keycloak refuses scopes it
+/// does not know, such as `groups`).
+///
+/// # Panics
+///
+/// If `scopes` is invalid.
+#[must_use]
+pub fn session_config_with_scopes(scopes: &str) -> Arc<SessionConfig> {
+    let scopes = scopes.to_owned();
+    let vars: std::collections::HashMap<&str, String> = [
+        ("OIDC_CLIENT_ID", "kanbot".to_owned()),
+        ("OIDC_CLIENT_SECRET", "kanbot-dev-client-secret".to_owned()),
+        ("OIDC_SCOPES", scopes),
+        ("PUBLIC_URL", "http://localhost:3000".to_owned()),
+        (
+            "SESSION_ENCRYPTION_KEYS",
+            "test1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    Arc::new(
+        SessionConfig::from_lookup(&|name| {
+            vars.get(name)
+                .cloned()
                 .ok_or(std::env::VarError::NotPresent)
         })
         .unwrap(),

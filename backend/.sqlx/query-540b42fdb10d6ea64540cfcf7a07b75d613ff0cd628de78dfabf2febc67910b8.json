@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO teams (id, slug, name, idp_group) VALUES ($1, 'contractors', 'Contractors', 'contractors')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "540b42fdb10d6ea64540cfcf7a07b75d613ff0cd628de78dfabf2febc67910b8"
+}

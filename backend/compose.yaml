@@ -5,9 +5,11 @@
 # Database: export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
 # Tests (#[sqlx::test]) create and drop their own databases on this server.
 #
-# Identity provider: Authelia at https://auth.kanbot.internal:9443, which
-# needs `127.0.0.1 auth.kanbot.internal` in /etc/hosts. dev/dev.env has the
-# backend's OIDC_* settings for it.
+# Identity providers: Authelia at https://auth.kanbot.internal:9443, and
+# Keycloak at https://auth.kanbot.internal:8443/realms/kanbot (the second IdP
+# of the end-to-end tests, dev/keycloak/). Both need
+# `127.0.0.1 auth.kanbot.internal` in /etc/hosts. dev/dev.env has the
+# backend's OIDC_* settings for Authelia.
 #
 # Observability (optional): `docker compose --profile observability up -d`
 # adds an OpenTelemetry Collector with Grafana, Tempo (traces), Loki (logs)
@@ -53,6 +55,40 @@ services:
       default:
         aliases:
           - auth.kanbot.internal
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
+    # Development mode with an in-memory database: the realm is imported on
+    # every start and nothing persists.
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=https://auth.kanbot.internal:8443
+      - --https-port=8443
+      - --https-certificate-file=/secrets/auth.kanbot.internal.crt
+      - --https-certificate-key-file=/secrets/auth.kanbot.internal.key
+      - --health-enabled=true
+      # Health checks inside the container only, over plain HTTP.
+      - --http-management-scheme=http
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: keycloak-dev-admin-password
+    volumes:
+      - ./dev/keycloak/kanbot-realm.json:/opt/keycloak/data/import/kanbot-realm.json:ro
+      - ./dev/.generated:/secrets:ro
+    ports:
+      - "127.0.0.1:8443:8443"
+    healthcheck:
+      # No curl in the image: ask the management port with bash alone.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 36
 
   observability:
     profiles: [observability]

@@ -8,7 +8,7 @@
 > the web and native apps. Authorization (organizations, teams, Cedar) is in
 > [`authorization.md`](authorization.md). **Not yet:** the apps' side of the
 > login. Configuration names may still change before the first
-> release. The provider setups other than Authelia have not been tested with
+> release. The provider setups other than Authelia and Keycloak have not been tested with
 > kanbot yet. Facts about each IdP were checked
 > against its official documentation on 2026-11-20, at the version noted in its
 > section. The implementation plan is [`docs/plan/auth.md`](plan/auth.md); each
@@ -194,7 +194,9 @@ the provider is first tested with kanbot.
 
 ### Keycloak
 
-Checked against Keycloak 26.8.2.
+Checked against Keycloak 26.8.2, and tested end to end with it: the local
+stack runs it with the setup below (`backend/dev/keycloak/kanbot-realm.json`,
+`backend/tests/keycloak.rs`).
 
 - **Issuer:** `https://<host>/realms/<realm>`. Discovery is at
   `/realms/<realm>/.well-known/openid-configuration`.
@@ -203,8 +205,9 @@ Checked against Keycloak 26.8.2.
   - Do not enable *lightweight access tokens* for kanbot's clients. Lightweight
     tokens leave out roles.
 - **Client:** `kanbot` with client authentication on (confidential).
-  - Enforce PKCE S256 through the client setting for the PKCE method (verify the
-    exact name) or a client policy.
+  - Enforce PKCE S256 with **PKCE Method** = `S256` (Advanced → Advanced
+    settings; the client attribute `pkce.code.challenge.method`). Keycloak then
+    refuses an authorization request without a challenge.
 - **Audience:** add an **Audience** protocol mapper (`oidc-audience-mapper`) to a
   client scope assigned to kanbot's clients, with **Included Custom Audience** =
   `kanbot-api`
@@ -215,6 +218,15 @@ Checked against Keycloak 26.8.2.
   - groups, through a **Group Membership** mapper with token claim name
     `groups`. Turn **Full group path** off: it defaults to on and would produce
     values like `/kanbot-admin`.
+- **Scopes:** Keycloak refuses an authorization request with a scope it does
+  not know (`invalid_scope`), so leave `groups` out of `OIDC_SCOPES` unless you
+  created a client scope with that name; a mapper on the client puts the
+  groups in the tokens anyway. Kanbot's default scopes
+  (`openid profile email offline_access`) work.
+- **Refresh tokens:** kanbot asks for `offline_access`, so users need the
+  realm's `offline_access` role. Keycloak gives it to new users through the
+  realm's default roles; users imported without them get `not_allowed`
+  ("Offline tokens not allowed") at the token exchange.
 - **Client credentials:** enable service accounts on `kanbot-automation`. The
   token is based on that client's service account.
 - **Hostname:** set `hostname` to the public URL so the issuer never changes.
@@ -228,9 +240,10 @@ Checked against Keycloak 26.8.2.
   ([token exchange](https://www.keycloak.org/securing-apps/token-exchange)).
 - **Logout:** RP-initiated logout at
   `/realms/<realm>/protocol/openid-connect/logout`.
-- **Access token header `typ`:** Keycloak 26.2 added a client setting for the
-  access token header type (verify the name and values). Kanbot does not
-  require `at+jwt`.
+- **Access token header `typ`:** the client setting **Use "at+jwt" as access
+  token header type** (Advanced → Fine grain OpenID Connect configuration;
+  the client attribute `access.token.header.type.rfc9068`, off by default:
+  `JWT`). Kanbot accepts either.
 
 ### Authelia
 
@@ -454,7 +467,10 @@ challenge.
 
 The local stack (`backend/compose.yaml`) runs Authelia 4.39.28 next to
 Postgres at `https://auth.kanbot.internal:9443`, configured as described
-above (`backend/dev/authelia/`). `backend/dev/auth-setup.sh` generates its
+above (`backend/dev/authelia/`), and Keycloak 26.8.2 at
+`https://auth.kanbot.internal:8443/realms/kanbot` (`backend/dev/keycloak/`),
+the second identity provider of the end-to-end tests. Both use the same
+hostname, so one `/etc/hosts` entry serves both. `backend/dev/auth-setup.sh` generates its
 certificates (from a local certificate authority), secrets and signing key.
 Authelia rejects special-use domains such as `localhost` for its cookie
 domain, so the stack uses `kanbot.internal` (checked: Authelia 4.39.28
@@ -464,7 +480,7 @@ accepts it), mapped to loopback in `/etc/hosts`:
 127.0.0.1 auth.kanbot.internal
 ```
 
-Its file-based user database has development-only users, each with the
+Both have the same development-only users, each with the
 password `<username>-dev-password`: `alice` in `kanbot-admin`, `bob` in
 `kanbot-user`, `carol` in no kanbot group, and `dave` in `kanbot-user` and
 `contractors`. The `kanbot` client's development-only secret is

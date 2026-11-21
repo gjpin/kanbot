@@ -12,8 +12,8 @@ Code is organized **by feature first, then by layer** inside each feature:
 backend/
 ├── openapi.json             # the API contract (generated, committed; the frontend's client is built from it)
 ├── build.rs                 # rebuilds when a migration is added
-├── compose.yaml             # local Postgres and Authelia; `--profile observability` adds collector + Grafana
-├── dev/                     # local stack: auth-setup.sh, authelia/ config and users, dev.env, policies.cedar; .generated/ is git-ignored
+├── compose.yaml             # local Postgres, Authelia and Keycloak; `--profile observability` adds collector + Grafana
+├── dev/                     # local stack: auth-setup.sh, authelia/ and keycloak/ config and users, dev.env, policies.cedar; .generated/ is git-ignored
 ├── otel-collector/          # collector config for local development (filters, limits)
 ├── migrations/              # sqlx migrations, one file per change
 ├── .sqlx/                   # offline query metadata from `cargo sqlx prepare` (committed)
@@ -55,9 +55,11 @@ backend/
 │   ├── common/mod.rs        # shared test setup (test app over a #[sqlx::test] pool); `pub mod common;` in each test file
 │   ├── common/idp.rs        # test IdP: discovery, a changeable JWKS, token signing (§4a)
 │   ├── common/authelia.rs   # programmatic login at the local Authelia (§4a)
+│   ├── common/keycloak.rs   # programmatic login at the local Keycloak (§4a)
 │   ├── fixtures/            # test-only migrations
 │   ├── fixtures/oidc/       # committed test-only signing keys (§4a)
 │   ├── authelia.rs          # end-to-end tests against the local Authelia
+│   ├── keycloak.rs          # end-to-end tests against the local Keycloak
 │   └── <feature>.rs         # HTTP-level integration tests, one file per feature
 ├── examples/dev_token.rs    # `cargo run --example dev-token -- alice`: a local Authelia access token
 ├── benches/                 # criterion benchmarks
@@ -303,7 +305,8 @@ The model, the built-in permissions and the deployer policy guide are in [`docs/
 - **Test IdP** (`tests/common/idp.rs`): an axum server on `127.0.0.1:0` that serves discovery and a JWKS that tests can change at runtime (rotate, empty, broken, oversized, redirect, slow), counts the requests it gets, and signs tokens with any claims and header. The app under test reaches it through `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP`. Use it for token validation, key cache and discovery tests; do not stub the validator.
 - **Fixture keys** (`tests/fixtures/oidc/`): committed signing keys for **tests only** (RSA-2048 keys A and B for rotation, an RSA-1024 key that must be rejected, P-256, P-384 and Ed25519 keys, and their public JWKs). Its README says so and lists the `openssl` commands that generated them. Never use them outside tests, and never put any other key there. A secret scanner needs an allowlist for this folder.
 - **Local Authelia** (`tests/authelia.rs`): end-to-end tests with real tokens from the local Authelia (`dev/authelia/configuration.yml`), obtained by the programmatic login helper `tests/common/authelia.rs`, which `examples/dev_token.rs` shares through `#[path]`. The dev users are in `dev/authelia/users_database.yml`, each with the documented dev-only password `<username>-dev-password`: `alice` (`kanbot-admin`), `bob` (`kanbot-user`), `carol` (no kanbot group) and `dave` (`kanbot-user` and `contractors`). The `kanbot` client's dev-only secret is `kanbot-dev-client-secret`.
-- Database and Authelia tests **fail rather than skip** when their service is missing.
+- **Local Keycloak** (`tests/keycloak.rs`): the second identity provider, with the same dev users and client secret (`dev/keycloak/kanbot-realm.json`), at `https://auth.kanbot.internal:8443/realms/kanbot`. `tests/common/keycloak.rs` signs in through Keycloak's login form.
+- Database, Authelia and Keycloak tests **fail rather than skip** when their service is missing.
 
 ## 5. Supply chain
 
@@ -325,7 +328,7 @@ Follow the exception steps in the root `AGENTS.md`. In this crate:
 
 ## Before you finish: run these from `backend/`, all must pass
 
-The tests need PostgreSQL and the local Authelia (§4a). Database tests use `#[sqlx::test]`, which creates a fresh database per test on the server at `DATABASE_URL`, applies `migrations/`, and drops it afterwards. They fail, rather than skip, when `DATABASE_URL` is not set. Never share data between tests through a common database.
+The tests need PostgreSQL, the local Authelia and the local Keycloak (§4a). Database tests use `#[sqlx::test]`, which creates a fresh database per test on the server at `DATABASE_URL`, applies `migrations/`, and drops it afterwards. They fail, rather than skip, when `DATABASE_URL` is not set. Never share data between tests through a common database.
 
 Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use domains such as `localhost`, so the name has to resolve to loopback: add this line to `/etc/hosts` once per machine:
 
@@ -337,7 +340,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 
 ```sh
 sh dev/auth-setup.sh
-docker compose up -d   # Postgres and Authelia
+docker compose up -d --wait   # Postgres, Authelia and Keycloak
 export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
 sqlx migrate run       # the SQL macros check queries against this database
 
