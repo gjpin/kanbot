@@ -223,6 +223,37 @@ mod credentials {
     }
 
     #[tokio::test]
+    async fn large_token_responses_are_read() {
+        let idp = TestIdp::start().await;
+        let issued = token(&json!("openshell-gateway"), now().saturating_add(300));
+        idp.set_token(Reply::Json(json!({
+            "access_token": issued,
+            "token_type": "Bearer",
+            // Identity providers add fields of their own: well over 1 KiB.
+            "padding": "x".repeat(8 * 1024),
+        })));
+        let credentials = credentials(&idp, &[]).await;
+        assert_eq!(
+            credentials.service_token().await.unwrap().expose_secret(),
+            issued
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_expiring_within_the_margin_is_replaced() {
+        let idp = TestIdp::start().await;
+        // Exactly at the 30 s margin: replaced.
+        idp.set_token(reply(&token(
+            &json!("openshell-gateway"),
+            now().saturating_add(30),
+        )));
+        let credentials = credentials(&idp, &[]).await;
+        credentials.service_token().await.unwrap();
+        credentials.service_token().await.unwrap();
+        assert_eq!(idp.token_requests().len(), 2);
+    }
+
+    #[tokio::test]
     async fn an_expiring_service_token_is_replaced() {
         let idp = TestIdp::start().await;
         idp.set_token(reply(&token(&json!("openshell-gateway"), now() + 10)));
@@ -728,6 +759,21 @@ mod link_and_sync {
             .await
             .unwrap();
         assert_eq!(setup.fake.state.lock().unwrap().changes.len(), before);
+
+        // Someone changes a member kanbot added in OpenShell: put back.
+        setup
+            .fake
+            .state
+            .lock()
+            .unwrap()
+            .workspaces
+            .get_mut("research")
+            .unwrap()
+            .insert("alice".to_owned(), 1);
+        sync::sync_all(&pool, &setup.openshell, &issuer)
+            .await
+            .unwrap();
+        assert_eq!(members(&setup.fake)[0], ("alice".to_owned(), 2));
 
         // Bob becomes an admin, the readers get write access, eve leaves.
         sqlx::query!(

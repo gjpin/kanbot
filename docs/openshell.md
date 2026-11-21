@@ -28,8 +28,9 @@ OpenShell versions are listed in
   members kanbot added to its workspace.
 - The sync runs every 5 minutes and right after a link changes. It stops at
   the first failure and logs it (`openshell membership sync failed`); the next
-  run picks up from there. Each run that changed something logs the counts
-  (`openshell membership synced`).
+  run picks up from there. Each run that added or removed members logs the
+  counts (`openshell membership synced`); a run that changed nothing logs
+  nothing.
 - A workspace can be linked to only one organization.
 
 The workspace must exist: kanbot does not create workspaces. When a platform

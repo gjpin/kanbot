@@ -299,5 +299,8 @@ mod tests {
         let config = with(&[("OPENSHELL_CA_FILE", &raw)]).unwrap().unwrap();
         assert_eq!(config.ca_pem.as_deref(), Some(&b"pem"[..]));
         std::fs::remove_file(path).unwrap();
+        // Blank is unset, not a file named "".
+        let config = with(&[("OPENSHELL_CA_FILE", "  ")]).unwrap().unwrap();
+        assert_eq!(config.ca_pem, None);
     }
 }

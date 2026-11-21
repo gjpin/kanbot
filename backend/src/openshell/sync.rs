@@ -42,6 +42,11 @@ pub struct Changes {
 }
 
 impl Changes {
+    /// Whether the workspace's members changed.
+    const fn changed(self) -> bool {
+        self.added > 0 || self.removed > 0
+    }
+
     fn plus(self, other: Self) -> Self {
         Self {
             added: self.added.saturating_add(other.added),
@@ -149,16 +154,76 @@ pub fn spawn_sync(db: PgPool, openshell: Arc<OpenShell>, issuer: String) {
                 _ = interval.tick() => {}
                 () = openshell.wake.notified() => {}
             }
-            match sync_all(&db, &openshell, &issuer).await {
-                Ok(changes) if changes == Changes::default() => {}
-                Ok(changes) => tracing::info!(
-                    added = i64::try_from(changes.added).unwrap_or(i64::MAX),
-                    removed = i64::try_from(changes.removed).unwrap_or(i64::MAX),
-                    skipped = i64::try_from(changes.skipped).unwrap_or(i64::MAX),
-                    "openshell membership synced"
-                ),
-                Err(error) => tracing::warn!(%error, "openshell membership sync failed"),
-            }
+            report(&sync_all(&db, &openshell, &issuer).await);
         }
     });
+}
+
+/// Logs a sync's outcome: what it changed, or why it failed. Nothing when
+/// no member changed, so a quiet sync every few minutes stays quiet.
+fn report(outcome: &Result<Changes, SyncError>) {
+    match outcome {
+        Ok(changes) if !changes.changed() => {}
+        Ok(changes) => tracing::info!(
+            added = i64::try_from(changes.added).unwrap_or(i64::MAX),
+            removed = i64::try_from(changes.removed).unwrap_or(i64::MAX),
+            skipped = i64::try_from(changes.skipped).unwrap_or(i64::MAX),
+            "openshell membership synced"
+        ),
+        Err(error) => tracing::warn!(%error, "openshell membership sync failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// The log lines `report` writes for `outcome`.
+    fn logged(outcome: &Result<Changes, SyncError>) -> String {
+        #[derive(Clone)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buffer = Buffer(Arc::new(Mutex::new(Vec::new())));
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || report(outcome));
+        String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn reports_only_member_changes_and_failures() {
+        let changes = |added, removed, skipped| {
+            Ok(Changes {
+                added,
+                removed,
+                skipped,
+            })
+        };
+        let added = logged(&changes(1, 0, 2));
+        assert!(added.contains("openshell membership synced"), "{added}");
+        assert!(added.contains("added=1 removed=0 skipped=2"), "{added}");
+        let removed = logged(&changes(0, 3, 0));
+        assert!(removed.contains("added=0 removed=3 skipped=0"), "{removed}");
+        assert_eq!(logged(&changes(0, 0, 0)), "");
+        // Members left alone are not a change.
+        assert_eq!(logged(&changes(0, 0, 5)), "");
+        let failed = logged(&Err(SyncError::Database(sqlx::Error::RowNotFound)));
+        assert!(
+            failed.contains("openshell membership sync failed"),
+            "{failed}"
+        );
+    }
 }
