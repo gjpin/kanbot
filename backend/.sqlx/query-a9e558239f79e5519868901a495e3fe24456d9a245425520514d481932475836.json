@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO organization_teams (organization_id, team_id, access) VALUES ($1, $2, 'write')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a9e558239f79e5519868901a495e3fe24456d9a245425520514d481932475836"
+}
