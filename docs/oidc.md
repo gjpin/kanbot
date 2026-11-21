@@ -90,8 +90,8 @@ An IdP works with kanbot only if it can do all of the following:
 7. For machine clients, support the **client credentials** grant.
 
 **Supported:** Keycloak, Authelia, Okta (custom authorization server) and
-Microsoft Entra ID (single tenant, v2 tokens). **Pending:** authentik, whose
-access-token `aud` cannot be set apart from the client ID (see
+Microsoft Entra ID (single tenant, v2 tokens). **Not supported:** authentik,
+whose access-token `aud` cannot be set apart from the ID token's (tested, see
 [authentik](#authentik)).
 
 Not supported: social logins whose access tokens are opaque or not meant for
@@ -306,8 +306,9 @@ feature.
 
 ### authentik
 
-Checked against authentik 2026.8.6. Some facts come from authentik's source
-code, because the documentation has no settings reference for them.
+Checked against authentik 2026.8.6, and the audience tested with it. Some
+facts come from authentik's source code, because the documentation has no
+settings reference for them.
 
 - **Issuer:** `https://<host>/application/o/<application-slug>/` by default
   (**Issuer mode**: one issuer per provider).
@@ -320,13 +321,22 @@ code, because the documentation has no settings reference for them.
   - RFC 8707 `resource` requests are rejected.
   - So ID tokens and access tokens share the same `aud`, which conflicts with
     [kanbot's audience rule](#why-the-audience-must-differ-from-the-client-id).
-  - A custom scope mapping returning `aud` may override it, but would change the
-    ID token too (verify).
+  - A custom scope mapping returning `aud` changes the ID token too. Tested
+    with authentik 2026.8.6 (authorization code flow with PKCE, and client
+    credentials): a mapping returning `"kanbot-api"` gives both tokens
+    `aud: "kanbot-api"`, so the ID token no longer names the client; one
+    returning `["kanbot", "kanbot-api"]` gives both tokens both audiences, so
+    an ID token would pass as an access token. Either way the two tokens
+    cannot be told apart by audience.
   - Access tokens carry `azp`; ID tokens do not.
-  - **authentik is not supported until this is resolved and tested.**
+  - **authentik is not supported**, until it can set the access token's
+    audience on its own.
 - **Roles:** the default `profile` scope mapping returns the user's group names
   in `groups`. They appear in the access token only while **Include claims in
   id_token** is on (the default).
+- **Grant types:** a provider created through the API in 2026.8 has an empty
+  list of allowed grant types and refuses every request ("Invalid grant_type
+  for provider"); allow `authorization_code` and `refresh_token`.
 - **PKCE:** supported but not enforced. When the method is omitted it defaults to
   `plain`. Kanbot always sends S256.
 - **Client credentials:** supported. authentik creates a service account per
