@@ -3,5 +3,6 @@
 //! Off unless `OPENSHELL_GATEWAY_URL` is set.
 
 pub mod config;
+pub mod credentials;
 pub mod gateway;
 pub mod model;

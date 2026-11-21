@@ -161,3 +161,155 @@ async fn gateway_failures_are_typed() {
         Err(GatewayError::Unavailable)
     ));
 }
+
+mod credentials {
+    use std::sync::Arc;
+
+    use common::idp::{Reply, TestIdp, now, sign};
+    use kanbot_backend::openshell::credentials::{CredentialError, Credentials};
+    use secrecy::{ExposeSecret, SecretString};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn token(aud: &Value, exp: u64) -> String {
+        sign(
+            "rsa-a",
+            &json!({ "iss": "x", "sub": "svc", "aud": aud, "exp": exp }),
+        )
+    }
+
+    fn reply(access_token: &str) -> Reply {
+        Reply::Json(
+            json!({ "access_token": access_token, "token_type": "Bearer", "expires_in": 300 }),
+        )
+    }
+
+    async fn credentials(idp: &TestIdp, extra: &[(&'static str, &str)]) -> Credentials {
+        let mut openshell = config("http://127.0.0.1:1");
+        for (name, value) in extra {
+            match *name {
+                "OPENSHELL_TOKEN_EXCHANGE" => openshell.token_exchange = *value == "true",
+                "OPENSHELL_TOKEN_SCOPE" => openshell.token_scope = Some((*value).to_owned()),
+                other => panic!("unknown setting {other}"),
+            }
+        }
+        Credentials::new(Arc::new(openshell), idp.loaded_key_cache(&[]).await)
+    }
+
+    #[tokio::test]
+    async fn the_service_token_comes_from_client_credentials_and_is_cached() {
+        let idp = TestIdp::start().await;
+        let issued = token(&json!("openshell-gateway"), now() + 300);
+        idp.set_token(reply(&issued));
+        let credentials = credentials(&idp, &[("OPENSHELL_TOKEN_SCOPE", "gw/.default")]).await;
+
+        let first = credentials.service_token().await.unwrap();
+        let second = credentials.service_token().await.unwrap();
+        assert_eq!(first.expose_secret(), issued);
+        assert_eq!(second.expose_secret(), issued);
+
+        let requests = idp.token_requests();
+        assert_eq!(requests.len(), 1, "cached");
+        let request = &requests[0];
+        assert_eq!(request.form["grant_type"], "client_credentials");
+        assert_eq!(request.form["scope"], "gw/.default");
+        assert!(!request.form.contains_key("audience"));
+        // client_secret_basic with kanbot's OpenShell client.
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Basic a2FuYm90LW9wZW5zaGVsbDpvcGVuc2hlbGwtdGVzdC1zZWNyZXQ=")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expiring_service_token_is_replaced() {
+        let idp = TestIdp::start().await;
+        idp.set_token(reply(&token(&json!("openshell-gateway"), now() + 10)));
+        let credentials = credentials(&idp, &[]).await;
+        credentials.service_token().await.unwrap();
+        credentials.service_token().await.unwrap();
+        assert_eq!(idp.token_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn tokens_for_both_services_or_the_wrong_one_are_refused() {
+        let idp = TestIdp::start().await;
+        let credentials = credentials(&idp, &[]).await;
+        for (aud, expected) in [
+            (json!(["openshell-gateway", "kanbot-api"]), "shared"),
+            (json!("kanbot-api"), "shared"),
+            (json!("someone-else"), "wrong"),
+        ] {
+            idp.set_token(reply(&token(&aud, now() + 300)));
+            let error = credentials.service_token().await.unwrap_err();
+            let kind = match error {
+                CredentialError::SharedAudience => "shared",
+                CredentialError::WrongAudience => "wrong",
+                other => panic!("{other}"),
+            };
+            assert_eq!(kind, expected, "{aud}");
+        }
+        idp.set_token(reply("opaque-token"));
+        assert!(matches!(
+            credentials.service_token().await,
+            Err(CredentialError::Malformed)
+        ));
+        idp.set_token(Reply::Status(axum::http::StatusCode::UNAUTHORIZED));
+        assert!(matches!(
+            credentials.service_token().await,
+            Err(CredentialError::Request(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn user_calls_exchange_the_users_token() {
+        let idp = TestIdp::start().await;
+        let exchanged = token(&json!("openshell-gateway"), now() + 300);
+        idp.set_token(reply(&exchanged));
+        let credentials = credentials(&idp, &[("OPENSHELL_TOKEN_EXCHANGE", "true")]).await;
+
+        let user = SecretString::from("the-users-access-token");
+        let result = credentials.on_behalf_of(&user).await.unwrap();
+        assert_eq!(result.expose_secret(), exchanged);
+        let form = &idp.token_requests()[0].form;
+        assert_eq!(
+            form["grant_type"],
+            "urn:ietf:params:oauth:grant-type:token-exchange"
+        );
+        assert_eq!(form["subject_token"], "the-users-access-token");
+        assert_eq!(
+            form["subject_token_type"],
+            "urn:ietf:params:oauth:token-type:access_token"
+        );
+        assert_eq!(
+            form["requested_token_type"],
+            "urn:ietf:params:oauth:token-type:access_token"
+        );
+        assert_eq!(form["audience"], "openshell-gateway");
+
+        // An exchange that keeps kanbot's audience is never used.
+        idp.set_token(reply(&token(
+            &json!(["kanbot-api", "openshell-gateway"]),
+            now() + 300,
+        )));
+        assert!(matches!(
+            credentials.on_behalf_of(&user).await,
+            Err(CredentialError::SharedAudience)
+        ));
+    }
+
+    #[tokio::test]
+    async fn without_token_exchange_user_calls_use_the_service_account() {
+        let idp = TestIdp::start().await;
+        idp.set_token(reply(&token(&json!("openshell-gateway"), now() + 300)));
+        let credentials = credentials(&idp, &[]).await;
+        credentials
+            .on_behalf_of(&SecretString::from("the-users-access-token"))
+            .await
+            .unwrap();
+        let form = &idp.token_requests()[0].form;
+        assert_eq!(form["grant_type"], "client_credentials");
+        assert!(!form.values().any(|value| value == "the-users-access-token"));
+    }
+}
