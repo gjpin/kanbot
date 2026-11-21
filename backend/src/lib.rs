@@ -2,14 +2,17 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod authz;
 pub mod base64;
 pub mod cli;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod organizations;
 pub mod sessions;
 pub mod state;
+pub mod teams;
 pub mod telemetry;
 pub mod telemetry_relay;
 pub mod users;

@@ -1,0 +1,59 @@
+// Kanbot's authorization model (docs/authorization.md). The entities are
+// built from the database for each decision (src/authz/entities.rs); the
+// built-in policies are in policies.cedar.
+namespace Kanbot {
+  // The whole instance: the resource of actions that are not about one
+  // organization or team.
+  entity Platform;
+
+  // Two per organization, "<organization id>/read" and
+  // "<organization id>/write"; the write group is a member of the read group.
+  entity OrgGroup in [OrgGroup];
+
+  // A team is a member of the access groups of the organizations it is
+  // linked to.
+  entity Team in [OrgGroup] = {
+    maintainers: Set<User>,
+  };
+
+  // A user is a member of their teams.
+  entity User in [Team] = {
+    // "admin" or "user", from the identity provider's roles claim.
+    platformRole: String,
+    // The groups claim (OIDC_GROUPS_CLAIM).
+    groups: Set<String>,
+    // The client the access token was issued to (azp, client_id or cid).
+    clientId?: String,
+    // Admin of at least one organization.
+    organizationAdmin: Bool,
+    // Maintainer of at least one team.
+    teamMaintainer: Bool,
+  };
+
+  entity Organization = {
+    readers: OrgGroup,
+    writers: OrgGroup,
+    admins: Set<User>,
+  };
+
+  type RequestContext = {
+    // How the request was authenticated: "web" (session cookie), "native"
+    // (session token) or "bearer" (an identity provider's access token).
+    via: String,
+    // The client's address (TRUSTED_PROXIES applies).
+    ip: ipaddr,
+  };
+
+  // Organization data, for features that belong to an organization.
+  action read, write
+    appliesTo { principal: User, resource: Organization, context: RequestContext };
+
+  action manageOrganization, manageOrganizationAdmins, manageTeamLinks, deleteOrganization
+    appliesTo { principal: User, resource: Organization, context: RequestContext };
+
+  action viewTeam, manageTeam, manageTeamMembers, setTeamIdpGroup
+    appliesTo { principal: User, resource: Team, context: RequestContext };
+
+  action createOrganization, createTeam, searchUsers, viewAudit
+    appliesTo { principal: User, resource: Platform, context: RequestContext };
+}

@@ -39,6 +39,10 @@ pub struct AuthenticatedUser {
     /// From the token. Personal data: never log it.
     pub display_name: Option<String>,
     pub telemetry_opt_in: bool,
+    /// The groups claim (`OIDC_GROUPS_CLAIM`). Personal data: never log it.
+    pub groups: Vec<String>,
+    /// The client the token was issued to (`azp`, `client_id` or `cid`).
+    pub client_id: Option<String>,
 }
 
 /// What the repository returns for a user seen on a request.

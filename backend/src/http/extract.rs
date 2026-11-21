@@ -64,6 +64,8 @@ mod tests {
             role,
             display_name: None,
             telemetry_opt_in: false,
+            groups: Vec::new(),
+            client_id: None,
         }
     }
 

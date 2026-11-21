@@ -38,6 +38,8 @@ pub async fn authenticate(
         role: principal.role,
         display_name: principal.display_name.clone(),
         telemetry_opt_in: seen.telemetry_opt_in,
+        groups: principal.groups.clone(),
+        client_id: principal.client_id.clone(),
     })
 }
 
