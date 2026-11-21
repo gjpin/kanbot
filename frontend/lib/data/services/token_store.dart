@@ -1,9 +1,10 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Keeps the auth token in the platform's secure storage: Keychain on
-/// iOS/macOS, Keystore-backed ciphers on Android, libsecret on Linux,
-/// DPAPI on Windows, and WebCrypto-wrapped local storage on the web
-/// (experimental, see AGENTS.md §2). Never store tokens anywhere else.
+/// Keeps the kanbot session token (`kbs_...`) in the platform's secure
+/// storage. Native apps only: the web app stores no token (its session is
+/// an `HttpOnly` cookie). Secure storage is: Keychain on iOS/macOS,
+/// Keystore-backed ciphers on Android, libsecret on Linux and DPAPI on
+/// Windows. Never store tokens anywhere else.
 class TokenStore {
   TokenStore({this._storage = defaultStorage});
 
@@ -34,6 +35,7 @@ class TokenStore {
   Future<void> write(String token) =>
       _storage.write(key: _tokenKey, value: token);
 
-  /// Deletes everything this app keeps in secure storage. Call on logout.
-  Future<void> clear() => _storage.deleteAll();
+  /// Deletes the token. Call on logout. The chosen server (`ServerStore`)
+  /// stays.
+  Future<void> clear() => _storage.delete(key: _tokenKey);
 }

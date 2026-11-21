@@ -332,6 +332,69 @@ class TeamsClient {
     });
   }
 
+  /// Stops syncing the team with its identity provider group: the synced
+  /// members are removed and the team is managed by hand again. Platform
+  /// admins only. The same as `PATCH` with `"idp_group": null`, for clients
+  /// that cannot send a null.
+  Future<models.TeamDto> clearTeamIdpGroup({
+    Map<String, Object?> extra = const {
+      'openapi.security': [
+        {'bearer': <String>[]},
+        {'session': <String>[]},
+      ],
+      'openapi.securitySchemes': {
+        'bearer': {
+          'type': 'http',
+          'scheme': 'bearer',
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
+        },
+      },
+    },
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+
+    /// The team's ID (a UUID).
+    required String id,
+  }) async {
+    if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
+      throw ArgumentError('Invalid path segment.');
+    }
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    final url = Uri.parse('$base/teams/${Uri.encodeComponent(id)}/idp_group');
+    final request = http.AbortableRequest(
+      'DELETE',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return models.TeamDto.fromJson(value as Map<String, Object?>);
+    });
+  }
+
   /// The team's members: maintainers first, then by display name.
   Future<List<models.MemberDto>> listTeamMembers({
     Map<String, Object?> extra = const {

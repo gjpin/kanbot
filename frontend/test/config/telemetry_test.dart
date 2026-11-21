@@ -6,6 +6,7 @@ import 'package:kanbot/config/telemetry.dart';
 import 'package:kanbot/main.dart';
 import 'package:kanbot/routing/router.dart';
 
+import '../helpers/fake_backend.dart';
 import '../helpers/test_dependencies.dart';
 
 void main() {
@@ -95,13 +96,17 @@ void main() {
   });
 
   testWidgets('reports navigation by route template, not path', (tester) async {
+    final backend = FakeBackend()
+      ..on('GET', '/teams/$teamId', team())
+      ..on('GET', '/teams/$teamId/members', <Object?>[]);
+    final dependencies = await signedIn(backend);
     final router = createRouter(
-      dependencies: testDependencies(),
+      dependencies: dependencies,
       initialLocation: '/no/such/page',
     );
     reportNavigation(router);
     await tester.pumpWidget(KanbotApp(router: router));
-    router.go(Routes.home);
+    router.go(Routes.team(teamId));
     await tester.pumpAndSettle();
 
     final routes = [
@@ -109,10 +114,12 @@ void main() {
         if (log.eventName == 'app.navigation')
           log.attributes?.getString('app.route'),
     ];
-    expect(routes, ['(unmatched)', '/']);
+    expect(routes, ['(unmatched)', '/teams/:id']);
     expect(
       harness.logs.records.map((log) => '${log.attributes?.toList()}'),
-      everyElement(isNot(contains('/no/such/page'))),
+      everyElement(
+        allOf(isNot(contains('/no/such/page')), isNot(contains(teamId))),
+      ),
     );
   });
 }

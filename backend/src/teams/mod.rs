@@ -18,4 +18,5 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::get, handlers::update, handlers::delete))
         .routes(routes!(handlers::members))
         .routes(routes!(handlers::set_member, handlers::remove_member))
+        .routes(routes!(handlers::clear_idp_group))
 }

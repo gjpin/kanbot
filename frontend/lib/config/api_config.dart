@@ -1,10 +1,8 @@
-/// Base URL of the kanbot backend, set at build time with
-/// `--dart-define=API_BASE_URL=https://api.example.com`. Defaults to the
-/// backend's local development address.
-const String apiBaseUrlDefine = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'http://localhost:3000',
-);
+/// A default kanbot server for native apps, set at build time with
+/// `--dart-define=API_BASE_URL=https://kanbot.example.com`. Optional: without
+/// it, the app asks the user on first launch. The web app ignores it and
+/// always talks to the origin it was loaded from.
+const String apiBaseUrlDefine = String.fromEnvironment('API_BASE_URL');
 
 /// Whether `API_BASE_URL` was passed at build time.
 const bool apiBaseUrlDefined = bool.hasEnvironment('API_BASE_URL');
@@ -22,8 +20,8 @@ const Set<String> _loopbackHosts = {
 /// address. [Uri.parse] percent-encodes anything else instead of rejecting it.
 final RegExp _validHost = RegExp(r'^[a-z0-9.:-]+$');
 
-/// Parses and validates an API base URL (AGENTS.md §2: HTTPS only, except
-/// loopback during development).
+/// Parses and validates a kanbot server URL, the API base URL (AGENTS.md
+/// §2: HTTPS only, except loopback during development).
 ///
 /// A [release] build accepts only `https://` URLs to hosts other than the
 /// loopback ones: a release that talks to `localhost` is a build mistake.
@@ -41,43 +39,44 @@ Uri parseApiBaseUrl(String raw, {required bool release}) {
       uri.hasQuery ||
       uri.hasFragment) {
     throw const FormatException(
-      'API_BASE_URL must be an absolute URL without credentials, query or '
+      'the server URL must be absolute, without credentials, query or '
       'fragment',
     );
   }
   final isLoopback = _loopbackHosts.contains(uri.host);
   if (release && isLoopback) {
     throw const FormatException(
-      'API_BASE_URL must not point at a loopback host in a release build',
+      'the server URL must not point at a loopback host in a release build',
     );
   }
   final isSecure = uri.scheme == 'https';
   final isLocal = uri.scheme == 'http' && isLoopback;
   if (!isSecure && !isLocal) {
     throw const FormatException(
-      'API_BASE_URL must use https (http is allowed only for loopback hosts)',
+      'the server URL must use https (http only for loopback hosts)',
     );
   }
   return uri.path.endsWith('/') ? uri : uri.replace(path: '${uri.path}/');
 }
 
-/// The API base URL this build was configured with. Call once at startup:
-/// a misconfigured build must fail there, before any request is made.
+/// The default server this build was configured with, if any. Call once at
+/// startup: a misconfigured build must fail there, before any request is
+/// made. [defined] and [raw] exist for tests and default to the build-time
+/// values.
 ///
-/// A [release] build must set `API_BASE_URL` explicitly; the development
-/// default is only for debug and profile builds. [defined] and [raw] exist
-/// for tests and default to the build-time values.
-///
-/// Throws a [FormatException] when the URL is missing (in release) or invalid.
-Uri apiBaseUrlFromEnvironment({
+/// Throws a [FormatException] when `API_BASE_URL` is set but invalid.
+Uri? defaultServerUrl({
   required bool release,
   bool defined = apiBaseUrlDefined,
   String raw = apiBaseUrlDefine,
-}) {
-  if (release && !defined) {
-    throw const FormatException(
-      'Release builds must set --dart-define=API_BASE_URL=https://...',
-    );
-  }
-  return parseApiBaseUrl(raw, release: release);
-}
+}) => defined ? parseApiBaseUrl(raw, release: release) : null;
+
+/// The API base URL of the web app: the origin of [page], the URL it was
+/// loaded from. The backend serves the web build and the API together
+/// (`WEB_DIR`), so the session cookie and CSRF checks work.
+Uri webApiBaseUrl(Uri page) => Uri(
+  scheme: page.scheme,
+  host: page.host,
+  port: page.hasPort ? page.port : null,
+  path: '/',
+);

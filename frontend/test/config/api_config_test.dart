@@ -51,13 +51,6 @@ void main() {
       }
     });
 
-    test('the default is a valid development URL', () {
-      expect(
-        parseApiBaseUrl(apiBaseUrlDefine, release: false),
-        Uri.parse('http://localhost:3000/'),
-      );
-    });
-
     test('rejects insecure, relative and malformed URLs', () {
       for (final release in [false, true]) {
         for (final raw in [
@@ -97,65 +90,60 @@ void main() {
     });
   });
 
-  group('apiBaseUrlFromEnvironment', () {
-    test('uses the development default outside release builds', () {
+  group('defaultServerUrl', () {
+    test('is optional', () {
+      for (final release in [false, true]) {
+        expect(
+          defaultServerUrl(release: release, defined: false, raw: ''),
+          isNull,
+        );
+      }
+    });
+
+    test('validates a defined URL as the build requires', () {
       expect(
-        apiBaseUrlFromEnvironment(
+        defaultServerUrl(
+          release: true,
+          defined: true,
+          raw: 'https://kanbot.example.com',
+        ),
+        Uri.parse('https://kanbot.example.com/'),
+      );
+      expect(
+        defaultServerUrl(
           release: false,
-          defined: false,
+          defined: true,
           raw: 'http://localhost:3000',
         ),
         Uri.parse('http://localhost:3000/'),
       );
+      for (final (release, raw) in [
+        (true, 'http://localhost:3000'),
+        (false, 'http://kanbot.example.com'),
+        (false, ''),
+      ]) {
+        expect(
+          () => defaultServerUrl(release: release, defined: true, raw: raw),
+          throwsFormatException,
+          reason: raw,
+        );
+      }
     });
 
-    test('requires API_BASE_URL in release builds', () {
-      expect(
-        () => apiBaseUrlFromEnvironment(
-          release: true,
-          defined: false,
-          raw: 'https://api.example.com',
-        ),
-        throwsFormatException,
-      );
-    });
-
-    test('accepts a defined https URL in release builds', () {
-      expect(
-        apiBaseUrlFromEnvironment(
-          release: true,
-          defined: true,
-          raw: 'https://api.example.com',
-        ),
-        Uri.parse('https://api.example.com/'),
-      );
-    });
-
-    test('validates the defined URL', () {
-      expect(
-        () => apiBaseUrlFromEnvironment(
-          release: true,
-          defined: true,
-          raw: 'http://localhost:3000',
-        ),
-        throwsFormatException,
-      );
-      expect(
-        () => apiBaseUrlFromEnvironment(
-          release: false,
-          defined: true,
-          raw: 'http://api.example.com',
-        ),
-        throwsFormatException,
-      );
-    });
-
-    test('this test build uses the development default', () {
+    test('this test build has no default server', () {
       expect(apiBaseUrlDefined, isFalse);
-      expect(
-        apiBaseUrlFromEnvironment(release: false),
-        Uri.parse('http://localhost:3000/'),
-      );
+      expect(defaultServerUrl(release: false), isNull);
     });
+  });
+
+  test('the web app talks to the origin it was loaded from', () {
+    expect(
+      webApiBaseUrl(Uri.parse('https://kanbot.example.com/teams/1?x=2#y')),
+      Uri.parse('https://kanbot.example.com/'),
+    );
+    expect(
+      webApiBaseUrl(Uri.parse('http://localhost:3000/login?error=no_role')),
+      Uri.parse('http://localhost:3000/'),
+    );
   });
 }

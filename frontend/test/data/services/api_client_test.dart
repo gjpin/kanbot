@@ -305,6 +305,48 @@ void main() {
 
     expect(closed, isTrue);
   });
+
+  test('sends the CSRF header on state-changing methods only', () async {
+    final (httpClient, requests) = recording();
+    final api = client(httpClient);
+    await api.get(url('boards'));
+    await api.head(url('boards'));
+    await api.post(url('boards'));
+    await api.put(url('boards'));
+    await api.patch(url('boards'));
+    await api.delete(url('boards'));
+
+    expect(
+      [for (final request in requests) request.headers['x-kanbot-csrf']],
+      [null, null, '1', '1', '1', '1'],
+    );
+  });
+
+  test('reports 401 to onUnauthorized, and only 401', () async {
+    var calls = 0;
+    ApiClient reporting(int status) => ApiClient(
+      httpClient: respond(status),
+      baseUrl: baseUrl,
+      tokenStore: tokenStore,
+      onUnauthorized: () => calls++,
+    );
+    await expectLater(
+      reporting(401).get(url('me')),
+      throwsA(isA<ApiUnauthorizedException>()),
+    );
+    expect(calls, 1);
+    await expectLater(
+      reporting(403).get(url('me')),
+      throwsA(isA<ApiForbiddenException>()),
+    );
+    expect(calls, 1);
+  });
+
+  test('without a token store (web), sends no token', () async {
+    final (httpClient, requests) = recording();
+    await ApiClient(httpClient: httpClient, baseUrl: baseUrl).get(url('me'));
+    expect(requests.single.headers.containsKey('authorization'), isFalse);
+  });
 }
 
 class _ClosableClient extends http.BaseClient {

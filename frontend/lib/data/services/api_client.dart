@@ -14,7 +14,11 @@ import 'package:kanbot/data/services/token_store.dart';
 ///
 /// - refuses any URL outside the API base URL, so the bearer token is only
 ///   ever sent to the API, and never follows redirects;
-/// - adds the bearer token from [TokenStore] at request time;
+/// - adds the bearer token from [TokenStore] at request time (native apps;
+///   the web app has no token store, its session is a cookie);
+/// - sends `X-Kanbot-CSRF: 1` on state-changing methods, which the backend
+///   requires of requests authenticated by the session cookie;
+/// - reports a `401` to [onUnauthorized], so the app can sign the user out;
 /// - aborts the request when it exceeds [timeout], including reading the
 ///   response body;
 /// - maps non-`2xx` statuses, timeouts and network failures to
@@ -25,7 +29,8 @@ class ApiClient extends http.BaseClient {
   ApiClient({
     required this._httpClient,
     required this._baseUrl,
-    required this._tokenStore,
+    this._tokenStore,
+    this.onUnauthorized,
     this.timeout = defaultTimeout,
   });
 
@@ -33,7 +38,13 @@ class ApiClient extends http.BaseClient {
 
   final http.Client _httpClient;
   final Uri _baseUrl;
-  final TokenStore _tokenStore;
+  final TokenStore? _tokenStore;
+
+  /// Called when the API answers `401`: the session is gone.
+  final void Function()? onUnauthorized;
+
+  /// Methods that change state: they carry the CSRF header.
+  static const Set<String> _stateChanging = {'POST', 'PUT', 'PATCH', 'DELETE'};
 
   /// How long a request may take, including reading the response body.
   final Duration timeout;
@@ -73,6 +84,9 @@ class ApiClient extends http.BaseClient {
           ..headers.addAll(request.headers)
           ..headers.remove('authorization')
           ..bodyBytes = body;
+    if (_stateChanging.contains(request.method.toUpperCase())) {
+      forwarded.headers['x-kanbot-csrf'] = '1';
+    }
     final token = await _readToken();
     if (token != null) {
       forwarded.headers['authorization'] = 'Bearer $token';
@@ -92,6 +106,7 @@ class ApiClient extends http.BaseClient {
       span.setIntAttribute('http.response.status_code', response.statusCode);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         _fail(span, '${response.statusCode}');
+        if (response.statusCode == 401) onUnauthorized?.call();
         throw ApiErrorResponse.fromResponse(
           statusCode: response.statusCode,
           contentType: response.headers['content-type'],
@@ -171,8 +186,10 @@ class ApiClient extends http.BaseClient {
   /// The request then goes out unauthenticated, and a `401` leads the user
   /// through the re-auth flow, which writes a fresh token.
   Future<String?> _readToken() async {
+    final store = _tokenStore;
+    if (store == null) return null;
     try {
-      return await _tokenStore.read();
+      return await store.read();
     } on Exception {
       return null;
     }

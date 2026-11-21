@@ -13,13 +13,13 @@ description: Define and generate strict mock objects with `package:mockito` and 
 - [Examples](#examples)
 
 ## Structuring Code for Testability
-- Inject every dependency through the constructor (`KanbotApi`, `TokenStore`, repositories, `http.Client`). Never create them inside the class under test.
+- Inject every dependency through the constructor (`ApiConnection`, `TokenStore`, repositories, `http.Client`). Never create them inside the class under test.
 - Represent URLs as `Uri` objects.
 
 `mockito`, `build_runner` and `http` (with `package:http/testing.dart`) are already dependencies. Do not add others for testing without approval.
 
 ## Choosing a Test Double
-- **HTTP / the backend:** fake it with `MockClient` from `package:http/testing.dart`, passed to a real `ApiClient`, and build the real generated client on top with `AppDependencies.apiFor(...)`. Do not mock `http.Client`, `ApiClient` or the generated clients with mockito: the real ones test the request, decoding and error mapping.
+- **HTTP / the backend:** fake it with `MockClient` from `package:http/testing.dart`, as the `http.Client` of a real `ApiConnection` (which builds the real `ApiClient` and generated client), then `connect` it to a base URL. Do not mock `http.Client`, `ApiClient` or the generated clients with mockito: the real ones test the request, decoding and error mapping.
 - **Secure storage:** use `FlutterSecureStorage.setMockInitialValues`, or mock `TokenStore`. Never mock `FlutterSecureStorage` with mockito.
 - **Your own classes** (`TokenStore`, repositories, in tests of the layer above them): mockito.
 - Never mock the class under test.
@@ -67,19 +67,19 @@ description: Define and generate strict mock objects with `package:mockito` and 
 
 **System Under Test (`lib/data/repositories/server_status_repository.dart`)**
 ```dart
-import 'package:kanbot/data/api/generated/kanbot_api.dart';
+import 'package:kanbot/data/services/api_connection.dart';
 import 'package:kanbot/data/services/api_exception.dart';
 
 class ServerStatusRepository {
-  ServerStatusRepository({required this._api});
+  ServerStatusRepository({required this._connection});
 
-  final KanbotApi _api;
+  final ApiConnection _connection;
 
   /// `false` while the backend is not ready (`503`). Throws any other
   /// `ApiException`.
   Future<bool> isReady() async {
     try {
-      await _api.health.ready();
+      await _connection.api.health.ready();
       return true;
     } on ApiUnavailableException {
       return false;
@@ -94,9 +94,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/data/repositories/server_status_repository.dart';
-import 'package:kanbot/data/services/api_client.dart';
+import 'package:kanbot/data/services/api_connection.dart';
 import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/data/services/token_store.dart';
 
@@ -106,13 +105,10 @@ void main() {
 
   ServerStatusRepository repository(MockClient backend) =>
       ServerStatusRepository(
-        api: AppDependencies.apiFor(
-          ApiClient(
-            httpClient: backend,
-            baseUrl: Uri.parse('https://api.example.com/'),
-            tokenStore: TokenStore(),
-          ),
-        ),
+        connection: ApiConnection(
+          newHttpClient: () => backend,
+          tokenStore: TokenStore(),
+        )..connect(Uri.parse('https://api.example.com/')),
       );
 
   test('is ready on 200', () async {

@@ -51,7 +51,7 @@ jobs:
           fi
       - run: flutter analyze
       - run: flutter test
-      # The release web build: CSP injection (tool/build_web.dart) and web
-      # compatibility of the dependencies.
+      # The release web build (tool/build_web.dart): web compatibility of the
+      # dependencies.
       - name: Release web build
-        run: dart run tool/build_web.dart --api-base-url=https://api.example.com
+        run: dart run tool/build_web.dart

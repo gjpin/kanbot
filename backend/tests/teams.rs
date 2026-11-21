@@ -593,3 +593,39 @@ async fn organization_admins_see_every_team(pool: PgPool) {
         ["a-team", "b-team"]
     );
 }
+
+#[sqlx::test]
+async fn delete_idp_group_stops_syncing(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let uri = format!("/teams/{team}");
+    api.patch(&uri, &root, json!({ "idp_group": "platform-team" }))
+        .await;
+    api.user_id(&user("dave", &["platform-team"])).await;
+    assert_eq!(member_list(&api, team, &root).await.len(), 1);
+
+    // A maintainer may not; a platform admin may.
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    let (status, _) = api.delete(&format!("{uri}/idp_group"), &bob).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = api.delete(&format!("{uri}/idp_group"), &root).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["idp_group"], Value::Null);
+    assert_eq!(
+        body["permissions"],
+        json!(["manage", "manage_members", "set_idp_group"])
+    );
+    assert_eq!(member_list(&api, team, &root).await, []);
+    api.put(
+        &format!("{uri}/members/{bob_id}"),
+        &root,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+    assert_eq!(
+        api.delete(&format!("{uri}/idp_group"), &bob).await.0,
+        StatusCode::FORBIDDEN
+    );
+}

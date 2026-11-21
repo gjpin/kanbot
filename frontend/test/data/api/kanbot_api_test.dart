@@ -2,7 +2,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/data/api/generated/kanbot_api.dart';
 import 'package:kanbot/data/services/api_client.dart';
 import 'package:kanbot/data/services/api_exception.dart';
@@ -15,16 +14,15 @@ void main() {
 
   KanbotApi api(http.Response Function(http.BaseRequest) handler) {
     requests = [];
-    return AppDependencies.apiFor(
-      ApiClient(
-        httpClient: MockClient((request) async {
-          requests.add(request);
-          return handler(request);
-        }),
-        baseUrl: Uri.parse('https://api.example.com/v1/'),
-        tokenStore: TokenStore(),
-      ),
+    final client = ApiClient(
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        return handler(request);
+      }),
+      baseUrl: Uri.parse('https://api.example.com/v1/'),
+      tokenStore: TokenStore(),
     );
+    return KanbotApi(client, baseUrl: client.baseUrl);
   }
 
   setUp(() {

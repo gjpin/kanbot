@@ -17,11 +17,11 @@ Already done in this project; do not repeat it.
 
 - `http` is a dependency. In `lib/`, only `ApiClient` (`lib/data/services/api_client.dart`), `AppDependencies` (`lib/config/dependencies.dart`, which creates the app's single `http.Client`) and the generated client import it. Tests use `package:http/testing.dart` (`MockClient`).
 - Android has the `INTERNET` permission. macOS has `com.apple.security.network.client` in both entitlements files.
-- The base URL comes from `--dart-define=API_BASE_URL=...`, validated at startup by `apiBaseUrlFromEnvironment` (`lib/config/api_config.dart`). Release builds must set it, to an `https://` non-loopback URL. Never hardcode a URL.
+- The server comes from the server page (native apps, kept in `ServerStore`), the optional `--dart-define=API_BASE_URL=...` default, or the page's origin (web), always validated by `parseApiBaseUrl` (`lib/config/api_config.dart`): `https://`, and no loopback in release builds. Never hardcode a URL.
 
 ## Request Execution & Response Handling
 
-*   **Generated client:** the API client in `lib/data/api/generated/` (`KanbotApi`) is generated from the backend's OpenAPI document, `backend/openapi.json`. Repositories get it from `AppDependencies.api`, injected through their constructor, and call `api.<tag>.<operation>(...)`. Never hand-write request or response code for an API endpoint, never call `package:http` directly (top-level `http.get/post/...`, a new `http.Client`), and never edit generated files.
+*   **Generated client:** the API client in `lib/data/api/generated/` (`KanbotApi`) is generated from the backend's OpenAPI document, `backend/openapi.json`. Repositories get an `ApiConnection` (`lib/data/services/api_connection.dart`), injected through their constructor, and call `connection.api.<tag>.<operation>(...)` at call time, so they follow a server change. Never hand-write request or response code for an API endpoint, never call `package:http` directly (top-level `http.get/post/...`, a new `http.Client`), and never edit generated files.
 *   **New or changed endpoint:** change the backend first (route with `#[utoipa::path]`, `ToSchema` request/response types), then from `backend/` run `cargo run --bin openapi -- openapi.json`, and from `frontend/` run `dart run tool/generate_api_client.dart`. Commit all of it. CI fails on both sides when the document or the client is stale.
 *   **Transport:** every generated request goes through `ApiClient` (`lib/data/services/api_client.dart`), an `http.BaseClient`. Do not add endpoint methods to it. It:
     *   adds `authorization: Bearer <token>` from `TokenStore` at request time. Never set auth headers yourself and never write a token, even a placeholder, in code;
@@ -58,20 +58,20 @@ Generated code decodes on the calling isolate. If a response is large enough to 
 ### Repository over the Generated Client
 
 ```dart
-import 'package:kanbot/data/api/generated/kanbot_api.dart';
+import 'package:kanbot/data/services/api_connection.dart';
 import 'package:kanbot/data/services/api_exception.dart';
 
 /// Whether the backend can take traffic. Uses the real `health` client.
 class ServerStatusRepository {
-  ServerStatusRepository({required this._api});
+  ServerStatusRepository({required this._connection});
 
-  final KanbotApi _api;
+  final ApiConnection _connection;
 
   /// `false` while the backend reports itself not ready (`503`). Throws any
   /// other `ApiException`.
   Future<bool> isReady() async {
     try {
-      await _api.health.ready();
+      await _connection.api.health.ready();
       return true;
     } on ApiUnavailableException {
       return false;
@@ -84,7 +84,7 @@ A feature repository looks the same, with a domain model mapped from the generat
 
 ```dart
 Future<List<Photo>> fetchPhotos() async => [
-  for (final photo in await _api.photos.listPhotos())
+  for (final photo in await _connection.api.photos.listPhotos())
     Photo(id: photo.id, title: photo.title, thumbnailUrl: photo.thumbnailUrl),
 ];
 ```
@@ -98,8 +98,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:kanbot/config/dependencies.dart';
-import 'package:kanbot/data/services/api_client.dart';
+import 'package:kanbot/data/services/api_connection.dart';
 import 'package:kanbot/data/services/token_store.dart';
 
 void main() {
@@ -108,16 +107,13 @@ void main() {
 
   ServerStatusRepository repository(http.Response response) =>
       ServerStatusRepository(
-        api: AppDependencies.apiFor(
-          ApiClient(
-            httpClient: MockClient((request) async {
-              expect(request.url.path, '/ready');
-              return response;
-            }),
-            baseUrl: Uri.parse('https://api.example.com/'),
-            tokenStore: TokenStore(),
-          ),
-        ),
+        connection: ApiConnection(
+          newHttpClient: () => MockClient((request) async {
+            expect(request.url.path, '/ready');
+            return response;
+          }),
+          tokenStore: TokenStore(),
+        )..connect(Uri.parse('https://api.example.com/')),
       );
 
   test('is ready on 200', () async {

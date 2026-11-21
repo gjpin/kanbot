@@ -13,7 +13,7 @@ use crate::{
     state::AppState,
     teams::{
         dto::{MemberChangeDto, MemberDto, NewTeamDto, TeamChangesDto, TeamDto, TeamSummaryDto},
-        model::{Team, TeamChanges, TeamId},
+        model::{IdpGroupChange, Team, TeamChanges, TeamId},
         service,
     },
     users::model::UserId,
@@ -275,4 +275,40 @@ pub(super) async fn remove_member(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stops syncing the team with its identity provider group: the synced
+/// members are removed and the team is managed by hand again. Platform
+/// admins only. The same as `PATCH` with `"idp_group": null`, for clients
+/// that cannot send a null.
+#[utoipa::path(
+    delete,
+    path = "/teams/{id}/idp_group",
+    operation_id = "clear_team_idp_group",
+    tag = "teams",
+    params(("id" = String, Path, description = "The team's ID (a UUID).")),
+    security(("bearer" = []), ("session" = [])),
+    responses(
+        (status = OK, description = "The team, no longer synced.", body = TeamDto),
+        (status = UNAUTHORIZED, description = "No valid credentials.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = FORBIDDEN, description = "Not allowed to change the team's identity provider group.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = NOT_FOUND, description = "No such team, or not allowed to see it.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn clear_idp_group(
+    State(state): State<AppState>,
+    Caller(actor): Caller,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TeamDto>, AppError> {
+    let id = TeamId::from_uuid(id);
+    let changes = TeamChanges {
+        idp_group: Some(IdpGroupChange::Clear),
+        ..TeamChanges::default()
+    };
+    service::update(&state.db, &state.authz, &actor, id, &changes).await?;
+    let (team, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;
+    Ok(Json(TeamDto::new(team, &permissions)))
 }

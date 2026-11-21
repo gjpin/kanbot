@@ -1715,6 +1715,76 @@
         ]
       }
     },
+    "/teams/{id}/idp_group": {
+      "delete": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Stops syncing the team with its identity provider group: the synced\nmembers are removed and the team is managed by hand again. Platform\nadmins only. The same as `PATCH` with `\"idp_group\": null`, for clients\nthat cannot send a null.",
+        "operationId": "clear_team_idp_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The team's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The team, no longer synced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to change the team's identity provider group.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/teams/{id}/members": {
       "get": {
         "tags": [

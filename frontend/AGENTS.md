@@ -103,11 +103,13 @@ shadcn/ui, **instead of Material or Cupertino**.
   Tokens are read from the auth layer at request time.
 - **HTTPS only** in anything that can ship. The one exception is local
   development against the backend on a loopback address (`localhost`,
-  `127.0.0.1`, or `10.0.2.2` from the Android emulator) over `http://`. The URL
-  comes from `--dart-define=API_BASE_URL=...` and is validated at startup
-  by `apiBaseUrlFromEnvironment` (`lib/config/api_config.dart`), never
-  hardcoded elsewhere. Release builds must pass `API_BASE_URL` explicitly and
-  refuse to start with a loopback or `http://` URL.
+  `127.0.0.1`, or `10.0.2.2` from the Android emulator) over `http://`.
+  Native apps ask for the server on first launch (`ServerPage`) and keep it
+  in `ServerStore`; `--dart-define=API_BASE_URL=...` is only an optional
+  default. Every server URL goes through `parseApiBaseUrl`
+  (`lib/config/api_config.dart`), never hardcoded elsewhere: release builds
+  refuse a loopback or `http://` URL. The web app always talks to the origin
+  it was loaded from (`webApiBaseUrl`).
   The only cleartext permit is the debug-only
   `android/app/src/debug/res/xml/network_security_config.xml` (loopback hosts
   only). Do not add cleartext exceptions (`usesCleartextTraffic`,
@@ -125,9 +127,10 @@ shadcn/ui, **instead of Material or Cupertino**.
   - Every route parameter is untrusted input. Parse and validate it
     (type, format, length) and send invalid values to an error route.
   - Protected routes must use a `GoRouter` `redirect` that checks auth state.
-    Add a test proving an unauthenticated user cannot reach each protected route.
-    Routes are defined in `lib/routing/router.dart` (`createRouter`, `Routes`);
-    unknown paths show `NotFoundPage`.
+    Add a test proving an unauthenticated user cannot reach each protected route
+    (`protectedRoutes` in `test/routing/router_test.dart`). Routes are defined
+    in `lib/routing/router.dart` (`createRouter`, `Routes`, `redirect`);
+    unknown paths and invalid IDs show `NotFoundPage`.
   - **Auth callbacks:** the only custom URL scheme allowed is the login
     handoff from the kanbot backend to the app (`<app-scheme>:/auth/done`,
     where `<app-scheme>` is the app's reverse-DNS application ID). It is
@@ -157,16 +160,11 @@ shadcn/ui, **instead of Material or Cupertino**.
   launcher activity must be); use `FLAG_SECURE` on screens showing sensitive
   data.
 - **Release builds** use `--obfuscate --split-debug-info=<dir>`.
-- **Release web builds** go through `dart run tool/build_web.dart
-  --api-base-url=https://...` only. It self-hosts CanvasKit
-  (`--no-web-resources-cdn`) and injects the Content Security Policy from
-  `tool/web_csp.dart` into `index.html`. Do not loosen that policy (no
-  `'unsafe-eval'`, no inline scripts, no new origins) without approval. The
-  web server must also send `frame-ancestors 'none'` as a header, which a
-  `<meta>` policy cannot set. When the backend serves the build (`WEB_DIR`),
-  it sends the whole policy as a header from `backend/src/http/web.rs`, its
-  single source from now on; phase 5.3 of `docs/plan/auth.md` removes the
-  `<meta>` injection.
+- **Release web builds** go through `dart run tool/build_web.dart` only. It
+  self-hosts CanvasKit (`--no-web-resources-cdn`). The backend serves the
+  build (`WEB_DIR`) and sends its Content Security Policy as a header, from
+  `backend/src/http/web.rs`, the policy's single source. Do not loosen it (no
+  `'unsafe-eval'`, no inline scripts, no new origins) without approval.
 - **Native downloads** (FFI hooks): verify with SHA-256, never MD5, and verify
   before the file is written to its final location (or delete it on mismatch).
 
@@ -174,8 +172,9 @@ shadcn/ui, **instead of Material or Cupertino**.
 
 - Backend calls go through the **generated** client, `KanbotApi`
   (`lib/data/api/generated/`), generated from the backend's OpenAPI document
-  `../backend/openapi.json`. Repositories get it from `AppDependencies.api`
-  through their constructor. Never hand-write request or response code for an
+  `../backend/openapi.json`. Repositories get an `ApiConnection`
+  (`lib/data/services/api_connection.dart`) through their constructor and
+  read its `api` at call time: a native user can switch servers. Never hand-write request or response code for an
   API endpoint, never call `package:http` directly (top-level
   `http.get/post/...`, a new `http.Client`), and never edit generated files.
 - After `backend/openapi.json` changes, run `dart run tool/generate_api_client.dart`
@@ -190,7 +189,9 @@ shadcn/ui, **instead of Material or Cupertino**.
   (`lib/data/services/api_client.dart`), an `http.BaseClient`. It adds the
   bearer token, applies the timeout, never follows redirects, and maps
   failures to the sealed `ApiException` types before generated code sees
-  them. It is a transport: do not add endpoint methods to it.
+  them. It sends `X-Kanbot-CSRF: 1` on state-changing methods, and reports
+  every `401` to `AuthRepository`, which signs the user out. It is a
+  transport: do not add endpoint methods to it.
 - `ApiClient` refuses (with an `ArgumentError`) any request that would leave
   the API base URL: another origin, a path above the base path, or encoded
   `/` (`%2F`) and `\` (`%5C`) in a segment. The bearer token is only ever sent to the API.
@@ -222,24 +223,38 @@ shadcn/ui, **instead of Material or Cupertino**.
     automatically.
 - Switch on the exception type and `code` to choose a user-facing message.
   Never show the response body, and never show `code` itself to users.
-- The web build calls the API cross-origin. Its origin must be listed in the
-  backend's `CORS_ALLOWED_ORIGINS` (see `backend/AGENTS.md`). From phase 5.3
-  of `docs/plan/auth.md`, the backend serves the web build and the API from one
-  origin, and the web app uses a relative API base URL.
+- The backend serves the web build and the API from one origin, so the
+  session cookie and the CSRF checks work; the web app's API base URL is its
+  own origin.
+
+### Sessions
+
+`AuthRepository` (`lib/data/repositories/auth_repository.dart`) holds the
+session, and the router listens to it. Native apps open the server's
+`/auth/login` with `flutter_web_auth_2` (`useWebview: false`: the system
+browser, never an embedded webview), receive a one-time code at
+`dev.sideral.kanbot:/auth/done` (Android, iOS, macOS) or
+`http://127.0.0.1:<port>/auth/done` (Windows, Linux), and redeem it with their
+PKCE verifier (`Pkce`) at `/auth/token` for a `kbs_` session token, kept in
+`TokenStore`. The web app navigates to `/auth/login?platform=web` and back;
+it stores nothing. A `401` from any call ends the session.
 
 ## 3a. Telemetry (OpenTelemetry)
 
 The app reports traces and logs with OpenTelemetry (`dartastic_opentelemetry`),
-over OTLP/HTTP to the API's relay at `<API_BASE_URL>/telemetry` (never to a
+over OTLP/HTTP to the API's relay at `<server>/telemetry` (never to a
 collector directly: the app cannot hold collector credentials, §2). Setup is in
 `lib/config/telemetry.dart`, called from `main`.
 
 - **Consent:** export starts only after the user has logged in and opted in
   (`telemetry_opt_in` from `GET /me`, set from the settings toggle through
-  `PUT /me/preferences`, off by default). It stops on logout and on opt-out.
-  The relay rejects everything else (`401`, or `403 telemetry_disabled`), so
-  nothing can be sent before login. Until phase 5.6 of `docs/plan/auth.md`
-  lands, export still starts at app launch; do not build anything new on that.
+  `PUT /me/preferences`, off by default), on a server that relays telemetry.
+  It stops on logout and on opt-out. The SDK is set up once with
+  `TelemetryExporters`, which drop everything until `TelemetryConsent`
+  (`lib/config/telemetry_consent.dart`) enables them with the session's
+  credentials (the bearer token natively, the cookie and CSRF header on the
+  web). The relay rejects everything else (`401`, or `403
+  telemetry_disabled`), so nothing can be sent before login.
 
 - Already instrumented: every API call (`ApiClient`: a client span, with the
   W3C `traceparent` sent so the backend's span joins the trace), uncaught
@@ -321,7 +336,7 @@ collector directly: the app cannot hold collector credentials, §2). Setup is in
   storage with `FlutterSecureStorage.setMockInitialValues`, rather than mocking
   `http.Client` or `FlutterSecureStorage` with mockito. Test repositories
   against the real generated client and `ApiClient` over `MockClient`
-  (`AppDependencies.apiFor`); do not mock `ApiClient` or generated clients.
+  (an `ApiConnection` over `MockClient`, as `test/helpers/fake_backend.dart` does); do not mock `ApiClient` or generated clients.
 - Always `await` async expectations: use `await expectLater(...)`, or
   `await check(...)` with `package:checks`. A bare
   `expect(future, throwsException)` without `await` is banned.
@@ -344,7 +359,9 @@ collector directly: the app cannot hold collector credentials, §2). Setup is in
 
 ## 9. Localization
 
-Localization is not set up yet. When it is:
+Localization is not set up yet. Until it is, every user-facing string lives
+in `Messages` (`lib/ui/core/messages.dart`), including the messages for
+error codes; never put a string anywhere else. When localization is set up:
 
 - All user-facing strings come from ARB files. No hardcoded UI strings.
 - The `flutter_gen` synthetic package has been **removed**: `synthetic-package: true`
@@ -377,7 +394,7 @@ dart run build_runner build --delete-conflicting-outputs   # then commit any cha
 dart run tool/generate_api_client.dart                     # then commit any changes
 flutter analyze   # infos and warnings are fatal by default; never pass --no-fatal-*
 flutter test --coverage
-dart run tool/build_web.dart --api-base-url=https://api.example.com   # release web build
+dart run tool/build_web.dart   # release web build
 ```
 
 ## 11. Analyzer configuration (reference)

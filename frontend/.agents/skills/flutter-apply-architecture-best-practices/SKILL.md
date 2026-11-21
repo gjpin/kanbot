@@ -71,18 +71,18 @@ Follow this sequential workflow when adding a new feature to the application. Co
 ### Data Layer: Service and Repository
 
 ```dart
-import 'package:kanbot/data/api/generated/kanbot_api.dart';
+import 'package:kanbot/data/services/api_connection.dart';
 
-// 1. Service: the generated `KanbotApi`, sending requests through
-//    `ApiClient`, which adds the token, applies the timeout and throws
+// 1. Service: the generated `KanbotApi` of the current server
+//    (`ApiConnection.api`), sending requests through `ApiClient`, which adds the token, applies the timeout and throws
 //    ApiException. (A `users` tag with a `get_user` operation is assumed
 //    here for illustration.)
 
 // 2. Repository: single source of truth, returns domain models.
 class UserRepository {
-  UserRepository({required this._api});
+  UserRepository({required this._connection});
 
-  final KanbotApi _api;
+  final ApiConnection _connection;
 
   // Keyed by id: one cached user per id, never "the" user.
   final _cache = <int, User>{};
@@ -92,7 +92,7 @@ class UserRepository {
     if (!refresh) {
       if (_cache[id] case final cached?) return cached;
     }
-    final response = await _api.users.getUser(id: id);
+    final response = await _connection.api.users.getUser(id: id);
     // Transform the generated API model into the domain model.
     return _cache[id] = User(id: response.id, name: response.fullName);
   }

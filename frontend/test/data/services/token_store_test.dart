@@ -23,14 +23,18 @@ void main() {
     expect(await store.read(), 'token-2');
   });
 
-  test('clear removes the token and everything else stored', () async {
-    FlutterSecureStorage.setMockInitialValues({'other': 'value'});
+  test('clear removes the token and keeps the chosen server', () async {
+    FlutterSecureStorage.setMockInitialValues({
+      'server_url': 'https://kanbot.example.com/',
+    });
     store = TokenStore();
     await store.write('token');
 
     await store.clear();
 
     expect(await store.read(), isNull);
-    expect(await TokenStore.defaultStorage.readAll(), isEmpty);
+    expect(await TokenStore.defaultStorage.readAll(), {
+      'server_url': 'https://kanbot.example.com/',
+    });
   });
 }

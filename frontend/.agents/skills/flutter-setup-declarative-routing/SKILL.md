@@ -62,45 +62,32 @@ GoRoute(
 
 Every protected route goes through a `redirect` that checks auth state. The backend still authorizes every request; the redirect only keeps the UI consistent.
 
+This project already does it: `lib/routing/router.dart` listens to `AppDependencies.auth` (`AuthRepository`) and `AppDependencies.connection`, and its pure `redirect()` function sends a native app without a server to `/server`, a loading session to `/loading` (remembering where to go), and a signed-out user to `/login`. When you add a route:
+
 ### Task Progress
-- [ ] Inject the auth state (a `Listenable`) into `createRouter()`.
-- [ ] Add a top-level `redirect` and pass the auth state as `refreshListenable`, so logging out leaves protected screens immediately.
-- [ ] Send signed-in users away from the login page.
-- [ ] Test, for **each** protected route, that an unauthenticated user ends up on the login page.
+- [ ] Add it under `routes:` in `createRouter()`; it is protected unless you add it to `Routes.public` on purpose.
+- [ ] Validate its parameters (IDs are UUIDs: anything else shows `NotFoundPage`).
+- [ ] Add it to `protectedRoutes` in `test/routing/router_test.dart`, which proves for **each** protected route that a signed-out user ends up on the login page without the page loading anything.
 
 ```dart
-GoRouter createRouter({
-  required AppDependencies dependencies,
-  required AuthState auth,
-  String initialLocation = Routes.home,
-}) => GoRouter(
-  initialLocation: initialLocation,
-  refreshListenable: auth,
-  redirect: (context, state) {
-    final onLogin = state.matchedLocation == Routes.login;
-    return switch ((auth.isSignedIn, onLogin)) {
-      (false, false) => Routes.login,
-      (true, true) => Routes.home,
-      _ => null,
-    };
-  },
-  routes: [/* ... */],
-  errorBuilder: (context, state) => const NotFoundPage(),
-);
-```
+testWidgets('a signed-out user cannot reach /teams', (tester) async {
+  final backend = FakeBackend()
+    ..on('GET', '/auth/config', authConfig())
+    ..on('GET', '/me', problem(401, 'unauthorized'), status: 401);
+  final dependencies = testDependencies(backend: backend);
+  await dependencies.auth.refresh();
 
-```dart
-testWidgets('signed-out user cannot open a board', (tester) async {
-  final router = createRouter(
-    dependencies: testDependencies(),
-    auth: FakeAuthState(signedIn: false),
-    initialLocation: Routes.boardPath(1),
+  await tester.pumpWidget(
+    KanbotApp(
+      router: createRouter(
+        dependencies: dependencies,
+        initialLocation: Routes.teams,
+      ),
+    ),
   );
-  await tester.pumpWidget(KanbotApp(router: router));
   await tester.pumpAndSettle();
 
   expect(find.byType(LoginPage), findsOneWidget);
-  expect(find.byType(BoardPage), findsNothing);
 });
 ```
 

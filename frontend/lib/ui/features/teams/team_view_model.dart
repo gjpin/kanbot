@@ -1,0 +1,61 @@
+import 'package:flutter/foundation.dart';
+import 'package:kanbot/data/repositories/teams_repository.dart';
+import 'package:kanbot/domain/models/team.dart';
+import 'package:kanbot/domain/models/user.dart';
+import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/utils/result.dart';
+
+/// A team and its members.
+typedef TeamDetails = ({Team team, List<Member> members});
+
+/// One team: its settings, identity provider group and members.
+class TeamViewModel extends ChangeNotifier {
+  TeamViewModel({required this.id, required this._teams});
+
+  final String id;
+  final TeamsRepository _teams;
+
+  Loadable<TeamDetails> _details = const Loading();
+
+  Loadable<TeamDetails> get details => _details;
+
+  Future<void> load() async {
+    if (_details is! Loaded) {
+      _details = const Loading();
+      notifyListeners();
+    }
+    final team = await _teams.get(id);
+    final members = await _teams.members(id);
+    _details = switch ((team, members)) {
+      (Ok(value: final t), Ok(value: final m)) => Loaded((team: t, members: m)),
+      (Failure(:final error), _) ||
+      (_, Failure(:final error)) => LoadFailed(error),
+    };
+    notifyListeners();
+  }
+
+  /// Runs [change], then reloads on success.
+  Future<Result<T>> _change<T>(Future<Result<T>> change) async {
+    final result = await change;
+    if (result is Ok) await load();
+    return result;
+  }
+
+  Future<Result<Team>> rename(String slug, String name) =>
+      _change(_teams.update(id, slug: slug, name: name));
+
+  Future<Result<void>> delete() => _teams.delete(id);
+
+  /// Syncs the members with [group]; empty stops syncing.
+  Future<Result<Team>> setIdpGroup(String group) => _change(
+    group.isEmpty
+        ? _teams.clearIdpGroup(id)
+        : _teams.update(id, idpGroup: group),
+  );
+
+  Future<Result<void>> setMember(UserSummary user, TeamRole role) =>
+      _change(_teams.setMember(id, user.id, role));
+
+  Future<Result<void>> removeMember(UserSummary user) =>
+      _change(_teams.removeMember(id, user.id));
+}

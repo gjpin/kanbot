@@ -1,0 +1,89 @@
+import 'package:kanbot/data/api/generated/kanbot_api.dart' as api;
+import 'package:kanbot/data/repositories/api_result.dart';
+import 'package:kanbot/data/repositories/mappers.dart';
+import 'package:kanbot/data/services/api_connection.dart';
+import 'package:kanbot/domain/models/organization.dart';
+import 'package:kanbot/domain/models/user.dart';
+import 'package:kanbot/utils/result.dart';
+
+/// Organizations, their admins and team links. Nothing is cached: every
+/// call asks the server, so what the user sees follows the server's
+/// authorization.
+class OrganizationsRepository {
+  OrganizationsRepository({required this._connection});
+
+  final ApiConnection _connection;
+
+  api.OrganizationsClient get _client => _connection.api.organizations;
+
+  Future<Result<List<OrganizationSummary>>> list() => apiResult(
+    () async => (await _client.listOrganizations())
+        .map(organizationSummaryFrom)
+        .toList(),
+  );
+
+  Future<Result<Organization>> get(String id) => apiResult(
+    () async => organizationFrom(await _client.getOrganization(id: id)),
+  );
+
+  Future<Result<Organization>> create({
+    required String slug,
+    required String name,
+  }) => apiResult(
+    () async => organizationFrom(
+      await _client.createOrganization(
+        body: api.NewOrganizationDto(slug: slug, name: name),
+      ),
+    ),
+  );
+
+  /// Changes the fields that are not `null`.
+  Future<Result<Organization>> update(
+    String id, {
+    String? slug,
+    String? name,
+  }) => apiResult(
+    () async => organizationFrom(
+      await _client.updateOrganization(
+        id: id,
+        body: api.OrganizationChangesDto(slug: slug, name: name),
+      ),
+    ),
+  );
+
+  Future<Result<void>> delete(String id) =>
+      apiResult(() => _client.deleteOrganization(id: id));
+
+  Future<Result<List<UserSummary>>> admins(String id) => apiResult(
+    () async =>
+        (await _client.listOrganizationAdmins(id: id))
+            .map(userSummaryFrom)
+            .toList(),
+  );
+
+  Future<Result<void>> addAdmin(String id, String userId) =>
+      apiResult(() => _client.addOrganizationAdmin(id: id, userId: userId));
+
+  Future<Result<void>> removeAdmin(String id, String userId) =>
+      apiResult(() => _client.removeOrganizationAdmin(id: id, userId: userId));
+
+  Future<Result<List<TeamLink>>> teamLinks(String id) => apiResult(
+    () async =>
+        (await _client.listOrganizationTeams(id: id))
+            .map(teamLinkFrom)
+            .toList(),
+  );
+
+  /// Links [teamId] with [access], or changes its access.
+  Future<Result<void>> linkTeam(String id, String teamId, Access access) =>
+      apiResult(
+        () => _client.linkOrganizationTeam(
+          id: id,
+          teamId: teamId,
+          body: api.TeamLinkChangeDto(access: accessTo(access)),
+        ),
+      );
+
+  Future<Result<void>> unlinkTeam(String id, String teamId) =>
+      apiResult(() => _client.unlinkOrganizationTeam(id: id, teamId: teamId));
+}

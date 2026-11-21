@@ -16,14 +16,14 @@ const String serviceVersion = String.fromEnvironment(
 /// collector (AGENTS.md §2: the app never holds collector credentials).
 Uri telemetryEndpoint(Uri apiBaseUrl) => apiBaseUrl.resolve('telemetry');
 
-/// Starts OpenTelemetry: traces and logs, exported over OTLP/HTTP to the
-/// API's relay ([telemetryEndpoint]). Call once, before `runApp`.
+/// Starts OpenTelemetry: traces and logs, batched to [exporters]. Call
+/// once, before `runApp`. Nothing leaves the app until
+/// [TelemetryExporters.enable] (AGENTS.md §3a: after sign-in and opt-in).
 ///
 /// Platform resource detection is off: it reports host names and similar
 /// details that can identify a person. `--dart-define=OTEL_SDK_DISABLED=true`
 /// turns telemetry off.
-Future<void> initTelemetry({required Uri apiBaseUrl}) async {
-  final endpoint = telemetryEndpoint(apiBaseUrl).toString();
+Future<void> initTelemetry(TelemetryExporters exporters) async {
   await OTel.initialize(
     serviceName: telemetryScope,
     serviceVersion: serviceVersion,
@@ -32,15 +32,97 @@ Future<void> initTelemetry({required Uri apiBaseUrl}) async {
     resourceAttributes: OTel.attributesFromMap({
       'os.type': defaultTargetPlatform.name,
     }),
-    spanProcessor: BatchSpanProcessor(
-      OtlpHttpSpanExporter(OtlpHttpExporterConfig(endpoint: endpoint)),
-    ),
-    logRecordProcessor: BatchLogRecordProcessor(
-      OtlpHttpLogRecordExporter(
-        OtlpHttpLogRecordExporterConfig(endpoint: endpoint),
-      ),
-    ),
+    spanProcessor: BatchSpanProcessor(exporters.spans),
+    logRecordProcessor: BatchLogRecordProcessor(exporters.logs),
   );
+}
+
+/// Builds the OTLP/HTTP exporters for the relay at [endpoint], sending
+/// [headers] (the session: a bearer token natively, the CSRF header on the
+/// web, where the cookie goes along by itself).
+typedef OtlpExporterFactory =
+    ({SpanExporter spans, LogRecordExporter logs}) Function(
+      Uri endpoint,
+      Map<String, String> headers,
+    );
+
+/// The relay's OTLP/HTTP exporters.
+({SpanExporter spans, LogRecordExporter logs}) otlpExporters(
+  Uri endpoint,
+  Map<String, String> headers,
+) => (
+  spans: OtlpHttpSpanExporter(
+    OtlpHttpExporterConfig(endpoint: endpoint.toString(), headers: headers),
+  ),
+  logs: OtlpHttpLogRecordExporter(
+    OtlpHttpLogRecordExporterConfig(
+      endpoint: endpoint.toString(),
+      headers: headers,
+    ),
+  ),
+);
+
+/// The exporters the SDK is set up with once. They drop everything until
+/// [enable]d, and again after [disable]: telemetry follows the user's
+/// consent and session without restarting the SDK.
+class TelemetryExporters {
+  TelemetryExporters({this._create = otlpExporters});
+
+  final OtlpExporterFactory _create;
+  ({SpanExporter spans, LogRecordExporter logs})? _active;
+
+  late final SpanExporter spans = _GatedSpanExporter(this);
+  late final LogRecordExporter logs = _GatedLogRecordExporter(this);
+
+  /// Whether telemetry is being sent.
+  bool get enabled => _active != null;
+
+  /// Sends from now on to [endpoint] with [headers].
+  Future<void> enable(Uri endpoint, Map<String, String> headers) async {
+    await disable();
+    _active = _create(endpoint, headers);
+  }
+
+  /// Drops everything from now on.
+  Future<void> disable() async {
+    final active = _active;
+    _active = null;
+    if (active == null) return;
+    await active.spans.shutdown();
+    await active.logs.shutdown();
+  }
+}
+
+final class _GatedSpanExporter implements SpanExporter {
+  _GatedSpanExporter(this._gate);
+
+  final TelemetryExporters _gate;
+
+  @override
+  Future<void> export(List<Span> spans) async =>
+      _gate._active?.spans.export(spans);
+
+  @override
+  Future<void> forceFlush() async => _gate._active?.spans.forceFlush();
+
+  @override
+  Future<void> shutdown() => _gate.disable();
+}
+
+final class _GatedLogRecordExporter implements LogRecordExporter {
+  _GatedLogRecordExporter(this._gate);
+
+  final TelemetryExporters _gate;
+
+  @override
+  Future<ExportResult> export(List<ReadableLogRecord> logRecords) async =>
+      await _gate._active?.logs.export(logRecords) ?? ExportResult.success;
+
+  @override
+  Future<void> forceFlush() async => _gate._active?.logs.forceFlush();
+
+  @override
+  Future<void> shutdown() => _gate.disable();
 }
 
 /// Reports uncaught errors (framework and platform) as OpenTelemetry error

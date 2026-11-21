@@ -1,0 +1,80 @@
+import 'package:flutter/foundation.dart';
+import 'package:kanbot/data/repositories/organizations_repository.dart';
+import 'package:kanbot/data/repositories/teams_repository.dart';
+import 'package:kanbot/domain/models/organization.dart';
+import 'package:kanbot/domain/models/team.dart';
+import 'package:kanbot/domain/models/user.dart';
+import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/utils/result.dart';
+
+/// An organization with its admins and the teams that have access.
+typedef OrganizationDetails = ({
+  Organization organization,
+  List<UserSummary> admins,
+  List<TeamLink> links,
+});
+
+/// One organization: its settings, admins and team links.
+class OrganizationViewModel extends ChangeNotifier {
+  OrganizationViewModel({
+    required this.id,
+    required this._organizations,
+    required this._teams,
+  });
+
+  final String id;
+  final OrganizationsRepository _organizations;
+  final TeamsRepository _teams;
+
+  Loadable<OrganizationDetails> _details = const Loading();
+
+  Loadable<OrganizationDetails> get details => _details;
+
+  Future<void> load() async {
+    if (_details is! Loaded) {
+      _details = const Loading();
+      notifyListeners();
+    }
+    final organization = await _organizations.get(id);
+    final admins = await _organizations.admins(id);
+    final links = await _organizations.teamLinks(id);
+    _details = switch ((organization, admins, links)) {
+      (Ok(value: final o), Ok(value: final a), Ok(value: final l)) => Loaded((
+        organization: o,
+        admins: a,
+        links: l,
+      )),
+      (Failure(:final error), _, _) ||
+      (_, Failure(:final error), _) ||
+      (_, _, Failure(:final error)) => LoadFailed(error),
+    };
+    notifyListeners();
+  }
+
+  /// Runs [change], then reloads on success.
+  Future<Result<T>> _change<T>(Future<Result<T>> change) async {
+    final result = await change;
+    if (result is Ok) await load();
+    return result;
+  }
+
+  Future<Result<Organization>> rename(String slug, String name) =>
+      _change(_organizations.update(id, slug: slug, name: name));
+
+  Future<Result<void>> delete() => _organizations.delete(id);
+
+  Future<Result<void>> addAdmin(UserSummary user) =>
+      _change(_organizations.addAdmin(id, user.id));
+
+  Future<Result<void>> removeAdmin(UserSummary user) =>
+      _change(_organizations.removeAdmin(id, user.id));
+
+  Future<Result<void>> linkTeam(String teamId, Access access) =>
+      _change(_organizations.linkTeam(id, teamId, access));
+
+  Future<Result<void>> unlinkTeam(String teamId) =>
+      _change(_organizations.unlinkTeam(id, teamId));
+
+  /// The teams the user can see, to choose one to link.
+  Future<Result<List<TeamSummary>>> teams() => _teams.list();
+}
