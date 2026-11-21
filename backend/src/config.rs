@@ -69,6 +69,8 @@ pub struct Config {
     /// The built-in policies plus the deployer's `forbid` policies from
     /// `AUTHZ_POLICY_FILE`, if set.
     pub authz: Policies,
+    /// The `OpenShell` gateway (`OPENSHELL_*`), if the integration is on.
+    pub openshell: Option<crate::openshell::config::OpenShellConfig>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +110,8 @@ pub enum ConfigError {
     },
     #[error(transparent)]
     Authz(#[from] PolicyError),
+    #[error(transparent)]
+    OpenShell(#[from] crate::openshell::config::OpenShellConfigError),
 }
 
 impl Config {
@@ -177,40 +181,12 @@ impl Config {
         };
 
         let authz = authz_policies(&lookup)?;
+        let openshell = crate::openshell::config::OpenShellConfig::from_lookup(
+            &lookup,
+            oidc.audience.as_str(),
+        )?;
 
-        let rate_limits = RateLimits {
-            ip: rate_limit(
-                &lookup,
-                ("RATE_LIMIT_IP_PER_SECOND", "RATE_LIMIT_IP_BURST"),
-                RateLimits::DEFAULT.ip,
-            )?,
-            auth_failure: rate_limit(
-                &lookup,
-                (
-                    "RATE_LIMIT_AUTH_FAILURE_PER_SECOND",
-                    "RATE_LIMIT_AUTH_FAILURE_BURST",
-                ),
-                RateLimits::DEFAULT.auth_failure,
-            )?,
-            login: rate_limit(
-                &lookup,
-                ("RATE_LIMIT_LOGIN_PER_SECOND", "RATE_LIMIT_LOGIN_BURST"),
-                RateLimits::DEFAULT.login,
-            )?,
-            user: rate_limit(
-                &lookup,
-                ("RATE_LIMIT_USER_PER_SECOND", "RATE_LIMIT_USER_BURST"),
-                RateLimits::DEFAULT.user,
-            )?,
-            telemetry: rate_limit(
-                &lookup,
-                (
-                    "RATE_LIMIT_TELEMETRY_PER_SECOND",
-                    "RATE_LIMIT_TELEMETRY_BURST",
-                ),
-                RateLimits::DEFAULT.telemetry,
-            )?,
-        };
+        let rate_limits = rate_limits(&lookup)?;
         let max_in_flight_requests = match optional(&lookup, "MAX_IN_FLIGHT_REQUESTS")? {
             Some(raw) => positive_usize("MAX_IN_FLIGHT_REQUESTS", &raw)?,
             None => DEFAULT_MAX_IN_FLIGHT_REQUESTS,
@@ -233,6 +209,7 @@ impl Config {
             sessions,
             web_dir,
             authz,
+            openshell,
         })
     }
 }
@@ -291,6 +268,45 @@ pub(crate) fn optional(
         Err(VarError::NotPresent) => Ok(None),
         Err(source) => Err(ConfigError::Var { name, source }),
     }
+}
+
+/// The `RATE_LIMIT_*` settings, each defaulting to [`RateLimits::DEFAULT`].
+fn rate_limits(
+    lookup: &impl Fn(&'static str) -> Result<String, VarError>,
+) -> Result<RateLimits, ConfigError> {
+    Ok(RateLimits {
+        ip: rate_limit(
+            lookup,
+            ("RATE_LIMIT_IP_PER_SECOND", "RATE_LIMIT_IP_BURST"),
+            RateLimits::DEFAULT.ip,
+        )?,
+        auth_failure: rate_limit(
+            lookup,
+            (
+                "RATE_LIMIT_AUTH_FAILURE_PER_SECOND",
+                "RATE_LIMIT_AUTH_FAILURE_BURST",
+            ),
+            RateLimits::DEFAULT.auth_failure,
+        )?,
+        login: rate_limit(
+            lookup,
+            ("RATE_LIMIT_LOGIN_PER_SECOND", "RATE_LIMIT_LOGIN_BURST"),
+            RateLimits::DEFAULT.login,
+        )?,
+        user: rate_limit(
+            lookup,
+            ("RATE_LIMIT_USER_PER_SECOND", "RATE_LIMIT_USER_BURST"),
+            RateLimits::DEFAULT.user,
+        )?,
+        telemetry: rate_limit(
+            lookup,
+            (
+                "RATE_LIMIT_TELEMETRY_PER_SECOND",
+                "RATE_LIMIT_TELEMETRY_BURST",
+            ),
+            RateLimits::DEFAULT.telemetry,
+        )?,
+    })
 }
 
 /// The built-in policies, plus the deployer's from `AUTHZ_POLICY_FILE`.

@@ -1,0 +1,15 @@
+# The OpenShell gateway's gRPC API, generated from the .proto files of the
+# OpenShell version kanbot supports (README.md). Generated code only: it
+# lives in its own crate because it does not meet the backend's lints, and
+# must not be edited by hand.
+[package]
+name = "openshell-api"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+prost = "0.14.6"
+prost-types = "0.14.6"
+tonic = { version = "0.14.9", default-features = false, features = ["codegen"] }
+tonic-prost = "0.14.9"

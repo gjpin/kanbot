@@ -11,6 +11,7 @@ Code is organized **by feature first, then by layer** inside each feature:
 ```
 backend/
 ├── openapi.json             # the API contract (generated, committed; the frontend's client is built from it)
+├── openshell-api/           # the OpenShell gateway's gRPC API: vendored .proto files, generated code (its own crate), regenerate.sh
 ├── build.rs                 # rebuilds when a migration is added
 ├── compose.yaml             # local Postgres, Authelia and Keycloak; `--profile observability` adds collector + Grafana
 ├── dev/                     # local stack: auth-setup.sh, authelia/ and keycloak/ config and users, dev.env, policies.cedar; .generated/ is git-ignored
@@ -44,6 +45,7 @@ backend/
 │   ├── teams/               # /teams: teams, members and maintainers, IdP group sync
 │   ├── audit/               # the audit log of changes to organizations and teams, GET /audit
 │   ├── names.rs             # slugs and names of organizations and teams
+│   ├── openshell/           # OpenShell integration: config, gateway client, tokens, workspace links and membership sync
 │   └── <feature>/           # e.g. boards/, cards/
 │       ├── mod.rs           # pub fn routes() -> OpenApiRouter<AppState>
 │       ├── model.rs         # domain types: validated newtypes and entities
@@ -242,6 +244,12 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `WEB_DIR` | 3 | unset (off) | Directory with the Flutter web build to serve at `/` |
 | `OIDC_GROUPS_CLAIM` | 4 | value of `OIDC_ROLES_CLAIM` | Dot path to the groups array used for team sync and Cedar `principal.groups` |
 | `AUTHZ_POLICY_FILE` | 4 | none | Deployer Cedar policies. `forbid` only: a file containing any `permit` stops startup |
+| `OPENSHELL_GATEWAY_URL` | 7 | unset (off) | The OpenShell gateway's gRPC endpoint. HTTPS only (`http` on a numeric loopback host with `OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP=true`, tests only) |
+| `OPENSHELL_AUDIENCE` | 7 | required with the gateway | Audience of the gateway's tokens, for example `openshell-gateway`. Must differ from `OIDC_AUDIENCE` |
+| `OPENSHELL_CLIENT_ID`, `OPENSHELL_CLIENT_SECRET` / `OPENSHELL_CLIENT_SECRET_FILE` | 7 | required with the gateway | Kanbot's client for OpenShell tokens (secret) |
+| `OPENSHELL_TOKEN_SCOPE` | 7 | none | `scope` to request for the gateway's audience, if the identity provider needs one |
+| `OPENSHELL_TOKEN_EXCHANGE` | 7 | `false` | Exchange the user's token (RFC 8693) for calls a user starts |
+| `OPENSHELL_CA_FILE` | 7 | none | PEM certificates trusted for the gateway, in addition to the system roots |
 
 ## 3a. Observability (OpenTelemetry)
 
@@ -307,6 +315,10 @@ The model, the built-in permissions and the deployer policy guide are in [`docs/
 - **Local Authelia** (`tests/authelia.rs`): end-to-end tests with real tokens from the local Authelia (`dev/authelia/configuration.yml`), obtained by the programmatic login helper `tests/common/authelia.rs`, which `examples/dev_token.rs` shares through `#[path]`. The dev users are in `dev/authelia/users_database.yml`, each with the documented dev-only password `<username>-dev-password`: `alice` (`kanbot-admin`), `bob` (`kanbot-user`), `carol` (no kanbot group) and `dave` (`kanbot-user` and `contractors`). The `kanbot` client's dev-only secret is `kanbot-dev-client-secret`.
 - **Local Keycloak** (`tests/keycloak.rs`): the second identity provider, with the same dev users and client secret (`dev/keycloak/kanbot-realm.json`), at `https://auth.kanbot.internal:8443/realms/kanbot`. `tests/common/keycloak.rs` signs in through Keycloak's login form.
 - Database, Authelia and Keycloak tests **fail rather than skip** when their service is missing.
+
+### Generated gRPC code
+
+`openshell-api/` holds the OpenShell gateway's API, generated from vendored `.proto` files. Generated code carries `allow` attributes and does not meet §1, so it is a crate of its own, outside these lints; everything in `src/` that calls it meets them. Never edit `openshell-api/src/generated/`: update the `.proto` files and run `sh openshell-api/regenerate.sh` (its README). CI fails if the generated code is stale.
 
 ## 5. Supply chain
 

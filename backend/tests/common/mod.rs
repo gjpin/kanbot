@@ -11,6 +11,7 @@ pub mod authelia;
 pub mod base64url;
 pub mod idp;
 pub mod keycloak;
+pub mod openshell;
 
 use std::{net::SocketAddr, sync::Arc};
 

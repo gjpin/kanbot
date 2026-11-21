@@ -11,6 +11,7 @@ pub mod db;
 pub mod error;
 pub mod http;
 pub mod names;
+pub mod openshell;
 pub mod organizations;
 pub mod sessions;
 pub mod state;

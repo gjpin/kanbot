@@ -102,6 +102,27 @@ jobs:
             exit 1
           fi
 
+  # The OpenShell client generated from the vendored .proto files
+  # (openshell-api/README.md) is committed. Fails if it is stale.
+  openshell-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend/openshell-api/codegen
+      - name: Generated code is up to date
+        run: |
+          sh openshell-api/regenerate.sh
+          if [ -n "$(git status --porcelain -- openshell-api)" ]; then
+            git status --short -- openshell-api
+            echo "::error::openshell-api/src/generated is stale. Run 'sh backend/openshell-api/regenerate.sh' and commit the result."
+            exit 1
+          fi
+
   mutants:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

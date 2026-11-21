@@ -1,0 +1,14 @@
+# Generates ../src/generated/ from ../proto/. Run it with ../regenerate.sh;
+# the backend's build never runs it.
+[package]
+name = "openshell-api-codegen"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tonic-prost-build = "0.14.9"
+
+# Its own workspace, so the backend's builds never include it.
+[workspace]
+members = ["."]

@@ -13,6 +13,7 @@ chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 getrandom = "0.4.3"
 governor = "0.10.4"
 jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
+openshell-api = { version = "0.0.0", path = "openshell-api" }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "logs", "metrics"] }
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "logs", "metrics"] }
@@ -25,6 +26,7 @@ sha2 = "0.11.1"
 sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "uuid"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync"] }
+tonic = { version = "0.14.9", default-features = false, features = ["channel", "tls-ring", "tls-native-roots", "codegen"] }
 tower = { version = "0.5.3", features = ["limit", "load-shed"] }
 tower-http = { version = "0.7.1", features = ["catch-panic", "cors", "fs", "limit", "sensitive-headers", "set-header", "timeout"] }
 tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
@@ -42,6 +44,7 @@ opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
 proptest = "1.12.0"
 sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-util", "process", "test-util"] }
+tonic = { version = "0.14.9", default-features = false, features = ["channel", "tls-ring", "tls-native-roots", "codegen", "server", "router"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 [lints.rust]

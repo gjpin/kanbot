@@ -127,7 +127,7 @@ impl SessionConfig {
 }
 
 /// A secret given directly in `name` or in the file named by `file_name`.
-fn secret(
+pub(crate) fn secret(
     lookup: &impl Fn(&'static str) -> Result<String, VarError>,
     name: &'static str,
     file_name: &'static str,
