@@ -34,8 +34,16 @@ OpenShell versions are listed in
 - A workspace can be linked to only one organization.
 
 The workspace must exist: kanbot does not create workspaces. When a platform
-admin links one, kanbot checks with the gateway that it exists and that the
-admin may see it.
+admin links one, kanbot asks the gateway whether it exists:
+
+- with `OPENSHELL_TOKEN_EXCHANGE=true`, as the admin (their exchanged token),
+  so the admin must also be able to see the workspace in OpenShell;
+- otherwise as the service account, so any platform admin can link any
+  workspace the service account can see.
+
+Either way, the sync can change members only where the service account is a
+workspace admin (below). That grant is the real boundary of what kanbot can
+do in OpenShell.
 
 ## Tokens
 
@@ -60,8 +68,10 @@ refuses equal audiences.
 
 Adding and removing members needs workspace role `admin` in each linked
 workspace (or OpenShell's platform admin role) and, when the gateway enforces
-scopes, the scope `workspace:write`. Give the service account those, for
-example by making its subject an admin of each workspace you link.
+scopes, the scope `workspace:write`. Make the service account an admin of
+**only** the workspaces kanbot should manage, and avoid OpenShell's platform
+admin role for it: any platform admin in kanbot can link a workspace, and
+the sync then makes the organization's admins workspace admins there.
 
 At the identity provider:
 
