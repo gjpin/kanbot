@@ -56,7 +56,8 @@ fn every_request(organization: OrganizationId, team: TeamId) -> Vec<(Action, Res
                 | Action::ManageOrganization
                 | Action::ManageOrganizationAdmins
                 | Action::ManageTeamLinks
-                | Action::DeleteOrganization => Resource::Organization(organization),
+                | Action::DeleteOrganization
+                | Action::LinkOpenShellWorkspace => Resource::Organization(organization),
                 Action::ViewTeam
                 | Action::ManageTeam
                 | Action::ManageTeamMembers

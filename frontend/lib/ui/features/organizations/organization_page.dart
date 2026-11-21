@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kanbot/config/dependencies.dart';
+import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/routing/router.dart';
@@ -101,6 +102,47 @@ class _OrganizationPageState extends State<OrganizationPage> {
       builder: (context) => LinkTeamDialog(teams: _viewModel.teams),
     );
     if (link != null) _report(await _viewModel.linkTeam(link.$1, link.$2));
+  }
+
+  Future<void> _linkWorkspace(Organization organization) async {
+    await showShadDialog<Organization>(
+      context: context,
+      builder: (context) => WorkspaceDialog(
+        initialName: organization.openShellWorkspace ?? '',
+        submit: _viewModel.linkOpenShellWorkspace,
+      ),
+    );
+  }
+
+  Widget _workspaceSection(Organization organization) {
+    final canLink = organization.can(
+      OrganizationPermission.linkOpenShellWorkspace,
+    );
+    final workspace = organization.openShellWorkspace;
+    return Section(
+      title: Messages.openShellWorkspace,
+      action: canLink
+          ? ShadButton.outline(
+              size: ShadButtonSize.sm,
+              onPressed: () => _linkWorkspace(organization),
+              child: const Text(Messages.linkWorkspace),
+            )
+          : null,
+      children: [
+        ListRow(
+          label: workspace ?? Messages.notLinked,
+          trailing: [
+            if (canLink && workspace != null)
+              ShadButton.ghost(
+                size: ShadButtonSize.sm,
+                onPressed: () async =>
+                    _report(await _viewModel.unlinkOpenShellWorkspace()),
+                child: const Text(Messages.unlink),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -211,6 +253,12 @@ class _OrganizationPageState extends State<OrganizationPage> {
                     ),
                 ],
               ),
+              // Shown when linked, or to those who may link it.
+              if (value.organization.openShellWorkspace != null ||
+                  value.organization.can(
+                    OrganizationPermission.linkOpenShellWorkspace,
+                  ))
+                _workspaceSection(value.organization),
             ],
           ),
         ),
@@ -322,6 +370,99 @@ class _LinkTeamDialogState extends State<LinkTeamDialog> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Asks for an OpenShell workspace's name and links it with [submit]. The
+/// server's field error (no such workspace) shows under the field.
+class WorkspaceDialog extends StatefulWidget {
+  const WorkspaceDialog({
+    super.key,
+    required this.submit,
+    this.initialName = '',
+  });
+
+  final Future<Result<Organization>> Function(String workspace) submit;
+  final String initialName;
+
+  @override
+  State<WorkspaceDialog> createState() => _WorkspaceDialogState();
+}
+
+class _WorkspaceDialogState extends State<WorkspaceDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.initialName,
+  );
+  bool _busy = false;
+  Exception? _error;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final result = await widget.submit(_name.text.trim());
+    if (!mounted) return;
+    switch (result) {
+      case Ok(:final value):
+        Navigator.of(context).pop(value);
+      case Failure(:final error):
+        setState(() {
+          _busy = false;
+          _error = error;
+        });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = ShadTheme.of(context);
+    final error = _error;
+    final message = switch (error) {
+      null => null,
+      ApiValidationException(:final fieldErrors) when fieldErrors.isNotEmpty =>
+        Messages.fieldError(fieldErrors.first.code),
+      _ => Messages.error(error),
+    };
+    return ShadDialog(
+      title: const Text(Messages.linkWorkspace),
+      actions: [
+        ShadButton.outline(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: const Text(Messages.cancel),
+        ),
+        ShadButton(
+          onPressed: _busy ? null : _submit,
+          child: const Text(Messages.save),
+        ),
+      ],
+      child: SizedBox(
+        width: 360,
+        child: ShadColumn(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: 1,
+          children: [
+            Text(Messages.workspaceName, style: theme.textTheme.small),
+            ShadInput(controller: _name, onSubmitted: (_) => _submit()),
+            Text(Messages.openShellWorkspaceHint, style: theme.textTheme.muted),
+            if (message != null)
+              Text(
+                message,
+                style: theme.textTheme.small.copyWith(
+                  color: theme.colorScheme.destructive,
+                ),
+              ),
+          ],
         ),
       ),
     );

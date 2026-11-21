@@ -28,6 +28,9 @@ pub struct OrganizationDto {
     pub id: Uuid,
     pub slug: String,
     pub name: String,
+    /// The `OpenShell` workspace whose membership kanbot syncs with this
+    /// organization, if linked.
+    pub openshell_workspace: Option<String>,
     pub permissions: Vec<OrganizationPermissionDto>,
 }
 
@@ -47,6 +50,18 @@ pub enum OrganizationPermissionDto {
     ManageTeamLinks,
     /// Delete it. Never for the Default organization.
     Delete,
+    /// Link it to an `OpenShell` workspace, or unlink it. Only when the
+    /// server has the `OpenShell` integration.
+    LinkOpenshellWorkspace,
+}
+
+/// The `OpenShell` workspace to link an organization to.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenShellLinkDto {
+    /// The workspace's name in `OpenShell`. It must exist, and the user
+    /// linking it must be able to see it there.
+    pub workspace: String,
 }
 
 /// A new organization.
@@ -103,6 +118,7 @@ impl TryFrom<NewOrganizationDto> for Organization {
                 id: OrganizationId::new(),
                 slug,
                 name,
+                openshell_workspace: None,
             }),
             _ => Err(AppError::Validation(errors)),
         }
@@ -148,6 +164,9 @@ impl OrganizationDto {
             id: organization.id.as_uuid(),
             slug: organization.slug.into_string(),
             name: organization.name.into_string(),
+            openshell_workspace: organization
+                .openshell_workspace
+                .map(|workspace| workspace.as_str().to_owned()),
             permissions: permissions
                 .iter()
                 .filter_map(|action| match action {
@@ -158,6 +177,9 @@ impl OrganizationDto {
                     }
                     Action::ManageTeamLinks => Some(OrganizationPermissionDto::ManageTeamLinks),
                     Action::DeleteOrganization => Some(OrganizationPermissionDto::Delete),
+                    Action::LinkOpenShellWorkspace => {
+                        Some(OrganizationPermissionDto::LinkOpenshellWorkspace)
+                    }
                     _ => None,
                 })
                 .collect(),

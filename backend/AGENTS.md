@@ -251,6 +251,8 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `OPENSHELL_TOKEN_EXCHANGE` | 7 | `false` | Exchange the user's token (RFC 8693) for calls a user starts |
 | `OPENSHELL_CA_FILE` | 7 | none | PEM certificates trusted for the gateway, in addition to the system roots |
 
+The integration and its sync are described in [`docs/openshell.md`](../docs/openshell.md). Tokens sent to the gateway must carry `OPENSHELL_AUDIENCE` and never `OIDC_AUDIENCE` (`src/openshell/credentials.rs` refuses any other); keep it that way. Tests run against a fake gateway (`tests/common/openshell.rs`), a real gRPC server on loopback.
+
 ## 3a. Observability (OpenTelemetry)
 
 Traces, logs and metrics are OpenTelemetry, exported over OTLP/HTTP (protobuf) to a collector (`src/telemetry.rs`). The SDK reads the standard `OTEL_*` variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, default `http://localhost:4318`; `OTEL_EXPORTER_OTLP_HEADERS`, which may carry credentials and must never be logged; `OTEL_SERVICE_NAME`, default `kanbot-backend`; `OTEL_RESOURCE_ATTRIBUTES`; `OTEL_TRACES_SAMPLER`). `OTEL_SDK_DISABLED=true` turns export off. Logs also go to stdout.

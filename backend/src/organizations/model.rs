@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     names::{Name, Slug},
+    openshell::model::WorkspaceName,
     teams::model::Team,
 };
 
@@ -73,6 +74,8 @@ pub struct Organization {
     pub id: OrganizationId,
     pub slug: Slug,
     pub name: Name,
+    /// The `OpenShell` workspace whose membership kanbot syncs, if linked.
+    pub openshell_workspace: Option<WorkspaceName>,
 }
 
 /// A change to an organization: the fields to set.

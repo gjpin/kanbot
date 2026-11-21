@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO openshell_members (workspace, subject, role) VALUES ($1, $2, $3)\n           ON CONFLICT (workspace, subject) DO UPDATE SET role = EXCLUDED.role",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "69f2c39e9dcd0e93e13f68d69903276ce3509783fb5eccdde65ace2ee8b708d5"
+}

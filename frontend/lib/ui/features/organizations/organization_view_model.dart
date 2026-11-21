@@ -75,6 +75,12 @@ class OrganizationViewModel extends ChangeNotifier {
   Future<Result<void>> unlinkTeam(String teamId) =>
       _change(_organizations.unlinkTeam(id, teamId));
 
+  Future<Result<Organization>> linkOpenShellWorkspace(String workspace) =>
+      _change(_organizations.linkOpenShellWorkspace(id, workspace));
+
+  Future<Result<Organization>> unlinkOpenShellWorkspace() =>
+      _change(_organizations.unlinkOpenShellWorkspace(id));
+
   /// The teams the user can see, to choose one to link.
   Future<Result<List<TeamSummary>>> teams() => _teams.list();
 }

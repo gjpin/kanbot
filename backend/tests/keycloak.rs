@@ -56,6 +56,7 @@ async fn app(pool: PgPool) -> Router {
             // the client's mapper puts the groups in the tokens.
             sessions: common::session_config_with_scopes("openid profile email offline_access"),
             authz: common::policies(),
+            openshell: None,
         },
         HttpSettings::new(),
         None,

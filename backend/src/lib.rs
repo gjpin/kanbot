@@ -48,6 +48,18 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
     // reports not ready until the keys load.
     keys.spawn_refresh();
     sessions::service::spawn_cleanup(db.clone());
+    let openshell = config
+        .openshell
+        .map(|openshell| openshell::OpenShell::new(openshell, Arc::clone(&keys)).map(Arc::new))
+        .transpose()
+        .map_err(StartupError::OpenShell)?;
+    if let Some(openshell) = &openshell {
+        openshell::sync::spawn_sync(
+            db.clone(),
+            Arc::clone(openshell),
+            keys.config().issuer.as_str().to_owned(),
+        );
+    }
     tracing::info!(
         deployer_policies = ?config.authz.deployer_policy_ids(),
         "authorization policies loaded"
@@ -63,6 +75,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             keys,
             sessions: Arc::new(config.sessions),
             authz: Arc::new(config.authz),
+            openshell: openshell.clone(),
         },
         http::HttpSettings::configured(
             config.cors_allowed_origins,

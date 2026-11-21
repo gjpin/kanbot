@@ -79,6 +79,35 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
     }
 }
 
+/// The user's own access token, for a call to another service on their
+/// behalf: the one a bearer request presented, or the identity provider
+/// token stored with the session. Never log it.
+pub struct UserAccessToken(pub secrecy::SecretString);
+
+impl FromRequestParts<crate::state::AppState> for UserAccessToken {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &crate::state::AppState,
+    ) -> Result<Self, Self::Rejection> {
+        if let Some(session) = parts.extensions.get::<CurrentSession>() {
+            let token = crate::sessions::service::stored_access_token(
+                &state.db,
+                &state.sessions,
+                session.id,
+            )
+            .await?;
+            return Ok(Self(token));
+        }
+        parts
+            .extensions
+            .get::<crate::auth::middleware::BearerToken>()
+            .map(|bearer| Self(bearer.0.clone()))
+            .ok_or(AppError::Unauthorized)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::Request;

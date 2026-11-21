@@ -112,7 +112,8 @@ fuzz_target!(|data: &[u8]| {
                 | Action::ManageOrganization
                 | Action::ManageOrganizationAdmins
                 | Action::ManageTeamLinks
-                | Action::DeleteOrganization => {
+                | Action::DeleteOrganization
+                | Action::LinkOpenShellWorkspace => {
                     Resource::Organization(OrganizationId::from_uuid(Uuid::from_u128(0)))
                 }
                 Action::ViewTeam

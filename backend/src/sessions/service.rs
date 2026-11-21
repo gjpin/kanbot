@@ -556,6 +556,25 @@ pub async fn authenticate_session(
     })
 }
 
+/// The identity provider access token behind a session, for a call to
+/// another service on the user's behalf (token exchange). Never log it.
+///
+/// # Errors
+///
+/// [`AppError::Unauthorized`] if the session is gone, or another
+/// [`AppError`].
+pub async fn stored_access_token(
+    db: &PgPool,
+    config: &SessionConfig,
+    session_id: Uuid,
+) -> Result<SecretString, AppError> {
+    let sealed = repo::access_token(db, session_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    crypto::open(&config.keys, session_id, Field::AccessToken, &sealed)
+        .map_err(|_| AppError::Internal("session token cannot be opened"))
+}
+
 /// Checks a stored access token with the bearer rules.
 async fn verify_stored(
     keys: &KeyCache,

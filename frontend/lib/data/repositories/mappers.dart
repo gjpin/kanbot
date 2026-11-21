@@ -51,6 +51,7 @@ Organization organizationFrom(api.OrganizationDto dto) => Organization(
   id: dto.id,
   slug: dto.slug,
   name: dto.name,
+  openShellWorkspace: dto.openshellWorkspace,
   permissions: {
     for (final permission in dto.permissions)
       if (permission case api.OrganizationPermissionDtoKnown(:final value))
@@ -65,6 +66,8 @@ Organization organizationFrom(api.OrganizationDto dto) => Organization(
             OrganizationPermission.manageTeamLinks,
           api.OrganizationPermissionDtoValue.delete =>
             OrganizationPermission.delete,
+          api.OrganizationPermissionDtoValue.linkOpenshellWorkspace =>
+            OrganizationPermission.linkOpenShellWorkspace,
         },
   },
 );

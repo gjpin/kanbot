@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     names::{Name, Slug},
+    openshell::model::WorkspaceName,
     organizations::model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
     teams::model::{IdpGroup, Team, TeamId},
     users::model::{UserId, UserSummary},
@@ -14,11 +15,21 @@ fn decode(what: &'static str) -> sqlx::Error {
     sqlx::Error::Decode(what.into())
 }
 
-fn organization(id: Uuid, slug: &str, name: &str) -> Result<Organization, sqlx::Error> {
+fn organization(
+    id: Uuid,
+    slug: &str,
+    name: &str,
+    workspace: Option<&str>,
+) -> Result<Organization, sqlx::Error> {
     Ok(Organization {
         id: OrganizationId::from_uuid(id),
         slug: Slug::parse(slug).map_err(|_| decode("organizations.slug"))?,
         name: Name::parse(name).map_err(|_| decode("organizations.name"))?,
+        openshell_workspace: workspace
+            .map(|raw| {
+                WorkspaceName::parse(raw).ok_or_else(|| decode("organizations.openshell_workspace"))
+            })
+            .transpose()?,
     })
 }
 
@@ -26,13 +37,13 @@ fn organization(id: Uuid, slug: &str, name: &str) -> Result<Organization, sqlx::
 #[tracing::instrument(skip_all)]
 pub(super) async fn list(db: &PgPool, ids: &[Uuid]) -> Result<Vec<Organization>, sqlx::Error> {
     sqlx::query!(
-        "SELECT id, slug, name FROM organizations WHERE id = ANY($1) ORDER BY slug",
+        "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = ANY($1) ORDER BY slug",
         ids
     )
     .fetch_all(db)
     .await?
     .into_iter()
-    .map(|row| organization(row.id, &row.slug, &row.name))
+    .map(|row| organization(row.id, &row.slug, &row.name, row.openshell_workspace.as_deref()))
     .collect()
 }
 
@@ -42,12 +53,19 @@ pub(super) async fn get(
     id: OrganizationId,
 ) -> Result<Option<Organization>, sqlx::Error> {
     sqlx::query!(
-        "SELECT id, slug, name FROM organizations WHERE id = $1",
+        "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = $1",
         id.as_uuid()
     )
     .fetch_optional(db)
     .await?
-    .map(|row| organization(row.id, &row.slug, &row.name))
+    .map(|row| {
+        organization(
+            row.id,
+            &row.slug,
+            &row.name,
+            row.openshell_workspace.as_deref(),
+        )
+    })
     .transpose()
 }
 
@@ -76,7 +94,7 @@ pub(super) async fn update(
         UPDATE organizations
         SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()
         WHERE id = $1
-        RETURNING id, slug, name
+        RETURNING id, slug, name, openshell_workspace
         "#,
         id.as_uuid(),
         changes.slug.as_ref().map(Slug::as_str),
@@ -84,7 +102,14 @@ pub(super) async fn update(
     )
     .fetch_optional(db)
     .await?
-    .map(|row| organization(row.id, &row.slug, &row.name))
+    .map(|row| {
+        organization(
+            row.id,
+            &row.slug,
+            &row.name,
+            row.openshell_workspace.as_deref(),
+        )
+    })
     .transpose()
 }
 
@@ -251,6 +276,25 @@ pub(super) async fn remove_team_link(
         "DELETE FROM organization_teams WHERE organization_id = $1 AND team_id = $2",
         id.as_uuid(),
         team.as_uuid()
+    )
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Links the organization to `workspace`, or unlinks it (`None`). `false`
+/// if the organization does not exist.
+#[tracing::instrument(skip_all, fields(organization.id = %id.as_uuid()))]
+pub(super) async fn set_openshell_workspace(
+    db: &mut PgConnection,
+    id: OrganizationId,
+    workspace: Option<&WorkspaceName>,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query!(
+        "UPDATE organizations SET openshell_workspace = $2, updated_at = now() WHERE id = $1",
+        id.as_uuid(),
+        workspace.map(WorkspaceName::as_str),
     )
     .execute(db)
     .await?

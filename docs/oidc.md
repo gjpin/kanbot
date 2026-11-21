@@ -454,6 +454,9 @@ OpenShell quirks to know:
   Machine access uses `client_credentials`.
 - Its Kubernetes deployment is marked experimental. Pin its chart version.
 
+To have kanbot keep OpenShell workspace members in line with its
+organizations, see [openshell.md](openshell.md).
+
 ## Kubernetes notes
 
 - **One issuer URL everywhere.** Browsers, kanbot's pods and OpenShell's pods

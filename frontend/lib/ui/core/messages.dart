@@ -72,6 +72,14 @@ abstract final class Messages {
   static const String linkTeam = 'Give a team access';
   static const String read = 'Read';
   static const String write = 'Write';
+  static const String openShellWorkspace = 'OpenShell workspace';
+  static const String openShellWorkspaceHint =
+      'The workspace’s members follow this organization: its admins as '
+      'admins, members of teams with write access as users.';
+  static const String linkWorkspace = 'Link workspace';
+  static const String workspaceName = 'Workspace name';
+  static const String notLinked = 'Not linked.';
+  static const String unlink = 'Unlink';
   static const String deleteOrganization = 'Delete organization';
   static const String deleteOrganizationConfirm =
       'This removes the organization, its admins and its team links.';
@@ -137,6 +145,7 @@ abstract final class Messages {
     'required' => 'Required.',
     'too_long' => 'Too long.',
     'invalid' => 'Not valid.',
+    'not_found' => 'Not found.',
     _ => 'Not valid.',
   };
 }

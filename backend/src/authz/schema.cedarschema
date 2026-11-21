@@ -48,7 +48,10 @@ namespace Kanbot {
   action read, write
     appliesTo { principal: User, resource: Organization, context: RequestContext };
 
-  action manageOrganization, manageOrganizationAdmins, manageTeamLinks, deleteOrganization
+  // linkOpenShellWorkspace: link the organization to an OpenShell
+  // workspace, whose membership kanbot then syncs.
+  action manageOrganization, manageOrganizationAdmins, manageTeamLinks, deleteOrganization,
+    linkOpenShellWorkspace
     appliesTo { principal: User, resource: Organization, context: RequestContext };
 
   action viewTeam, manageTeam, manageTeamMembers, setTeamIdpGroup

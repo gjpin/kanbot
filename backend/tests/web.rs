@@ -54,6 +54,7 @@ fn app(web_dir: Option<&WebDir>) -> Router {
             keys: common::idp::static_key_cache(),
             sessions: common::session_config(),
             authz: common::policies(),
+            openshell: None,
         },
         HttpSettings {
             web_dir: web_dir.map(|dir| dir.0.clone()),

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE organizations SET openshell_workspace = 'research' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "381d882d105d4eed4a95424d5a48b9f6bbb8e4d4086a4ea7a8ae711202796671"
+}

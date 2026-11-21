@@ -95,8 +95,15 @@ const String bobId = '44444444-4444-4444-8444-444444444444';
 Map<String, Object?> organization({
   String id = orgId,
   String name = 'Acme',
+  String? openShellWorkspace,
   List<String> permissions = const [],
-}) => {'id': id, 'slug': 'acme', 'name': name, 'permissions': permissions};
+}) => {
+  'id': id,
+  'slug': 'acme',
+  'name': name,
+  'openshell_workspace': openShellWorkspace,
+  'permissions': permissions,
+};
 
 Map<String, Object?> teamSummary({
   String id = teamId,

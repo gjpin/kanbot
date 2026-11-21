@@ -359,3 +359,12 @@ pub(super) async fn delete_expired_sessions(db: &PgPool, limit: i64) -> Result<u
     .await?
     .rows_affected())
 }
+
+/// The session's sealed identity provider access token. `None` if the
+/// session is gone.
+#[tracing::instrument(skip_all, fields(session.id = %id))]
+pub(super) async fn access_token(db: &PgPool, id: Uuid) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT idp_access_token FROM sessions WHERE id = $1", id)
+        .fetch_optional(db)
+        .await
+}

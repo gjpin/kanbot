@@ -49,6 +49,7 @@ fn state(pool: PgPool) -> AppState {
         keys: common::idp::static_key_cache(),
         sessions: common::session_config(),
         authz: common::policies(),
+        openshell: None,
     }
 }
 

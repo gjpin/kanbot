@@ -5,7 +5,8 @@ enum OrganizationPermissionDtoValue {
   manage('manage'),
   manageAdmins('manage_admins'),
   manageTeamLinks('manage_team_links'),
-  delete('delete');
+  delete('delete'),
+  linkOpenshellWorkspace('link_openshell_workspace');
 
   const OrganizationPermissionDtoValue(this.value);
   final String value;
@@ -27,6 +28,9 @@ sealed class OrganizationPermissionDto {
   );
   static const delete = OrganizationPermissionDtoKnown(
     OrganizationPermissionDtoValue.delete,
+  );
+  static const linkOpenshellWorkspace = OrganizationPermissionDtoKnown(
+    OrganizationPermissionDtoValue.linkOpenshellWorkspace,
   );
   factory OrganizationPermissionDto.fromJson(Object? json) {
     if (json is! String) {

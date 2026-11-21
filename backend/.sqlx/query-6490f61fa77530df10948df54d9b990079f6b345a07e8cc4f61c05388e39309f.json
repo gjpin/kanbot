@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, issuer, subject, platform_role, disabled_at)\n               VALUES ($1, $2, $3, 'user', CASE WHEN $4 THEN now() END)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6490f61fa77530df10948df54d9b990079f6b345a07e8cc4f61c05388e39309f"
+}

@@ -51,6 +51,25 @@ class OrganizationsRepository {
     ),
   );
 
+  /// Links the organization to the OpenShell workspace named [workspace].
+  Future<Result<Organization>> linkOpenShellWorkspace(
+    String id,
+    String workspace,
+  ) => apiResult(
+    () async => organizationFrom(
+      await _client.linkOrganizationOpenshellWorkspace(
+        id: id,
+        body: api.OpenShellLinkDto(workspace: workspace),
+      ),
+    ),
+  );
+
+  Future<Result<Organization>> unlinkOpenShellWorkspace(String id) => apiResult(
+    () async => organizationFrom(
+      await _client.unlinkOrganizationOpenshellWorkspace(id: id),
+    ),
+  );
+
   Future<Result<void>> delete(String id) =>
       apiResult(() => _client.deleteOrganization(id: id));
 

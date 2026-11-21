@@ -153,6 +153,11 @@ fn credentials(headers: &HeaderMap) -> Credentials<'_> {
     }
 }
 
+/// The access token a bearer request presented, for a call to another
+/// service on the user's behalf (token exchange). Never log it.
+#[derive(Clone)]
+pub struct BearerToken(pub secrecy::SecretString);
+
 /// The session behind the request, for logout and CSRF checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CurrentSession {
@@ -198,6 +203,10 @@ pub async fn authenticate(
     if let Err(wait) = auth.failures.peek(&client, Instant::now()) {
         return too_many_requests(whole_seconds(wait));
     }
+    let bearer = match credentials {
+        Credentials::Bearer(token) => Some(secrecy::SecretString::from(token.to_owned())),
+        _ => None,
+    };
     let result = match credentials {
         Credentials::None | Credentials::Unusable => Err(Refusal::Token(Rejection::Malformed)),
         Credentials::Bearer(token) => user(&auth.app, token).await.map(|user| (user, None)),
@@ -225,6 +234,9 @@ pub async fn authenticate(
         Ok((user, session)) => {
             request.extensions_mut().insert(user);
             request.extensions_mut().insert(ClientIp(ip));
+            if let Some(token) = bearer {
+                request.extensions_mut().insert(BearerToken(token));
+            }
             if let Some(session) = session {
                 request.extensions_mut().insert(session);
             }

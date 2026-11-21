@@ -8,12 +8,17 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
-    http::{extract::Caller, problem::Problem},
+    authz::model::Action,
+    error::{AppError, FieldError},
+    http::{
+        extract::{Caller, UserAccessToken},
+        problem::Problem,
+    },
+    openshell::model::WorkspaceName,
     organizations::{
         dto::{
-            NewOrganizationDto, OrganizationChangesDto, OrganizationDto, OrganizationSummaryDto,
-            TeamLinkChangeDto, TeamLinkDto,
+            NewOrganizationDto, OpenShellLinkDto, OrganizationChangesDto, OrganizationDto,
+            OrganizationSummaryDto, TeamLinkChangeDto, TeamLinkDto,
         },
         model::{Organization, OrganizationChanges, OrganizationId},
         service,
@@ -22,6 +27,15 @@ use crate::{
     teams::model::TeamId,
     users::{dto::UserSummaryDto, model::UserId},
 };
+
+/// `permissions` without what this server cannot do: linking an
+/// `OpenShell` workspace needs the integration.
+fn without_unavailable(state: &AppState, mut permissions: Vec<Action>) -> Vec<Action> {
+    if state.openshell.is_none() {
+        permissions.retain(|action| *action != Action::LinkOpenShellWorkspace);
+    }
+    permissions
+}
 
 /// The organizations the caller may read, by slug.
 #[utoipa::path(
@@ -82,7 +96,10 @@ pub(super) async fn create(
         service::get(&state.db, &state.authz, &actor, created.id).await?;
     Ok((
         StatusCode::CREATED,
-        Json(OrganizationDto::new(organization, &permissions)),
+        Json(OrganizationDto::new(
+            organization,
+            &without_unavailable(&state, permissions),
+        )),
     ))
 }
 
@@ -116,7 +133,10 @@ pub(super) async fn get(
         OrganizationId::from_uuid(id),
     )
     .await?;
-    Ok(Json(OrganizationDto::new(organization, &permissions)))
+    Ok(Json(OrganizationDto::new(
+        organization,
+        &without_unavailable(&state, permissions),
+    )))
 }
 
 /// Renames an organization or changes its slug.
@@ -152,7 +172,10 @@ pub(super) async fn update(
     let changes = OrganizationChanges::try_from(changes)?;
     service::update(&state.db, &state.authz, &actor, id, &changes).await?;
     let (organization, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;
-    Ok(Json(OrganizationDto::new(organization, &permissions)))
+    Ok(Json(OrganizationDto::new(
+        organization,
+        &without_unavailable(&state, permissions),
+    )))
 }
 
 /// Deletes an organization, its admins and its team links. Platform
@@ -408,4 +431,100 @@ pub(super) async fn remove_team_link(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Links the organization to an `OpenShell` workspace; kanbot then keeps the
+/// workspace's members in sync: the organization's admins as admins, the
+/// members of its teams with write access as users. Platform admins only.
+#[utoipa::path(
+    put,
+    path = "/organizations/{id}/openshell_workspace",
+    operation_id = "link_organization_openshell_workspace",
+    tag = "organizations",
+    params(("id" = String, Path, description = "The organization's ID (a UUID).")),
+    request_body = OpenShellLinkDto,
+    security(("bearer" = []), ("session" = [])),
+    responses(
+        (status = OK, description = "The organization, linked.", body = OrganizationDto),
+        (status = UNAUTHORIZED, description = "No valid credentials.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = FORBIDDEN, description = "Not allowed to link the organization, or `OpenShell` refused the user.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = NOT_FOUND, description = "No such organization, or not allowed to read it.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = CONFLICT, description = "The server has no `OpenShell` integration, or another organization links the workspace.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = UNPROCESSABLE_ENTITY, description = "No such workspace (`/workspace`: `not_found`), or an invalid name.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = SERVICE_UNAVAILABLE, description = "`OpenShell` or the identity provider cannot be reached.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn link_openshell(
+    State(state): State<AppState>,
+    Caller(actor): Caller,
+    UserAccessToken(token): UserAccessToken,
+    Path(id): Path<Uuid>,
+    Json(link): Json<OpenShellLinkDto>,
+) -> Result<Json<OrganizationDto>, AppError> {
+    let workspace = WorkspaceName::parse(&link.workspace)
+        .ok_or_else(|| AppError::Validation(vec![FieldError::new("/workspace", "invalid")]))?;
+    let id = OrganizationId::from_uuid(id);
+    service::set_openshell_workspace(
+        &state.db,
+        &state.authz,
+        state.openshell.as_deref(),
+        &actor,
+        id,
+        Some((&workspace, &token)),
+    )
+    .await?;
+    let (organization, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;
+    Ok(Json(OrganizationDto::new(
+        organization,
+        &without_unavailable(&state, permissions),
+    )))
+}
+
+/// Unlinks the organization from its `OpenShell` workspace; kanbot then
+/// removes the members it added there. Platform admins only.
+#[utoipa::path(
+    delete,
+    path = "/organizations/{id}/openshell_workspace",
+    operation_id = "unlink_organization_openshell_workspace",
+    tag = "organizations",
+    params(("id" = String, Path, description = "The organization's ID (a UUID).")),
+    security(("bearer" = []), ("session" = [])),
+    responses(
+        (status = OK, description = "The organization, unlinked.", body = OrganizationDto),
+        (status = UNAUTHORIZED, description = "No valid credentials.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = FORBIDDEN, description = "Not allowed to unlink the organization.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = NOT_FOUND, description = "No such organization, or not allowed to read it.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = CONFLICT, description = "The server has no `OpenShell` integration.",
+         body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(super) async fn unlink_openshell(
+    State(state): State<AppState>,
+    Caller(actor): Caller,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrganizationDto>, AppError> {
+    let id = OrganizationId::from_uuid(id);
+    service::set_openshell_workspace(
+        &state.db,
+        &state.authz,
+        state.openshell.as_deref(),
+        &actor,
+        id,
+        None,
+    )
+    .await?;
+    let (organization, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;
+    Ok(Json(OrganizationDto::new(
+        organization,
+        &without_unavailable(&state, permissions),
+    )))
 }

@@ -912,14 +912,14 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     admin (or platform admin) in OpenShell, carrying `workspace:write` when
     scopes are enforced. Kanbot users map to OpenShell members by subject,
     which works only with the same issuer and subject claim on both sides.
-- [ ] **7.2** Ask the human to approve `tonic` and `prost`. Generate the client from
+- [x] **7.2** Ask the human to approve `tonic` and `prost`. Generate the client from
   the `.proto` files of the deployed OpenShell version. Document the supported
   version pairs.
-- [ ] **7.3** Use token exchange (RFC 8693) for user-initiated calls where the IdP
+- [x] **7.3** Use token exchange (RFC 8693) for user-initiated calls where the IdP
   supports it (Keycloak, Okta, authentik 2026.8+). Otherwise use a
   `client_credentials` service account. Never forward a token valid for both
   services.
-- [ ] **7.4** Link organizations to OpenShell workspaces (`openshell_workspace`) and
+- [x] **7.4** Link organizations to OpenShell workspaces (`openshell_workspace`) and
   sync membership one way, kanbot → OpenShell.
 
 ## Open items
@@ -959,4 +959,4 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 - Phase 4: [x] 4.1 [x] 4.2 [x] 4.3 [x] 4.4 [x] 4.5 [x] 4.6 [x] 4.7 [x] 4.8
 - Phase 5: [x] 5.1 [x] 5.2 [x] 5.3 [x] 5.4 [x] 5.5 [x] 5.6 [x] 5.7 [x] 5.8
 - Phase 6: [x] 6.1 [x] 6.2 [x] 6.3 [x] 6.4 [x] 6.5
-- Phase 7: [x] 7.1 [ ] 7.2 [ ] 7.3 [ ] 7.4
+- Phase 7: [x] 7.1 [x] 7.2 [x] 7.3 [x] 7.4

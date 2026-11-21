@@ -18,6 +18,7 @@ export 'health/health_client.dart';
 export 'http_request_options.dart';
 export 'organizations/models/access_dto.dart';
 export 'organizations/models/new_organization_dto.dart';
+export 'organizations/models/open_shell_link_dto.dart';
 export 'organizations/models/organization_changes_dto.dart';
 export 'organizations/models/organization_dto.dart';
 export 'organizations/models/organization_permission_dto.dart';

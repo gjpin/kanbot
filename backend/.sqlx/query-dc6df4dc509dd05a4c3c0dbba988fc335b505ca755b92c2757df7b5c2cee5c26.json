@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT workspace FROM openshell_members m\n           WHERE NOT EXISTS (\n               SELECT 1 FROM organizations o WHERE o.openshell_workspace = m.workspace\n           )\n           ORDER BY workspace",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "openshell_members",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dc6df4dc509dd05a4c3c0dbba988fc335b505ca755b92c2757df7b5c2cee5c26"
+}

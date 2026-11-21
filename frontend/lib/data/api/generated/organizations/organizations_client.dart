@@ -11,6 +11,9 @@ import 'package:kanbot/data/api/generated/http_request_options.dart';
 import 'package:kanbot/data/api/generated/organizations/models/new_organization_dto.dart'
     as models
     show NewOrganizationDto;
+import 'package:kanbot/data/api/generated/organizations/models/open_shell_link_dto.dart'
+    as models
+    show OpenShellLinkDto;
 import 'package:kanbot/data/api/generated/organizations/models/organization_changes_dto.dart'
     as models
     show OrganizationChangesDto;
@@ -533,6 +536,136 @@ class OrganizationsClient {
       throw http.ClientException('HTTP $status', url);
     }
     await response.stream.drain<void>();
+  }
+
+  /// Links the organization to an `OpenShell` workspace; kanbot then keeps the
+  /// workspace's members in sync: the organization's admins as admins, the
+  /// members of its teams with write access as users. Platform admins only.
+  Future<models.OrganizationDto> linkOrganizationOpenshellWorkspace({
+    Map<String, Object?> extra = const {
+      'openapi.security': [
+        {'bearer': <String>[]},
+        {'session': <String>[]},
+      ],
+      'openapi.securitySchemes': {
+        'bearer': {
+          'type': 'http',
+          'scheme': 'bearer',
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
+        },
+      },
+    },
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+
+    /// The organization's ID (a UUID).
+    required String id,
+    required models.OpenShellLinkDto body,
+  }) async {
+    if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
+      throw ArgumentError('Invalid path segment.');
+    }
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    final url = Uri.parse(
+      '$base/organizations/${Uri.encodeComponent(id)}/openshell_workspace',
+    );
+    final request = http.AbortableRequest(
+      'PUT',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.bodyBytes = convert.utf8.encode(convert.jsonEncode(body));
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return models.OrganizationDto.fromJson(value as Map<String, Object?>);
+    });
+  }
+
+  /// Unlinks the organization from its `OpenShell` workspace; kanbot then
+  /// removes the members it added there. Platform admins only.
+  Future<models.OrganizationDto> unlinkOrganizationOpenshellWorkspace({
+    Map<String, Object?> extra = const {
+      'openapi.security': [
+        {'bearer': <String>[]},
+        {'session': <String>[]},
+      ],
+      'openapi.securitySchemes': {
+        'bearer': {
+          'type': 'http',
+          'scheme': 'bearer',
+          'description': "An access token (JWT) from the deployment's OIDC identity provider, or a native app's kanbot session token (`kbs_...`).",
+        },
+        'session': {
+          'type': 'apiKey',
+          'name': '__Host-kanbot_session',
+          'in': 'cookie',
+          'description': "The web app's session (HttpOnly). State-changing requests also need `Origin` equal to the server's and `X-Kanbot-CSRF: 1`.",
+        },
+      },
+    },
+    Future<void>? abortTrigger,
+    HttpRequestOptions? options,
+
+    /// The organization's ID (a UUID).
+    required String id,
+  }) async {
+    if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
+      throw ArgumentError('Invalid path segment.');
+    }
+    final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
+    final url = Uri.parse(
+      '$base/organizations/${Uri.encodeComponent(id)}/openshell_workspace',
+    );
+    final request = http.AbortableRequest(
+      'DELETE',
+      url,
+      abortTrigger: abortTrigger,
+    );
+    request.headers.addAll(
+      <String, Object?>{
+        ...?options?.headers,
+        'Accept': 'application/json',
+      }.map((key, value) => MapEntry(key, value.toString())),
+    );
+    if (options?.followRedirects case final value?) {
+      request.followRedirects = value;
+    }
+    if (options?.maxRedirects case final value?) request.maxRedirects = value;
+    prepareRequest?.call(request, extra);
+    final response = await _transport.send(request);
+    final status = response.statusCode;
+    if (!(status == 200)) {
+      await response.stream.listen(null).cancel();
+      throw http.ClientException('HTTP $status', url);
+    }
+    return await convert.utf8.decoder.bind(response.stream).join().then((text) {
+      final Object? value = convert.jsonDecode(text);
+      return models.OrganizationDto.fromJson(value as Map<String, Object?>);
+    });
   }
 
   /// The teams linked to the organization, by slug.

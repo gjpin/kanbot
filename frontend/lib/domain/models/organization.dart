@@ -12,6 +12,9 @@ enum OrganizationPermission {
   manageAdmins,
   manageTeamLinks,
   delete,
+
+  /// Link it to an OpenShell workspace, or unlink it.
+  linkOpenShellWorkspace,
 }
 
 /// An organization in a list.
@@ -33,12 +36,17 @@ final class Organization {
     required this.id,
     required this.slug,
     required this.name,
+    this.openShellWorkspace,
     required this.permissions,
   });
 
   final String id;
   final String slug;
   final String name;
+
+  /// The OpenShell workspace whose members the server keeps in line with
+  /// this organization, if linked.
+  final String? openShellWorkspace;
   final Set<OrganizationPermission> permissions;
 
   bool can(OrganizationPermission permission) =>

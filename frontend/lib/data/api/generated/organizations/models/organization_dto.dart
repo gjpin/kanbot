@@ -7,6 +7,10 @@ class OrganizationDto {
   const OrganizationDto({
     required this.id,
     required this.name,
+
+    /// The `OpenShell` workspace whose membership kanbot syncs with this
+    /// organization, if linked.
+    this.openshellWorkspace,
     required this.permissions,
     required this.slug,
     this.additionalProperties = const {},
@@ -16,6 +20,9 @@ class OrganizationDto {
       OrganizationDto(
         id: json['id'] as String,
         name: json['name'] as String,
+        openshellWorkspace: json.containsKey('openshell_workspace')
+            ? json['openshell_workspace'] as String?
+            : null,
         permissions: (json['permissions'] as List<Object?>)
             .map(OrganizationPermissionDto.fromJson)
             .toList(),
@@ -30,11 +37,21 @@ class OrganizationDto {
 
   final String name;
 
+  /// The `OpenShell` workspace whose membership kanbot syncs with this
+  /// organization, if linked.
+  final String? openshellWorkspace;
+
   final List<OrganizationPermissionDto> permissions;
 
   final String slug;
 
-  static const _knownKeys = <String>{'id', 'name', 'permissions', 'slug'};
+  static const _knownKeys = <String>{
+    'id',
+    'name',
+    'openshell_workspace',
+    'permissions',
+    'slug',
+  };
 
   final Map<String, Object?> additionalProperties;
 
@@ -43,6 +60,7 @@ class OrganizationDto {
       if (!_knownKeys.contains(entry.key)) entry.key: entry.value,
     'id': id,
     'name': name,
+    if (openshellWorkspace != null) 'openshell_workspace': openshellWorkspace,
     'permissions': permissions.map((item) => item.toJson()).toList(),
     'slug': slug,
   };

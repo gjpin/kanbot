@@ -94,17 +94,22 @@ void main() {
   });
 
   group('organization page', () {
-    FakeBackend backendFor({List<String> permissions = const []}) =>
-        FakeBackend()
-          ..on(
-            'GET',
-            '/organizations/$orgId',
-            organization(permissions: permissions),
-          )
-          ..on('GET', '/organizations/$orgId/admins', [user()])
-          ..on('GET', '/organizations/$orgId/teams', [
-            {'team': teamSummary(), 'access': 'write'},
-          ]);
+    FakeBackend backendFor({
+      List<String> permissions = const [],
+      String? openShellWorkspace,
+    }) => FakeBackend()
+      ..on(
+        'GET',
+        '/organizations/$orgId',
+        organization(
+          permissions: permissions,
+          openShellWorkspace: openShellWorkspace,
+        ),
+      )
+      ..on('GET', '/organizations/$orgId/admins', [user()])
+      ..on('GET', '/organizations/$orgId/teams', [
+        {'team': teamSummary(), 'access': 'write'},
+      ]);
 
     testWidgets('readers see the organization, and no controls', (
       tester,
@@ -124,9 +129,93 @@ void main() {
         Messages.addAdmin,
         Messages.linkTeam,
         Messages.remove,
+        Messages.openShellWorkspace,
       ]) {
         expect(find.text(control), findsNothing, reason: control);
       }
+    });
+
+    testWidgets('members see the linked OpenShell workspace, read-only', (
+      tester,
+    ) async {
+      await pumpApp(
+        tester,
+        await signedIn(backendFor(openShellWorkspace: 'research')),
+        location: Routes.organization(orgId),
+      );
+      expect(find.text(Messages.openShellWorkspace), findsOneWidget);
+      expect(find.text('research'), findsOneWidget);
+      expect(find.text(Messages.linkWorkspace), findsNothing);
+      expect(find.text(Messages.unlink), findsNothing);
+    });
+
+    testWidgets('platform admins link a workspace; unknown ones are refused', (
+      tester,
+    ) async {
+      const link = '/organizations/$orgId/openshell_workspace';
+      final backend = backendFor(permissions: ['link_openshell_workspace'])
+        ..on(
+          'PUT',
+          link,
+          problem(
+            422,
+            'validation_failed',
+            errors: [
+              {'pointer': '/workspace', 'code': 'not_found'},
+            ],
+          ),
+          status: 422,
+        );
+      await pumpApp(
+        tester,
+        await signedIn(backend),
+        location: Routes.organization(orgId),
+      );
+      expect(find.text(Messages.notLinked), findsOneWidget);
+
+      Future<void> submit(String name) async {
+        await tester.enterText(
+          find.descendant(
+            of: find.byType(ShadDialog),
+            matching: find.byType(EditableText),
+          ),
+          name,
+        );
+        await tester.tap(find.widgetWithText(ShadButton, Messages.save));
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text(Messages.linkWorkspace));
+      await tester.pumpAndSettle();
+      await submit('missing');
+      expect(find.text(Messages.fieldError('not_found')), findsOneWidget);
+
+      final linked = organization(
+        permissions: ['link_openshell_workspace'],
+        openShellWorkspace: 'research',
+      );
+      backend
+        ..on('PUT', link, linked)
+        ..on('GET', '/organizations/$orgId', linked);
+      await submit(' research ');
+      expect(find.byType(ShadDialog), findsNothing);
+      expect(find.text('research'), findsOneWidget);
+      expect(
+        backend.sent('PUT', link).map((request) => jsonDecode(request.body)),
+        [
+          {'workspace': 'missing'},
+          {'workspace': 'research'},
+        ],
+      );
+
+      final unlinked = organization(permissions: ['link_openshell_workspace']);
+      backend
+        ..on('DELETE', link, unlinked)
+        ..on('GET', '/organizations/$orgId', unlinked);
+      await tester.tap(find.text(Messages.unlink));
+      await tester.pumpAndSettle();
+      expect(backend.sent('DELETE', link), hasLength(1));
+      expect(find.text(Messages.notLinked), findsOneWidget);
     });
 
     testWidgets('admins add an admin found by name', (tester) async {

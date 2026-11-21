@@ -20,4 +20,6 @@ pub struct AppState {
     pub sessions: Arc<SessionConfig>,
     /// The Cedar schema, built-in policies and the deployer's forbids.
     pub authz: Arc<Policies>,
+    /// The `OpenShell` integration, when `OPENSHELL_GATEWAY_URL` is set.
+    pub openshell: Option<Arc<crate::openshell::OpenShell>>,
 }

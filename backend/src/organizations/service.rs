@@ -14,7 +14,7 @@ use crate::{
         policies::Policies,
         service::{self as authz, allowed_actions},
     },
-    error::AppError,
+    error::{AppError, FieldError},
     organizations::{
         model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
         repo,
@@ -78,6 +78,7 @@ pub async fn get(
         Action::ManageOrganizationAdmins,
         Action::ManageTeamLinks,
         Action::DeleteOrganization,
+        Action::LinkOpenShellWorkspace,
     ];
     let requests = actions.map(|action| (action, resource));
     let decisions = authz::decisions(db, policies, actor, &requests).await?;
@@ -420,5 +421,87 @@ pub async fn remove_team_link(
     )
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+/// Links the organization to an `OpenShell` workspace (or unlinks it, with
+/// `None`), then wakes the membership sync. `link` is the workspace and the
+/// user's own access token: the workspace must exist and be visible to the
+/// user, which kanbot asks the gateway with a token for the user
+/// ([`crate::openshell::credentials::Credentials::on_behalf_of`]).
+///
+/// # Errors
+///
+/// - [`AppError::NotFound`], [`AppError::Forbidden`] (see
+///   [`authz::require`]); `Forbidden` too when the gateway refuses the
+///   user;
+/// - [`AppError::Conflict`] when the integration is off, or another
+///   organization links the workspace;
+/// - a validation error on `/workspace` when it does not exist;
+/// - [`AppError::Unavailable`] when no token or answer can be had.
+pub async fn set_openshell_workspace(
+    db: &PgPool,
+    policies: &Policies,
+    openshell: Option<&crate::openshell::OpenShell>,
+    actor: &Actor,
+    id: OrganizationId,
+    link: Option<(
+        &crate::openshell::model::WorkspaceName,
+        &secrecy::SecretString,
+    )>,
+) -> Result<(), AppError> {
+    use crate::openshell::gateway::GatewayError;
+
+    let decision = authz::require(
+        db,
+        policies,
+        actor,
+        Action::LinkOpenShellWorkspace,
+        Resource::Organization(id),
+    )
+    .await?;
+    let openshell = openshell.ok_or(AppError::Conflict)?;
+    let workspace = link.map(|(workspace, _)| workspace);
+    if let Some((workspace, user_token)) = link {
+        let token = openshell
+            .credentials
+            .on_behalf_of(user_token)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "openshell: no token for the user");
+                AppError::Unavailable
+            })?;
+        match openshell.gateway.workspace_exists(&token, workspace).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(AppError::Validation(vec![FieldError::new(
+                    "/workspace",
+                    "not_found",
+                )]));
+            }
+            Err(GatewayError::Refused) => return Err(AppError::Forbidden),
+            Err(error) => {
+                tracing::warn!(%error, "openshell: workspace lookup failed");
+                return Err(AppError::Unavailable);
+            }
+        }
+    }
+    let mut tx = db.begin().await?;
+    if !repo::set_openshell_workspace(&mut tx, id, workspace)
+        .await
+        .map_err(AppError::from_write)?
+    {
+        return Err(AppError::NotFound);
+    }
+    let (action, details) = match workspace {
+        Some(workspace) => (
+            "organization.openshell_linked",
+            json!({ "workspace": workspace.as_str() }),
+        ),
+        None => ("organization.openshell_unlinked", json!({})),
+    };
+    audit::record(&mut tx, &entry(actor, action, id, &decision, details)).await?;
+    tx.commit().await?;
+    openshell.wake_sync();
     Ok(())
 }

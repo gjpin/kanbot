@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, slug, name FROM organizations WHERE id = ANY($1) ORDER BY slug",
+  "query": "SELECT id, openshell_workspace AS \"workspace!\" FROM organizations\n           WHERE openshell_workspace IS NOT NULL ORDER BY openshell_workspace",
   "describe": {
     "columns": [
       {
@@ -16,37 +16,23 @@
       },
       {
         "ordinal": 1,
-        "name": "slug",
+        "name": "workspace!",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "organizations",
-            "name": "slug"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "name",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "organizations",
-            "name": "name"
+            "name": "openshell_workspace"
           }
         }
       }
     ],
     "parameters": {
-      "Left": [
-        "UuidArray"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
-      false,
-      false
+      true
     ]
   },
-  "hash": "5bce43cb1ac516b11b9d73fa5cdf965f77f66650e50c4ded473cfa956b7453f5"
+  "hash": "20c83fb2006b390330016fccfd47d77d0069c017c3860030a2fea72931bf466f"
 }

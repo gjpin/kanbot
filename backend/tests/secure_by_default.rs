@@ -156,6 +156,7 @@ async fn telemetry_relay_routes_refuse_requests_without_credentials() {
             keys: common::idp::static_key_cache(),
             sessions: common::session_config(),
             authz: common::policies(),
+            openshell: None,
         },
         HttpSettings::new(),
         Some(relay),

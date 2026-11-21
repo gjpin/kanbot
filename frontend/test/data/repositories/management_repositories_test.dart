@@ -38,7 +38,15 @@ void main() {
         ..on(
           'GET',
           '/organizations/$orgId',
-          organization(permissions: ['write', 'manage_team_links', 'new_one']),
+          organization(
+            permissions: [
+              'write',
+              'manage_team_links',
+              'link_openshell_workspace',
+              'new_one',
+            ],
+            openShellWorkspace: 'research',
+          ),
         );
       final repository = testDependencies(backend: backend).organizations;
 
@@ -47,8 +55,10 @@ void main() {
       expect(read.permissions, {
         OrganizationPermission.write,
         OrganizationPermission.manageTeamLinks,
+        OrganizationPermission.linkOpenShellWorkspace,
       });
       expect(read.can(OrganizationPermission.delete), isFalse);
+      expect(read.openShellWorkspace, 'research');
     });
 
     test('creates, updates and deletes', () async {

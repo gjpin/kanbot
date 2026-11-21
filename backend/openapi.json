@@ -1098,6 +1098,194 @@
         ]
       }
     },
+    "/organizations/{id}/openshell_workspace": {
+      "put": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Links the organization to an `OpenShell` workspace; kanbot then keeps the\nworkspace's members in sync: the organization's admins as admins, the\nmembers of its teams with write access as users. Platform admins only.",
+        "operationId": "link_organization_openshell_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenShellLinkDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The organization, linked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to link the organization, or `OpenShell` refused the user.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no `OpenShell` integration, or another organization links the workspace.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such workspace (`/workspace`: `not_found`), or an invalid name.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`OpenShell` or the identity provider cannot be reached.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Unlinks the organization from its `OpenShell` workspace; kanbot then\nremoves the members it added there. Platform admins only.",
+        "operationId": "unlink_organization_openshell_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The organization's ID (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The organization, unlinked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed to unlink the organization.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no `OpenShell` integration.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/organizations/{id}/teams": {
       "get": {
         "tags": [
@@ -2389,6 +2577,20 @@
         },
         "additionalProperties": false
       },
+      "OpenShellLinkDto": {
+        "type": "object",
+        "description": "The `OpenShell` workspace to link an organization to.",
+        "required": [
+          "workspace"
+        ],
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace's name in `OpenShell`. It must exist, and the user\nlinking it must be able to see it there."
+          }
+        },
+        "additionalProperties": false
+      },
       "OrganizationChangesDto": {
         "type": "object",
         "description": "The fields to change; absent fields stay as they are.",
@@ -2425,6 +2627,13 @@
           "name": {
             "type": "string"
           },
+          "openshell_workspace": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `OpenShell` workspace whose membership kanbot syncs with this\norganization, if linked."
+          },
           "permissions": {
             "type": "array",
             "items": {
@@ -2444,7 +2653,8 @@
           "manage",
           "manage_admins",
           "manage_team_links",
-          "delete"
+          "delete",
+          "link_openshell_workspace"
         ]
       },
       "OrganizationSummaryDto": {

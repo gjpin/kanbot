@@ -41,6 +41,7 @@ organization ◄──(read | write)── team ◄──(member | maintainer)�
 | `manageOrganizationAdmins` | organization | its admins |
 | `manageTeamLinks` | organization | its admins |
 | `deleteOrganization` | organization | platform admins (never the Default organization) |
+| `linkOpenShellWorkspace` | organization | platform admins ([openshell.md](openshell.md)) |
 | `viewTeam` (see it and its members) | team | its members; admins of any organization |
 | `manageTeam` (rename, delete) | team | its maintainers |
 | `manageTeamMembers` | team | its maintainers (not for a synced team) |

@@ -19,4 +19,8 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::add_admin, handlers::remove_admin))
         .routes(routes!(handlers::team_links))
         .routes(routes!(handlers::set_team_link, handlers::remove_team_link))
+        .routes(routes!(
+            handlers::link_openshell,
+            handlers::unlink_openshell
+        ))
 }

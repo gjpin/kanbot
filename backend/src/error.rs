@@ -243,6 +243,8 @@ pub enum StartupError {
     IdpClient(#[source] reqwest::Error),
     #[error("invalid rate limit")]
     RateLimit(#[from] crate::http::middleware::rate_limit::InvalidRateLimit),
+    #[error("cannot use the OpenShell gateway")]
+    OpenShell(#[source] crate::openshell::gateway::GatewayError),
 }
 
 #[cfg(test)]

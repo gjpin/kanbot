@@ -23,6 +23,8 @@ pub enum Action {
     /// Link teams to an organization, or unlink them.
     ManageTeamLinks,
     DeleteOrganization,
+    /// Link the organization to an `OpenShell` workspace, or unlink it.
+    LinkOpenShellWorkspace,
     /// See a team and its members.
     ViewTeam,
     /// Rename or delete a team.
@@ -40,13 +42,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Read,
         Self::Write,
         Self::ManageOrganization,
         Self::ManageOrganizationAdmins,
         Self::ManageTeamLinks,
         Self::DeleteOrganization,
+        Self::LinkOpenShellWorkspace,
         Self::ViewTeam,
         Self::ManageTeam,
         Self::ManageTeamMembers,
@@ -67,6 +70,7 @@ impl Action {
             Self::ManageOrganizationAdmins => "manageOrganizationAdmins",
             Self::ManageTeamLinks => "manageTeamLinks",
             Self::DeleteOrganization => "deleteOrganization",
+            Self::LinkOpenShellWorkspace => "linkOpenShellWorkspace",
             Self::ViewTeam => "viewTeam",
             Self::ManageTeam => "manageTeam",
             Self::ManageTeamMembers => "manageTeamMembers",
