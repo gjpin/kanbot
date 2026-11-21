@@ -712,8 +712,8 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Phase 4: authorization (Cedar)
 
-- [ ] **4.1 Dependency:** add `cedar-policy` (no `experimental`). Run `cargo deny`.
-- [ ] **4.2 Migrations:**
+- [x] **4.1 Dependency:** (landed with 4.3: on its own, cargo warns about an unused dependency) add `cedar-policy` (no `experimental`). Run `cargo deny`.
+- [x] **4.2 Migrations:** (`audit_log.id` is a `bigint` identity, for stable paging; slug and name constraints in the schema too)
   - `organizations`: `id`, `slug` (unique), `name`, `openshell_workspace` (null
     until phase 7), timestamps.
   - `organization_admins`: `organization_id`, `user_id`, primary key on both.
@@ -726,7 +726,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - `audit_log`: `id`, `at`, `actor_user_id`, `action`, `target_type`,
     `target_id`, `policy_ids` (`text[]`), `details` (`jsonb`, IDs only).
   - Insert the **Default** organization (slug `default`) in a migration.
-- [ ] **4.3 Cedar model** (`src/authz/schema.cedarschema`,
+- [x] **4.3 Cedar model** (added actions `viewTeam`, `searchUsers` and `viewAudit` so that every check, reads included, goes through Cedar; a `Platform` entity is their resource; `Team` has `maintainers`, `User` has `organizationAdmin` and `teamMaintainer`) (`src/authz/schema.cedarschema`,
   `src/authz/policies.cedar`, embedded with `include_str!` and validated at
   startup and in tests):
   - **Entities:**
@@ -753,7 +753,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
       maintainer);
     - platform admins only: `createOrganization`, `deleteOrganization` and
       `setTeamIdpGroup`.
-- [ ] **4.4 `src/authz/`:**
+- [x] **4.4 `src/authz/`:** (`require()` answers `404` when the actor may not even see the resource, `403` otherwise; `visible_organizations`/`visible_teams`; also `OIDC_GROUPS_CLAIM`)
   - `can(principal, action, resource) -> Result<Decision, AppError>`:
     - loads only the entities that decision needs with SQL (the user's teams, the
       relevant organization's links and admins);
@@ -770,13 +770,13 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - Deployer policies come from `AUTHZ_POLICY_FILE`. The server refuses to start
     if the file fails to parse or validate against the schema, or contains a
     `permit`.
-- [ ] **4.5 IdP group sync:**
+- [x] **4.5 IdP group sync:** (the `409` for IdP-sourced memberships landed with the endpoints in 4.6; setting a team's group removes its manual members)
   - On each authenticated request, compare the principal's groups with
     `teams.idp_group`.
   - Insert or delete `source = 'idp'` memberships so they match. Write only when
     something changed.
   - IdP-sourced memberships cannot be edited through the API (`409 conflict`).
-- [ ] **4.6 API** (all through `authz::can`, all documented in OpenAPI, all
+- [x] **4.6 API** (audit `action`s are event names such as `organization.team_linked`; responses list the caller's `permissions`; explicit, unique operation IDs; `DELETE /teams/{id}/idp_group` added in phase 5 because the generated client cannot send a `null`) (all through `authz::can`, all documented in OpenAPI, all
   writing the audit log):
   - **Organizations:**
     - `GET /organizations` (visible ones), `POST /organizations`;
@@ -795,7 +795,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - **Users:** `GET /users?query=` (users who have signed in at least once;
     restricted to platform admins, organization admins and team maintainers).
   - **Audit:** `GET /audit` (platform admins).
-- [ ] **4.7 Tests:**
+- [x] **4.7 Tests:** (mutation testing found 3 gaps, closed in 246b55c)
   - every built-in policy, allowed and denied;
   - the schema validation test;
   - a property test that SQL candidates ⊇ the Cedar-allowed set for random
@@ -807,47 +807,47 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - Default organization exists and cannot be deleted;
   - audit entries are written;
   - mutation testing.
-- [ ] **4.8 Docs:** an authorization section in `backend/AGENTS.md` (every feature
+- [x] **4.8 Docs:** an authorization section in `backend/AGENTS.md` (every feature
   must call `authz`), a deployer policy guide with examples (new
   `docs/authorization.md`), and the contract.
 
 ## Phase 5: frontend
 
-- [ ] **5.1** Set the real application ID (it is still `com.example.kanbot` on
+- [x] **5.1** (with `crypto` (approved) for PKCE; Linux builds need WebKitGTK because `flutter_web_auth_2` links its webview plugin, which kanbot does not use) Set the real application ID (it is still `com.example.kanbot` on
   every platform; ask the human for it) and derive `<app-scheme>` from it. Add
   `flutter_web_auth_2` and its per-platform setup.
-- [ ] **5.2 Native server selection:**
+- [x] **5.2 Native server selection:**
   - a server URL screen (HTTPS only), stored locally, fetching `/auth/config`;
   - `ApiClient` takes its base URL from this at runtime;
   - `API_BASE_URL` remains only as an optional build-time default.
-- [ ] **5.3 Web:**
+- [x] **5.3 Web:**
   - API base URL is relative (same origin);
   - requests send the session cookie (same-origin credentials) and
     `X-Kanbot-CSRF: 1` on state-changing methods;
   - `tool/build_web.dart` no longer injects the CSP meta tag (the backend sends
     the header);
   - update `web_csp.dart` and `build_web.dart` and their tests accordingly.
-- [ ] **5.4 Login:**
+- [x] **5.4 Login:**
   - **native:** create a PKCE pair, open `/auth/login?platform=native&...` with
     `flutter_web_auth_2`, receive the code, redeem it at `/auth/token`, store the
     session token in `TokenStore`;
   - **web:** navigate to `/auth/login?platform=web`;
   - map the `error` parameter to localized messages.
-- [ ] **5.5 Auth state:**
+- [x] **5.5 Auth state:**
   - an auth repository and view model, with `GET /me` on start;
   - `go_router` redirects for protected routes, with one test per protected route
     proving a logged-out user cannot reach it;
   - `401` → back to login;
   - logout calls `/auth/logout`, clears `TokenStore`, and opens the IdP logout URL
     if one is returned.
-- [ ] **5.6 Telemetry:**
+- [x] **5.6 Telemetry:**
   - `lib/config/telemetry.dart` no longer starts at app launch; export starts
     after login when `/me` says `telemetry_opt_in`, and stops on logout or
     opt-out;
   - settings has a toggle bound to `PUT /me/preferences` (off by default);
   - exports carry the session (cookie on web, bearer on native) and the CSRF
     header on web.
-- [ ] **5.7 Organization and team management (full, for v1):**
+- [x] **5.7 Organization and team management (full, for v1):**
   - **Organizations:** list, create (platform admin), rename, delete;
   - **Organization detail:** admins (add or remove through user search), linked
     teams with a `read`/`write` selector, add or remove links;
@@ -858,7 +858,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   - an audit log view for platform admins;
   - controls the user may not use are hidden; the backend still enforces
     everything.
-- [ ] **5.8 Tests:**
+- [x] **5.8 Tests:** (5.2–5.7 and these unit and widget tests landed in one commit, because the router, session and screens depend on each other; strings live in `lib/ui/core/messages.dart`, as decided instead of localization; the Linux end-to-end test uses a stand-in browser and passed in an arm64 Ubuntu container)
   - unit tests for the repositories and view models (strict mocks);
   - widget tests for login, server URL, settings and every management screen;
   - an integration test on Linux desktop logging in against the local Authelia
@@ -868,19 +868,19 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Phase 6: wider IdP coverage and hardening
 
-- [ ] **6.1 Keycloak in CI:** add Keycloak 26.8.x (pinned) as a second IdP in the
+- [x] **6.1 Keycloak in CI:** (Keycloak is part of the standard local stack, so CI, the devcontainer and the mutants job run it too) add Keycloak 26.8.x (pinned) as a second IdP in the
   end-to-end matrix, with a realm export committed. Resolve every **(verify)**
   item for Keycloak in `docs/oidc.md`.
-- [ ] **6.2 authentik:** test whether a scope mapping can set `aud` without
+- [x] **6.2 authentik:** (tested with a throwaway instance: not supported) test whether a scope mapping can set `aud` without
   breaking ID tokens. Mark it supported (with setup steps) or unsupported in
   `docs/oidc.md`.
-- [ ] **6.3 Fuzzing:** fuzz targets for the login callback parameters and Cedar
+- [x] **6.3 Fuzzing:** (committed before 6.2) fuzz targets for the login callback parameters and Cedar
   entity building. Run all fuzz targets and fix what they find.
-- [ ] **6.4 Security review:** run `/security-review` on the auth and authz code.
+- [x] **6.4 Security review:** run `/security-review` on the auth and authz code.
   Add workflow linting (`zizmor` or `actionlint`) and secret scanning (gitleaks,
   with an allowlist for `backend/tests/fixtures/oidc/` and `backend/dev/`) to CI,
   pinned per `AGENTS.md` §2.1.
-- [ ] **6.5 Operator docs:**
+- [x] **6.5 Operator docs:**
   - Kubernetes notes (one issuer URL, private CA, rate limits multiply with
     instances, `TRUSTED_PROXIES`);
   - migration warnings (changing `OIDC_ISSUER` or `OIDC_SUBJECT_CLAIM` detaches
@@ -889,9 +889,29 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Phase 7: OpenShell integration (later)
 
-- [ ] **7.1** Check OpenShell's `.proto` files for workspace membership APIs and
+- [x] **7.1** (reported: see the findings below; 7.2 onward waits for the human) Check OpenShell's `.proto` files for workspace membership APIs and
   roles, and whether the gateway accepts an `aud` array containing its audience.
   Report to the human before building.
+  **7.1 findings** (OpenShell v0.1.9, `proto/openshell.proto`, server
+  `crates/openshell-server/src/auth/`):
+  - Workspace membership APIs exist: `CreateWorkspace`, `GetWorkspace`,
+    `ListWorkspaces`, `DeleteWorkspace`, `AddWorkspaceMember`,
+    `RemoveWorkspaceMember` (with `allow_missing`) and `ListWorkspaceMembers`
+    (paged). Members are keyed by `principal_subject`, the OIDC subject, with
+    `WorkspaceRole` `USER` or `ADMIN`. Add and remove take a `request_id` for
+    idempotent retries.
+  - Authorization per RPC: adding or removing members needs workspace role
+    `admin` (or platform admin) and, when the gateway enforces scopes
+    (`scopes_enabled`), the scope `workspace:write`; creating and deleting
+    workspaces needs the global role `platform_admin`.
+  - Audience: the gateway validates with `jsonwebtoken`'s `set_audience`, so
+    an `aud` array that contains its audience is accepted. It does not check
+    `azp`. It has no token-exchange logic of its own: exchange happens at the
+    identity provider.
+  - So kanbot can sync membership with a token whose subject is a workspace
+    admin (or platform admin) in OpenShell, carrying `workspace:write` when
+    scopes are enforced. Kanbot users map to OpenShell members by subject,
+    which works only with the same issuer and subject claim on both sides.
 - [ ] **7.2** Ask the human to approve `tonic` and `prost`. Generate the client from
   the `.proto` files of the deployed OpenShell version. Document the supported
   version pairs.
@@ -936,7 +956,7 @@ Tick as steps land (each step is one commit on `auth/oidc`).
 - Phase 1: [x] 1.1 [x] 1.2 [x] 1.3
 - Phase 2: [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5 [x] 2.6 [x] 2.7 [x] 2.8 [x] 2.9 [x] 2.10 [x] 2.11
 - Phase 3: [x] 3.1 [x] 3.2 [x] 3.3 [x] 3.4 [x] 3.5 [x] 3.6 [x] 3.7 [x] 3.8 [x] 3.9 [x] 3.10 [x] 3.11 [x] 3.12 [x] 3.13 [x] 3.14 [x] 3.15 [x] 3.16 [x] 3.17 [x] 3.18
-- Phase 4: [ ] 4.1 … [ ] 4.8
-- Phase 5: [ ] 5.1 … [ ] 5.8
-- Phase 6: [ ] 6.1 … [ ] 6.5
-- Phase 7: [ ] 7.1 … [ ] 7.4
+- Phase 4: [x] 4.1 [x] 4.2 [x] 4.3 [x] 4.4 [x] 4.5 [x] 4.6 [x] 4.7 [x] 4.8
+- Phase 5: [x] 5.1 [x] 5.2 [x] 5.3 [x] 5.4 [x] 5.5 [x] 5.6 [x] 5.7 [x] 5.8
+- Phase 6: [x] 6.1 [x] 6.2 [x] 6.3 [x] 6.4 [x] 6.5
+- Phase 7: [x] 7.1 [ ] 7.2 [ ] 7.3 [ ] 7.4
