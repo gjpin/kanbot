@@ -464,14 +464,64 @@ OpenShell quirks to know:
 - **No ingress-level OIDC.** Don't put an OIDC-enforcing proxy in front of the
   kanbot API or the OpenShell gateway. Both handle authentication themselves, and
   a redirect-based proxy breaks native apps, the CLI and machine clients.
+- **`TRUSTED_PROXIES`:** list the ingress controller's addresses (or the pod
+  network it connects from), so kanbot reads the client address from
+  `X-Forwarded-For`. Without it, every request seems to come from the ingress:
+  the per-IP limits then count all users together, and authorization policies
+  that use `context.ip` see the ingress. Never list a range that clients can
+  send from: they could then choose their own address.
+- **Rate limits multiply with replicas.** Limits are kept in memory per
+  instance, so N replicas allow N times each `RATE_LIMIT_*` value, and a client
+  over its limit on one pod is not on another. Size them per pod.
+- **Secrets:** pass the client secret and the session keys as files
+  (`OIDC_CLIENT_SECRET_FILE`, `SESSION_ENCRYPTION_KEYS_FILE`) from a Secret.
+  Every replica needs the same session keys, or sessions created on one pod
+  cannot be used on another.
+- **Deploy order:** run `kanbot-backend migrate` (a Job) before rolling out a
+  new version; pods report not ready until the migrations are applied.
+- **Session key rotation:** put the new key first in
+  `SESSION_ENCRYPTION_KEYS` on every replica, then remove the old one once
+  `SESSION_ABSOLUTE_TIMEOUT` has passed.
+
+## Changing the issuer or the subject claim
+
+Kanbot identifies a user by the pair (issuer, subject): the value of
+`OIDC_ISSUER` and of the claim `OIDC_SUBJECT_CLAIM` names. Changing either one
+**detaches every existing user**:
+
+- the next sign-in creates a new user, with no organization admin rights and no
+  manual team memberships; teams synced with an identity provider group fill
+  up again as users sign in;
+- the old users stay in the database, with their memberships, admin rights and
+  audit history, but nobody can sign in as them;
+- existing kanbot sessions end on their next request: their stored tokens no
+  longer resolve to the session's user.
+
+So pick both before going live, and treat a change as a migration: move the
+memberships and admin rights to the new users with SQL (by matching email or
+display name), or recreate them through the API. Moving to another identity
+provider is such a change even when the users are the same people.
+
+Changing `OIDC_ROLES_CLAIM`, `OIDC_GROUPS_CLAIM` or the role names takes effect
+on the next request of each user: platform roles and synced teams follow the
+tokens, nothing has to be migrated.
 
 ## Native apps and TLS
 
 Native apps ask for the server URL on first launch and only connect over HTTPS.
-The server certificate must be trusted by the device. Android apps do not trust
-user-installed certificate authorities by default, so homelab deployments should
-use a publicly trusted certificate, for example from Let's Encrypt with a DNS
-challenge.
+The server certificate must be trusted by the device:
+
+- Android apps do not trust user-installed certificate authorities, and the
+  kanbot app does not add any;
+- iOS and macOS trust a private CA only once it is installed and, on iOS,
+  enabled for full trust in the settings;
+- the sign-in opens in the system browser, which must trust the certificate of
+  kanbot and of the identity provider too.
+
+So use publicly trusted certificates, for example from Let's Encrypt (a DNS
+challenge works for homelab servers that are not reachable from the internet),
+for kanbot and for the identity provider. The web app has no such limit: the
+browser decides.
 
 ## Local development
 
