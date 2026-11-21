@@ -43,10 +43,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Versions in workflow env: blocks, marked with a `# renovate:` comment.",
+      "description": "Versions in workflow env: blocks, marked with a `# renovate:` comment; an image may carry its digest (`tag@sha256:...`).",
       "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+[A-Z_]+: \"(?<currentValue>[^\"]+)\""
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+[A-Z_]+: \"(?<currentValue>[^\"@]+)\"",
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+[A-Z_]+: \"(?<currentValue>[^\"@]+)@(?<currentDigest>sha256:[0-9a-f]{64})\""
       ]
     },
     {

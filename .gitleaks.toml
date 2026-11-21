@@ -1,0 +1,11 @@
+# Secret scanning (gitleaks, .github/workflows/security.yml): the default
+# rules, minus two folders whose secrets are deliberately committed.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test-only signing keys (backend/tests/fixtures/oidc/README.md) and the documented development-only secrets of the local stack (backend/dev/)."
+paths = [
+  '''^backend/tests/fixtures/oidc/''',
+  '''^backend/dev/''',
+]

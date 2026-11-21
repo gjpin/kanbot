@@ -129,6 +129,10 @@ jobs:
         # --relative makes the paths relative to backend/, where cargo mutants
         # runs. With repo-root paths (backend/src/...) it matches no files and
         # passes without testing anything.
+        # The base branch comes in through the environment: expanded in the
+        # script, a crafted branch name could run code (zizmor).
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git diff --relative "origin/${{ github.base_ref }}...HEAD" -- . > "$RUNNER_TEMP/pr.diff"
+          git diff --relative "origin/$BASE_REF...HEAD" -- . > "$RUNNER_TEMP/pr.diff"
           cargo mutants --no-shuffle --in-diff "$RUNNER_TEMP/pr.diff" -- --all-features
