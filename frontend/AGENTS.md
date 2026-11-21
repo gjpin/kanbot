@@ -365,8 +365,11 @@ and fails if `build_runner` or `tool/generate_api_client.dart` changes any
 committed file.
 
 Building for a platform needs that platform's toolchain. Linux additionally
-needs `libsecret-1-dev` (and `libsecret-1-0` at runtime) and Windows the
-Visual Studio C++ ATL libraries, both for `flutter_secure_storage`.
+needs `libsecret-1-dev` (and `libsecret-1-0` at runtime) for
+`flutter_secure_storage`, and `libwebkit2gtk-4.1-dev` and `libsoup-3.0-dev`
+for `flutter_web_auth_2`'s webview plugin, which is linked although kanbot
+signs in through the system browser (`useWebview: false`). Windows needs the
+Visual Studio C++ ATL libraries for `flutter_secure_storage`.
 
 ```sh
 dart format --output=none --set-exit-if-changed .

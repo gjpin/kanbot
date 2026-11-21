@@ -29,11 +29,13 @@ ARG FLUTTER_COMMIT=ab2912035e160d9cad6306df307576da6128ebdb
 
 # Build dependencies: OpenSSL for reqwest's native-tls (backend/AGENTS.md
 # §5), and the Linux desktop toolchain plus libsecret for
-# flutter_secure_storage (frontend/AGENTS.md §10).
+# flutter_secure_storage and WebKitGTK for flutter_web_auth_2
+# (frontend/AGENTS.md §10).
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev openssl \
       clang cmake ninja-build libgtk-3-dev libsecret-1-dev \
+      libwebkit2gtk-4.1-dev libsoup-3.0-dev \
       curl git unzip xz-utils zip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

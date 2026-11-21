@@ -89,11 +89,11 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
+            VALUE "CompanyName", "dev.sideral" "\0"
             VALUE "FileDescription", "kanbot" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "kanbot" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 dev.sideral. All rights reserved." "\0"
             VALUE "OriginalFilename", "kanbot.exe" "\0"
             VALUE "ProductName", "kanbot" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
