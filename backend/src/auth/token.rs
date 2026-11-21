@@ -94,7 +94,8 @@ pub struct Principal {
     pub client_id: Option<String>,
     /// `name`, else `preferred_username`. Personal data: never log it.
     pub display_name: Option<String>,
-    /// The string values of the roles claim. Personal data: never log it.
+    /// The string values of the groups claim (`OIDC_GROUPS_CLAIM`).
+    /// Personal data: never log it.
     pub groups: Vec<String>,
     /// The token's `exp`, in seconds since the Unix epoch.
     pub expires_at: u64,
@@ -204,15 +205,18 @@ impl<'a> UnverifiedToken<'a> {
             .ok_or(Rejection::MissingClaim)?
             .to_owned();
 
-        let groups: Vec<String> = match config.roles_claim.resolve(&claims) {
-            Some(Value::Array(values)) => values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect(),
-            _ => return Err(Rejection::NoRole),
+        let strings = |value: Option<&Value>| match value {
+            Some(Value::Array(values)) => Some(
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
         };
-        let has = |role: &str| groups.iter().any(|group| group == role);
+        let roles = strings(config.roles_claim.resolve(&claims)).ok_or(Rejection::NoRole)?;
+        let has = |role: &str| roles.iter().any(|candidate| candidate == role);
         let role = if has(config.admin_role.as_str()) {
             PlatformRole::Admin
         } else if has(config.user_role.as_str()) {
@@ -238,6 +242,9 @@ impl<'a> UnverifiedToken<'a> {
             .find_map(|claim| claims.get(*claim).and_then(Value::as_str))
             .filter(|name| !name.is_empty())
             .map(str::to_owned);
+
+        // Groups are optional: without them, the user is in no synced team.
+        let groups = strings(config.groups_claim.resolve(&claims)).unwrap_or_default();
 
         Ok(Principal {
             issuer: config.issuer.as_str().to_owned(),

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE team_members SET role = 'maintainer'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e4e25316d9a703a16d524a3a5388c4dc9d8463211a9e7b5be7b6a53fa224b46a"
+}

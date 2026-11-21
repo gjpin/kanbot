@@ -19,6 +19,9 @@ pub struct OidcConfig {
     pub audience: Audience,
     /// `OIDC_ROLES_CLAIM`: where the roles array is in the claims.
     pub roles_claim: ClaimPath,
+    /// `OIDC_GROUPS_CLAIM` (default: `OIDC_ROLES_CLAIM`): where the groups
+    /// array is, for team sync and Cedar's `principal.groups`.
+    pub groups_claim: ClaimPath,
     /// `OIDC_ADMIN_ROLE`: the role that makes a user a platform admin.
     pub admin_role: RoleName,
     /// `OIDC_USER_ROLE`: the role that lets a user in.
@@ -103,6 +106,12 @@ impl OidcConfig {
         let audience = Audience(non_empty(lookup, "OIDC_AUDIENCE")?);
         let roles_claim = ClaimPath::parse(&required(lookup, "OIDC_ROLES_CLAIM")?)
             .ok_or(OidcConfigError::ClaimPath("OIDC_ROLES_CLAIM"))?;
+        let groups_claim = match optional(lookup, "OIDC_GROUPS_CLAIM")? {
+            Some(raw) if !raw.trim().is_empty() => {
+                ClaimPath::parse(&raw).ok_or(OidcConfigError::ClaimPath("OIDC_GROUPS_CLAIM"))?
+            }
+            _ => roles_claim.clone(),
+        };
         let admin_role = RoleName(non_empty(lookup, "OIDC_ADMIN_ROLE")?);
         let user_role = RoleName(non_empty(lookup, "OIDC_USER_ROLE")?);
         let subject_claim = match optional(lookup, "OIDC_SUBJECT_CLAIM")? {
@@ -140,6 +149,7 @@ impl OidcConfig {
             issuer,
             audience,
             roles_claim,
+            groups_claim,
             admin_role,
             user_role,
             subject_claim,
@@ -398,6 +408,7 @@ mod tests {
         assert_eq!(config.issuer.as_str(), "https://auth.example.com");
         assert_eq!(config.audience.as_str(), "kanbot-api");
         assert_eq!(config.roles_claim, ClaimPath::parse("groups").unwrap());
+        assert_eq!(config.groups_claim, config.roles_claim);
         assert_eq!(config.admin_role.as_str(), "kanbot-admin");
         assert_eq!(config.user_role.as_str(), "kanbot-user");
         assert_eq!(config.subject_claim.segments(), ["sub"]);
@@ -406,6 +417,19 @@ mod tests {
         assert_eq!(config.jwks_allowed_origins, Vec::<String>::new());
         assert!(config.extra_root_certificates.is_empty());
         assert!(!config.allow_insecure_http);
+    }
+
+    #[test]
+    fn the_groups_claim_is_configurable() {
+        let config = read(&[("OIDC_GROUPS_CLAIM", "ext.teams")]).unwrap();
+        assert_eq!(config.groups_claim.segments(), ["ext", "teams"]);
+        assert_eq!(config.roles_claim.segments(), ["groups"]);
+        let config = read(&[("OIDC_GROUPS_CLAIM", " ")]).unwrap();
+        assert_eq!(config.groups_claim.segments(), ["groups"]);
+        assert!(matches!(
+            oidc_error(read(&[("OIDC_GROUPS_CLAIM", "a..b")])),
+            OidcConfigError::ClaimPath("OIDC_GROUPS_CLAIM")
+        ));
     }
 
     #[test]

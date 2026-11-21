@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE organization_teams SET access = 'write'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c4b125231667fb4b4f02aa71e5ecc2b19809168dab0b312b0bb485cf2ef9c936"
+}

@@ -436,6 +436,24 @@ fn nested_roles_claim() {
 }
 
 #[test]
+fn groups_come_from_the_groups_claim() {
+    let config = config(&[("OIDC_GROUPS_CLAIM", "teams")]);
+    let claims = with(claims(), "teams", json!(["platform", 7, "ops"]));
+    let principal = validate_with(&sign("rsa-a", &claims), &config, &keys(&[])).unwrap();
+    assert_eq!(principal.groups, ["platform", "ops"]);
+    assert_eq!(principal.role, PlatformRole::User);
+
+    // No groups claim, or not an array: no groups, still signed in.
+    for claims in [
+        without(claims.clone(), "teams"),
+        with(claims, "teams", json!("platform")),
+    ] {
+        let principal = validate_with(&sign("rsa-a", &claims), &config, &keys(&[])).unwrap();
+        assert_eq!(principal.groups, Vec::<String>::new());
+    }
+}
+
+#[test]
 fn subject_claim_is_configurable() {
     let config = config(&[("OIDC_SUBJECT_CLAIM", "oid")]);
     let claims = with(claims(), "oid", json!("object-id"));

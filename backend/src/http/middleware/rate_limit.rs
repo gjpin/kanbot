@@ -122,19 +122,28 @@ pub fn ip_key(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// The rate-limit key of the client that sent `request` (see [`ip_key`]),
-/// or `None` if the server provided no peer address.
-pub fn client_key<T>(request: &Request<T>, trusted_proxies: &TrustedProxies) -> Option<IpAddr> {
+/// The address of the client that sent `request` (see
+/// [`client_ip`]), or `None` if the server provided no peer address.
+pub fn request_client_ip<T>(
+    request: &Request<T>,
+    trusted_proxies: &TrustedProxies,
+) -> Option<IpAddr> {
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()?
         .0
         .ip();
-    Some(ip_key(client_ip(
+    Some(client_ip(
         peer,
         request.headers().get_all("x-forwarded-for"),
         trusted_proxies,
-    )))
+    ))
+}
+
+/// The rate-limit key of the client that sent `request` (see [`ip_key`]),
+/// or `None` if the server provided no peer address.
+pub fn client_key<T>(request: &Request<T>, trusted_proxies: &TrustedProxies) -> Option<IpAddr> {
+    request_client_ip(request, trusted_proxies).map(ip_key)
 }
 
 /// Keys requests by client (see [`client_key`]).

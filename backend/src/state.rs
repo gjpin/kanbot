@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sqlx::{PgPool, migrate::Migrator};
 
-use crate::{auth::keys::KeyCache, sessions::config::SessionConfig};
+use crate::{auth::keys::KeyCache, authz::policies::Policies, sessions::config::SessionConfig};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,4 +18,6 @@ pub struct AppState {
     /// The login flow's settings: the confidential client, `PUBLIC_URL`,
     /// session keys and lifetimes.
     pub sessions: Arc<SessionConfig>,
+    /// The Cedar schema, built-in policies and the deployer's forbids.
+    pub authz: Arc<Policies>,
 }

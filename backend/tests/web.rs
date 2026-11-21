@@ -53,6 +53,7 @@ fn app(web_dir: Option<&WebDir>) -> Router {
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
             sessions: common::session_config(),
+            authz: common::policies(),
         },
         HttpSettings {
             web_dir: web_dir.map(|dir| dir.0.clone()),

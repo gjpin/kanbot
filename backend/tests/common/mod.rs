@@ -15,6 +15,7 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{Extension, Router, extract::ConnectInfo};
 use kanbot_backend::{
     auth::keys::KeyCache,
+    authz::policies::Policies,
     db,
     http::{self, HttpSettings},
     sessions::config::SessionConfig,
@@ -83,6 +84,16 @@ pub fn session_config_with_keys(keys: &str) -> Arc<SessionConfig> {
     )
 }
 
+/// The built-in authorization policies.
+///
+/// # Panics
+///
+/// Never: the built-in policies are valid.
+#[must_use]
+pub fn policies() -> Arc<Policies> {
+    Arc::new(Policies::builtin().unwrap())
+}
+
 /// The client address requests come from, unless a test chooses another.
 pub const PEER: &str = "203.0.113.9:50000";
 
@@ -141,6 +152,7 @@ pub fn app_with_keys(pool: PgPool, migrator: &'static Migrator, keys: Arc<KeyCac
             migrator,
             keys,
             sessions: session_config(),
+            authz: policies(),
         },
         HttpSettings::new(),
         None,

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE team_members, organization_teams, organization_admins, teams, audit_log, users CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "16505a8a7f9b7231d623f37b4373eaf9bff9a17b1e27a8ea3603d27824561afe"
+}

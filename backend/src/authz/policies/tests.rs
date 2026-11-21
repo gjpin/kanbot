@@ -396,3 +396,197 @@ fn policies_need_unique_ids() {
         Err(PolicyError::Parse { .. })
     ));
 }
+
+/// A writer in the `contractors` group, and an organization they write to.
+fn contractor_writer() -> (Actor, Facts, Resource) {
+    let mut user = actor(PlatformRole::User);
+    user.user.groups = vec!["contractors".to_owned()];
+    let organization_id = OrganizationId::new();
+    let team_id = TeamId::new();
+    let facts = Facts {
+        user: UserFacts {
+            teams: vec![team_id],
+            ..UserFacts::default()
+        },
+        teams: vec![team(
+            team_id,
+            vec![],
+            vec![(organization_id, Access::Write)],
+        )],
+        organizations: vec![organization(organization_id, vec![])],
+    };
+    (user, facts, Resource::Organization(organization_id))
+}
+
+const CONTRACTORS_READ_ONLY: &str = r#"
+    @id("contractors-read-only")
+    forbid (principal, action == Kanbot::Action::"write", resource)
+    when { principal.groups.contains("contractors") };
+"#;
+
+#[test]
+fn a_deployer_forbid_takes_effect() {
+    let policies = Policies::with_deployer(CONTRACTORS_READ_ONLY).unwrap();
+    let (contractor, facts, resource) = contractor_writer();
+    let decision = policies
+        .decide(&contractor, &facts, Action::Write, resource)
+        .unwrap();
+    assert!(!decision.allowed);
+    assert_eq!(decision.policy_ids, ["deployer.contractors-read-only"]);
+    assert!(
+        policies
+            .decide(&contractor, &facts, Action::Read, resource)
+            .unwrap()
+            .allowed
+    );
+
+    let mut employee = contractor;
+    employee.user.groups = vec!["employees".to_owned()];
+    assert!(
+        policies
+            .decide(&employee, &facts, Action::Write, resource)
+            .unwrap()
+            .allowed
+    );
+    // Forbids bind platform admins too.
+    let mut admin = actor(PlatformRole::Admin);
+    admin.user.groups = vec!["contractors".to_owned()];
+    assert!(
+        !policies
+            .decide(&admin, &facts, Action::Write, resource)
+            .unwrap()
+            .allowed
+    );
+}
+
+#[test]
+fn deployer_forbids_can_use_the_context() {
+    let policies = Policies::with_deployer(
+        r#"
+        @id("admin-from-the-office")
+        forbid (principal, action, resource)
+        when { principal.platformRole == "admin" }
+        unless { context.ip.isInRange(ip("10.0.0.0/8")) && context.via != "bearer" };
+        "#,
+    )
+    .unwrap();
+    let (organization, team, facts) = unrelated();
+    let mut admin = actor(PlatformRole::Admin);
+    let resource = Resource::Organization(organization);
+    admin.ip = "10.1.2.3".parse().unwrap();
+    assert!(
+        policies
+            .decide(&admin, &facts, Action::Read, resource)
+            .unwrap()
+            .allowed
+    );
+    admin.via = Via::Bearer;
+    assert!(
+        !policies
+            .decide(&admin, &facts, Action::Read, resource)
+            .unwrap()
+            .allowed
+    );
+    admin.via = Via::Native;
+    admin.ip = "2001:db8::1".parse().unwrap();
+    assert!(
+        !policies
+            .decide(&admin, &facts, Action::Read, resource)
+            .unwrap()
+            .allowed
+    );
+    // Other users are not affected.
+    let mut maintainer = actor(PlatformRole::User);
+    maintainer.ip = "192.0.2.1".parse().unwrap();
+    let facts = Facts {
+        teams: vec![team_facts_maintained_by(team, maintainer.user.id)],
+        ..facts
+    };
+    assert!(
+        policies
+            .decide(
+                &maintainer,
+                &facts,
+                Action::ManageTeam,
+                Resource::Team(team)
+            )
+            .unwrap()
+            .allowed
+    );
+}
+
+fn team_facts_maintained_by(id: TeamId, maintainer: UserId) -> TeamFacts {
+    team(id, vec![maintainer], vec![])
+}
+
+#[test]
+fn a_deployer_permit_is_refused() {
+    let named = r#"@id("everyone") permit (principal, action, resource);"#;
+    assert!(matches!(
+        Policies::with_deployer(named),
+        Err(PolicyError::Permit(ref which)) if which == "@id \"everyone\""
+    ));
+    let mixed = format!("{CONTRACTORS_READ_ONLY} permit (principal, action, resource);");
+    assert!(matches!(
+        Policies::with_deployer(&mixed),
+        Err(PolicyError::Permit(ref which)) if which == "number 1"
+    ));
+}
+
+#[test]
+fn deployer_templates_are_refused() {
+    let template = r#"@id("t") forbid (principal == ?principal, action, resource);"#;
+    assert!(matches!(
+        Policies::with_deployer(template),
+        Err(PolicyError::Template)
+    ));
+}
+
+#[test]
+fn deployer_policies_must_validate_and_have_ids() {
+    for (text, expected) in [
+        (
+            r#"@id("x") forbid (principal, action, resource) when { principal.nope };"#,
+            "validation",
+        ),
+        (
+            r#"@id("x") forbid (principal, action == Kanbot::Action::"fly", resource);"#,
+            "validation",
+        ),
+        ("forbid (principal, action, resource);", "missing id"),
+        ("forbid (", "parse"),
+        (
+            r#"@id("x") forbid (principal, action, resource);
+               @id("x") forbid (principal, action, resource);"#,
+            "duplicate",
+        ),
+    ] {
+        let error = Policies::with_deployer(text).err().unwrap();
+        let kind = match error {
+            PolicyError::Validation(_) => "validation",
+            PolicyError::MissingId { source_name, .. } => {
+                assert_eq!(source_name, "AUTHZ_POLICY_FILE");
+                "missing id"
+            }
+            PolicyError::Parse { source_name, .. } => {
+                assert_eq!(source_name, "AUTHZ_POLICY_FILE");
+                "parse"
+            }
+            PolicyError::DuplicateId { .. } => "duplicate",
+            other => panic!("{other}"),
+        };
+        assert_eq!(kind, expected, "{text}");
+    }
+}
+
+#[test]
+fn an_empty_deployer_file_changes_nothing() {
+    let policies = Policies::with_deployer("// nothing yet\n").unwrap();
+    let (contractor, facts, resource) = contractor_writer();
+    assert!(
+        policies
+            .decide(&contractor, &facts, Action::Write, resource)
+            .unwrap()
+            .allowed
+    );
+}

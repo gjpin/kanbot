@@ -155,6 +155,7 @@ async fn telemetry_relay_routes_refuse_requests_without_credentials() {
             migrator: &db::MIGRATOR,
             keys: common::idp::static_key_cache(),
             sessions: common::session_config(),
+            authz: common::policies(),
         },
         HttpSettings::new(),
         Some(relay),

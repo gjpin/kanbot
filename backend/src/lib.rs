@@ -45,6 +45,10 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
     // reports not ready until the keys load.
     keys.spawn_refresh();
     sessions::service::spawn_cleanup(db.clone());
+    tracing::info!(
+        deployer_policies = ?config.authz.deployer_policy_ids(),
+        "authorization policies loaded"
+    );
     let relay = config
         .telemetry_relay_upstream
         .map(|upstream| telemetry_relay::routes(upstream, config.rate_limits.telemetry))
@@ -55,6 +59,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             migrator: &db::MIGRATOR,
             keys,
             sessions: Arc::new(config.sessions),
+            authz: Arc::new(config.authz),
         },
         http::HttpSettings::configured(
             config.cors_allowed_origins,

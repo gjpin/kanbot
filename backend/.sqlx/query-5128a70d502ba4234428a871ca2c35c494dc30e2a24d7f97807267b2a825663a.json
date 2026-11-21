@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id\n        FROM teams t\n        WHERE $2\n           OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)\n           OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1)\n        ORDER BY t.slug\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5128a70d502ba4234428a871ca2c35c494dc30e2a24d7f97807267b2a825663a"
+}

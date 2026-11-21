@@ -32,9 +32,9 @@ use crate::{
     },
     error::AppError,
     http::{
-        client_ip::TrustedProxies,
+        client_ip::{ClientIp, TrustedProxies},
         middleware::rate_limit::{
-            RateLimit, client_key, spawn_periodic, too_many_requests, whole_seconds,
+            RateLimit, ip_key, request_client_ip, spawn_periodic, too_many_requests, whole_seconds,
         },
         problem::{ErrorCode, Problem},
     },
@@ -187,10 +187,11 @@ pub async fn authenticate(
     if let Credentials::None = credentials {
         return next.run(request).await;
     }
-    let Some(client) = client_key(&request, &auth.trusted_proxies) else {
+    let Some(ip) = request_client_ip(&request, &auth.trusted_proxies) else {
         tracing::error!("authentication: no peer address (served without connect info)");
         return Problem::new(ErrorCode::Internal).into_response();
     };
+    let client = ip_key(ip);
     if let Err(wait) = auth.failures.peek(&client, Instant::now()) {
         return too_many_requests(whole_seconds(wait));
     }
@@ -211,6 +212,7 @@ pub async fn authenticate(
         }
         Ok((user, session)) => {
             request.extensions_mut().insert(user);
+            request.extensions_mut().insert(ClientIp(ip));
             if let Some(session) = session {
                 request.extensions_mut().insert(session);
             }

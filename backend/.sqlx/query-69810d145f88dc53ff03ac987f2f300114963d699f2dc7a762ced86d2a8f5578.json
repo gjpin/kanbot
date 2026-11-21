@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT o.id\n        FROM organizations o\n        WHERE $2\n           OR o.id IN (SELECT organization_id FROM organization_admins WHERE user_id = $1)\n           OR o.id IN (\n               SELECT l.organization_id\n               FROM organization_teams l\n               JOIN team_members m ON m.team_id = l.team_id\n               WHERE m.user_id = $1\n           )\n        ORDER BY o.slug\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "organizations",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "69810d145f88dc53ff03ac987f2f300114963d699f2dc7a762ced86d2a8f5578"
+}

@@ -3,8 +3,8 @@
 use std::str::FromStr;
 
 use cedar_policy::{
-    Authorizer, Decision as CedarDecision, PolicyId, PolicySet, Request, Schema, ValidationMode,
-    Validator,
+    AuthorizationError, Authorizer, Decision as CedarDecision, Effect, PolicyId, PolicySet,
+    Request, Schema, ValidationMode, Validator,
 };
 
 use crate::authz::{
@@ -16,6 +16,10 @@ const SCHEMA: &str = include_str!("schema.cedarschema");
 const BUILTIN_POLICIES: &str = include_str!("policies.cedar");
 /// Prefix of the built-in policies' IDs: `builtin.<@id>`.
 pub const BUILTIN_PREFIX: &str = "builtin.";
+/// Prefix of the deployer's policies' IDs: `deployer.<@id>`.
+pub const DEPLOYER_PREFIX: &str = "deployer.";
+/// Where the deployer's policies come from, in error messages.
+const DEPLOYER_SOURCE: &str = "AUTHZ_POLICY_FILE";
 
 /// Why the policies cannot be used. Messages are Cedar's diagnostics,
 /// about policy text only (never request data).
@@ -40,6 +44,13 @@ pub enum PolicyError {
     },
     #[error("policies do not validate against the schema: {0}")]
     Validation(String),
+    #[error(
+        "AUTHZ_POLICY_FILE: policy {0} is a permit; only forbid policies may be added \
+         (grants are teams, links and admins)"
+    )]
+    Permit(String),
+    #[error("AUTHZ_POLICY_FILE: policy templates are not supported")]
+    Template,
 }
 
 /// The schema and the policy set every decision is made with.
@@ -68,6 +79,51 @@ impl Policies {
         let built = Self { schema, policies };
         built.validate()?;
         Ok(built)
+    }
+
+    /// The built-in policies plus the deployer's `forbid` policies in
+    /// `text` (`AUTHZ_POLICY_FILE`), validated together.
+    ///
+    /// # Errors
+    ///
+    /// [`PolicyError`] if `text` does not parse, contains a `permit` or a
+    /// template, has a policy without a unique `@id`, or does not validate
+    /// against the schema.
+    pub fn with_deployer(text: &str) -> Result<Self, PolicyError> {
+        let mut built = Self::builtin()?;
+        let parsed = PolicySet::from_str(text).map_err(|error| PolicyError::Parse {
+            source_name: DEPLOYER_SOURCE,
+            message: error.to_string(),
+        })?;
+        if parsed.templates().next().is_some() {
+            return Err(PolicyError::Template);
+        }
+        // Forbid-only keeps two promises: custom policies can never widen
+        // access, and `visible`'s SQL pre-filter stays a superset.
+        for (index, policy) in parsed.policies().enumerate() {
+            if policy.effect() == Effect::Permit {
+                return Err(PolicyError::Permit(match policy.annotation("id") {
+                    Some(id) => format!("@id {id:?}"),
+                    None => format!("number {index}"),
+                }));
+            }
+        }
+        add_named(&mut built.policies, DEPLOYER_SOURCE, text, DEPLOYER_PREFIX)?;
+        built.validate()?;
+        Ok(built)
+    }
+
+    /// The IDs of the deployer's policies, sorted.
+    #[must_use]
+    pub fn deployer_policy_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .policies
+            .policies()
+            .map(|policy| policy.id().to_string())
+            .filter(|id| id.starts_with(DEPLOYER_PREFIX))
+            .collect();
+        ids.sort();
+        ids
     }
 
     fn validate(&self) -> Result<(), PolicyError> {
@@ -116,8 +172,14 @@ impl Policies {
                 .map_err(|error| EntityError(error.to_string()))?;
                 let response = authorizer.is_authorized(&request, &self.policies, &entities);
                 for error in response.diagnostics().errors() {
-                    // Policy text and IDs only: never entity data.
-                    tracing::warn!(error = %error, action = action.name(), "policy evaluation error");
+                    // The policy only: the error's message can quote
+                    // attribute values, such as a user's groups.
+                    let AuthorizationError::PolicyEvaluationError(error) = error;
+                    tracing::warn!(
+                        policy.id = %error.policy_id(),
+                        action = action.name(),
+                        "policy evaluation error"
+                    );
                 }
                 Ok(Decision {
                     allowed: response.decision() == CedarDecision::Allow,

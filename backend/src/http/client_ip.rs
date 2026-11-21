@@ -102,6 +102,11 @@ impl Network {
     }
 }
 
+/// The client's address, in the extensions of an authenticated request
+/// (put there by the authentication middleware).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientIp(pub IpAddr);
+
 /// The client address of a connection from `peer` that carried the
 /// `X-Forwarded-For` headers `forwarded_for` (in order).
 ///

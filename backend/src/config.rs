@@ -13,6 +13,7 @@ use secrecy::SecretString;
 
 use crate::{
     auth::config::{OidcConfig, OidcConfigError},
+    authz::policies::{Policies, PolicyError},
     http::{
         client_ip::{InvalidNetwork, TrustedProxies},
         middleware::rate_limit::{RateLimit, RateLimits},
@@ -65,6 +66,9 @@ pub struct Config {
     /// The Flutter web build to serve at `/` (`WEB_DIR`, default off).
     /// Holds an `index.html`.
     pub web_dir: Option<PathBuf>,
+    /// The built-in policies plus the deployer's `forbid` policies from
+    /// `AUTHZ_POLICY_FILE`, if set.
+    pub authz: Policies,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +100,14 @@ pub enum ConfigError {
     Session(#[from] SessionConfigError),
     #[error("WEB_DIR {0:?} is not a directory with an index.html")]
     WebDir(String),
+    #[error("AUTHZ_POLICY_FILE {path:?} cannot be read")]
+    AuthzPolicyFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Authz(#[from] PolicyError),
 }
 
 impl Config {
@@ -164,6 +176,8 @@ impl Config {
             _ => None,
         };
 
+        let authz = authz_policies(&lookup)?;
+
         let rate_limits = RateLimits {
             ip: rate_limit(
                 &lookup,
@@ -218,6 +232,7 @@ impl Config {
             database_max_connections,
             sessions,
             web_dir,
+            authz,
         })
     }
 }
@@ -275,6 +290,24 @@ pub(crate) fn optional(
         Ok(value) => Ok(Some(value)),
         Err(VarError::NotPresent) => Ok(None),
         Err(source) => Err(ConfigError::Var { name, source }),
+    }
+}
+
+/// The built-in policies, plus the deployer's from `AUTHZ_POLICY_FILE`.
+fn authz_policies(
+    lookup: &impl Fn(&'static str) -> Result<String, VarError>,
+) -> Result<Policies, ConfigError> {
+    match optional(lookup, "AUTHZ_POLICY_FILE")? {
+        Some(raw) if !raw.trim().is_empty() => {
+            let path = raw.trim();
+            let text =
+                std::fs::read_to_string(path).map_err(|source| ConfigError::AuthzPolicyFile {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            Ok(Policies::with_deployer(&text)?)
+        }
+        _ => Ok(Policies::builtin()?),
     }
 }
 
@@ -656,6 +689,42 @@ mod tests {
             web_dir("/nonexistent/kanbot/web"),
             Err(ConfigError::WebDir(_))
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_deployer_policies() {
+        let dir = std::env::temp_dir().join(format!("kanbot-authz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("policies.cedar");
+        let path = file.to_str().unwrap().to_owned();
+        let authz = |raw: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://db"),
+                ("AUTHZ_POLICY_FILE", raw),
+            ]))
+            .map(|config| config.authz)
+        };
+        assert!(matches!(
+            authz(&path).err(),
+            Some(ConfigError::AuthzPolicyFile { path: p, .. }) if p == path
+        ));
+        std::fs::write(&file, r#"@id("all") permit (principal, action, resource);"#).unwrap();
+        assert!(matches!(
+            authz(&format!(" {path} ")).err(),
+            Some(ConfigError::Authz(PolicyError::Permit(_)))
+        ));
+        std::fs::write(
+            &file,
+            r#"@id("none") forbid (principal, action, resource);"#,
+        )
+        .unwrap();
+        let policies = authz(&path).ok().unwrap();
+        assert_eq!(policies.deployer_policy_ids(), ["deployer.none"]);
+        assert_eq!(
+            authz(" ").ok().unwrap().deployer_policy_ids(),
+            Vec::<String>::new()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

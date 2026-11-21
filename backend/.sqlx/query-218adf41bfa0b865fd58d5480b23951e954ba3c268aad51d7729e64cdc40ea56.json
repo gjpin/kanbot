@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.id,\n            COALESCE(\n                (SELECT array_agg(m.user_id ORDER BY m.user_id) FROM team_members m\n                 WHERE m.team_id = t.id AND m.role = 'maintainer'),\n                '{}'\n            ) AS \"maintainers!\",\n            COALESCE(\n                (SELECT array_agg(l.organization_id ORDER BY l.organization_id)\n                 FROM organization_teams l WHERE l.team_id = t.id),\n                '{}'\n            ) AS \"link_organizations!\",\n            COALESCE(\n                (SELECT array_agg(l.access ORDER BY l.organization_id)\n                 FROM organization_teams l WHERE l.team_id = t.id),\n                '{}'\n            ) AS \"link_access!\"\n        FROM teams t\n        WHERE t.id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "maintainers!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "link_organizations!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "link_access!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "218adf41bfa0b865fd58d5480b23951e954ba3c268aad51d7729e64cdc40ea56"
+}
