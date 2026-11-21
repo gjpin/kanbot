@@ -13,7 +13,7 @@ backend/
 ├── openapi.json             # the API contract (generated, committed; the frontend's client is built from it)
 ├── build.rs                 # rebuilds when a migration is added
 ├── compose.yaml             # local Postgres and Authelia; `--profile observability` adds collector + Grafana
-├── dev/                     # local stack: auth-setup.sh, authelia/ config and users, dev.env; .generated/ is git-ignored
+├── dev/                     # local stack: auth-setup.sh, authelia/ config and users, dev.env, policies.cedar; .generated/ is git-ignored
 ├── otel-collector/          # collector config for local development (filters, limits)
 ├── migrations/              # sqlx migrations, one file per change
 ├── .sqlx/                   # offline query metadata from `cargo sqlx prepare` (committed)
@@ -39,9 +39,11 @@ backend/
 │   ├── auth/                # OIDC: config, discovery, JWKS key cache, access-token validation, authentication middleware
 │   ├── users/               # users table (upserted on each authenticated request), /me
 │   ├── sessions/            # kanbot sessions: /auth/* login flow, native handoff, IdP token refresh, cleanup
-│   ├── authz/               # Cedar authorization: can(), visible(), built-in and deployer policies (phase 4)
-│   ├── organizations/       # organizations, their admins and team links (phase 4)
-│   ├── teams/               # teams, members and maintainers, IdP group sync (phase 4)
+│   ├── authz/               # Cedar authorization: schema, built-in and deployer policies, require()/can()/visible_*()
+│   ├── organizations/       # /organizations: organizations, their admins and team links
+│   ├── teams/               # /teams: teams, members and maintainers, IdP group sync
+│   ├── audit/               # the audit log of changes to organizations and teams, GET /audit
+│   ├── names.rs             # slugs and names of organizations and teams
 │   └── <feature>/           # e.g. boards/, cards/
 │       ├── mod.rs           # pub fn routes() -> OpenApiRouter<AppState>
 │       ├── model.rs         # domain types: validated newtypes and entities
@@ -64,7 +66,7 @@ backend/
 
 Create `http/extract.rs`, `benches/` and `fuzz/` only when there is something to put in them.
 
-Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Phases 2 (bearer tokens) and 3 (sessions) are implemented. Modules, files and variables above and below that are not in the tree yet are planned; their phase is noted. Until they exist, create them only as the plan says.
+Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Phases 2 (bearer tokens), 3 (sessions) and 4 (authorization) are implemented.
 
 ### Layering rules
 
@@ -204,7 +206,7 @@ Every outbound call (HTTP or database) must have a timeout. Never spawn unbounde
 
 ### Configuration
 
-All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/telemetry.rs`). Invalid values stop the server at startup; it never falls back to a default for a value that was set. The phase column refers to [`docs/plan/auth.md`](../docs/plan/auth.md): phase 2 is implemented; variables of later phases are not read yet.
+All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/telemetry.rs`). Invalid values stop the server at startup; it never falls back to a default for a value that was set. The phase column refers to the [`docs/plan/auth.md`](../docs/plan/auth.md) phase that added each variable.
 
 | Variable | Phase | Default | Meaning |
 |---|---|---|---|
@@ -273,7 +275,21 @@ These rules hold in every change:
 - **CSRF:** a state-changing request authenticated by the session cookie needs `Origin` equal to `PUBLIC_URL`'s origin and `X-Kanbot-CSRF: 1`, else `403`. Bearer requests are exempt.
 - **Cookies** are `__Host-` (`Secure`, `Path=/`, no `Domain`) and `HttpOnly`: the session is `SameSite=Strict`, the login binding `SameSite=Lax` (it must survive the IdP's redirect).
 - **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom` (`sessions/secrets.rs`); never `rand`. Secrets are compared by looking up their SHA-256 hash in the database, never by comparing strings in memory.
-- **Authorization** (phase 4) is decided by the `authz` module with Cedar. Every feature that touches organization data calls `authz`; never write an ad hoc role check in a handler or service.
+- **Authorization** is decided by the `authz` module with Cedar (§3c). Never write an ad hoc role check in a handler or service.
+
+## 3c. Authorization
+
+The model, the built-in permissions and the deployer policy guide are in [`docs/authorization.md`](../docs/authorization.md). Grants are data (organizations, teams, links, admins); the built-in `permit` policies (`src/authz/policies.cedar`, schema `src/authz/schema.cedarschema`) turn them into access, and deployers can add only `forbid` policies (`AUTHZ_POLICY_FILE`).
+
+- **Every feature that touches organization data calls `authz`**, in its service, before it reads or changes anything:
+  - `authz::service::require(db, policies, actor, action, resource)` before an operation. It returns the decision (its policy IDs go to the audit log), `403` when the actor may see the resource but not do this, and `404` when they may not even see it.
+  - `authz::service::decisions` (or `can`) to tell the app what the caller may do; responses list it as `permissions`.
+  - `authz::service::visible_organizations` / `visible_teams` for lists.
+  Handlers get the actor with the `Caller` extractor (`http/extract.rs`): the user, how they authenticated (`via`) and their address.
+- **Changes are audited**: a service that changes organizations or teams records an `audit::model::NewEntry` with `audit::service::record` in the same transaction. Details hold IDs and enumerated values only.
+- **New features** that belong to an organization use the `read` and `write` actions on it. A new kind of permission is a new action in the schema, a built-in policy and `authz::model::Action`, with tests of what it allows and denies (`src/authz/policies/tests.rs`).
+- **Never add a `permit` outside `policies.cedar`**, and never let deployer policies contain one: `visible_*` pre-filters with SQL for the built-in permits, which is correct only because deployer policies can only remove access. `tests/authz.rs` checks the pre-filter against Cedar for random data.
+- Entities are loaded per decision (`authz/repo.rs`): only the actor's teams and the resources asked about. Keep it that way; do not cache decisions across requests.
 
 ## 4. Testing tools
 

@@ -5,8 +5,9 @@
 > (IdP), and how to set up each supported IdP. **Implemented** and tested end
 > to end against Authelia: bearer-token validation (the API as a resource
 > server), and the login flow through the kanbot backend with sessions for
-> the web and native apps. **Not yet:** authorization (organizations, teams)
-> and the apps' side of the login. Configuration names may still change before the first
+> the web and native apps. Authorization (organizations, teams, Cedar) is in
+> [`authorization.md`](authorization.md). **Not yet:** the apps' side of the
+> login. Configuration names may still change before the first
 > release. The provider setups other than Authelia have not been tested with
 > kanbot yet. Facts about each IdP were checked
 > against its official documentation on 2026-11-20, at the version noted in its
@@ -139,8 +140,6 @@ equals `OIDC_CLIENT_ID` or is listed in `OIDC_ALLOWED_CLIENTS`.
 
 ## Configuration
 
-Variables marked *(planned)* belong to authorization and are not read yet.
-
 | Variable | Required | Meaning |
 |---|---|---|
 | `OIDC_ISSUER` | yes | Issuer URL. Must match the tokens' `iss` and the discovery document's `issuer` exactly. HTTPS only. |
@@ -152,7 +151,7 @@ Variables marked *(planned)* belong to authorization and are not read yet.
 | `OIDC_USER_ROLE` | yes | Role value that grants access, for example `kanbot-user`. |
 | `OIDC_SCOPES` | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
 | `OIDC_SUBJECT_CLAIM` | no | Claim that identifies the user. Default `sub`. Use `oid` for Entra ID. |
-| `OIDC_GROUPS_CLAIM` *(planned)* | no | Dot-separated path to the groups array used to sync team membership. Default: the value of `OIDC_ROLES_CLAIM`. |
+| `OIDC_GROUPS_CLAIM` | no | Dot-separated path to the groups array, used to sync teams with identity provider groups and as `principal.groups` in authorization policies. Default: the value of `OIDC_ROLES_CLAIM`. Without it in a token, the user is in no synced team. |
 | `OIDC_ALLOWED_CLIENTS` | no | Comma-separated client IDs whose bearer tokens may call the API. Default: any client. |
 | `OIDC_JWKS_TTL` | no | Seconds between JWKS refreshes. Default `3600`. |
 | `OIDC_JWKS_ALLOWED_ORIGINS` | no | Extra HTTPS origins allowed to serve the JWKS. |

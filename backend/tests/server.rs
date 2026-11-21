@@ -66,6 +66,7 @@ fn server(listen_addr: SocketAddr, database_url: Option<&str>) -> Command {
         .env_remove("MAX_IN_FLIGHT_REQUESTS")
         .env_remove("DATABASE_MAX_CONNECTIONS")
         .env_remove("WEB_DIR")
+        .env_remove("AUTHZ_POLICY_FILE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -236,6 +237,21 @@ async fn fails_with_a_zero_rate_limit() {
     command.env("RATE_LIMIT_USER_BURST", "0");
     let stderr = stderr_of_failed_start(command).await;
     assert!(stderr.contains("RATE_LIMIT_USER_BURST"), "{stderr}");
+}
+
+#[tokio::test]
+async fn fails_with_a_permit_in_the_deployer_policies() {
+    let path = std::env::temp_dir().join(format!("kanbot-policies-{}.cedar", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"@id("everyone") permit (principal, action, resource);"#,
+    )
+    .unwrap();
+    let mut command = server(free_addr().await, Some(UNREACHABLE_DB));
+    command.env("AUTHZ_POLICY_FILE", &path);
+    let stderr = stderr_of_failed_start(command).await;
+    std::fs::remove_file(&path).unwrap();
+    assert!(stderr.contains("Permit"), "{stderr}");
 }
 
 #[tokio::test]

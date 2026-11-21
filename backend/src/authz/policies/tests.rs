@@ -590,3 +590,36 @@ fn an_empty_deployer_file_changes_nothing() {
             .allowed
     );
 }
+
+#[test]
+fn the_local_stacks_policies_are_valid() {
+    let text = include_str!("../../../dev/policies.cedar");
+    let policies = Policies::with_deployer(text).unwrap();
+    assert_eq!(
+        policies.deployer_policy_ids(),
+        ["deployer.contractors-read-only"]
+    );
+    let (contractor, facts, resource) = contractor_writer();
+    assert!(
+        !policies
+            .decide(&contractor, &facts, Action::Write, resource)
+            .unwrap()
+            .allowed
+    );
+}
+
+#[test]
+fn the_documented_examples_are_valid() {
+    // docs/authorization.md shows the same policies.
+    let examples = include_str!("../examples.cedar");
+    let policies = Policies::with_deployer(examples).unwrap();
+    assert_eq!(
+        policies.deployer_policy_ids(),
+        [
+            "deployer.admin-from-the-office",
+            "deployer.ci-reads-only",
+            "deployer.contractors-read-only",
+            "deployer.freeze-legacy",
+        ]
+    );
+}
