@@ -54,12 +54,13 @@ pub fn decode_standard(text: &str) -> Option<Vec<u8>> {
             .iter()
             .chain(std::iter::repeat(&0))
             .take(4)
-            .fold(0_u32, |n, value| n.checked_shl(6).unwrap_or(0) | value);
+            .try_fold(0_u32, |n, value| n.checked_mul(64)?.checked_add(*value))?;
         let [_, a, b, c] = n.to_be_bytes();
         let (bytes, unused_bits): (&[u8], u32) = match chunk.len() {
             4 => (&[a, b, c], 0),
             3 => (&[a, b], c.into()),
-            2 => (&[a], u32::from(b) | u32::from(c)),
+            // Two characters carry 12 bits: the last 4 land in `b`.
+            2 => (&[a], b.into()),
             _ => return None,
         };
         if unused_bits != 0 {

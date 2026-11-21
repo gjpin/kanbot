@@ -404,6 +404,15 @@ mod tests {
     }
 
     #[test]
+    fn kind_is_the_logged_kind() {
+        assert_eq!(AppError::Unavailable.kind(), "unavailable");
+        assert_eq!(
+            AppError::Database(sqlx::Error::PoolTimedOut).kind(),
+            "database.pool_timed_out"
+        );
+    }
+
+    #[test]
     fn names_each_error_kind() {
         for (error, kind) in [
             (AppError::BadRequest, "bad_request"),

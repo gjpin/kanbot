@@ -186,3 +186,25 @@ async fn without_a_web_dir_nothing_is_served() {
     let response = get(&app(None), Method::GET, "/", HTML).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn unchanged_files_are_revalidated_with_304() {
+    let dir = WebDir::new();
+    let app = app(Some(&dir));
+    let first = get(&app, Method::GET, "/main.dart.js", "*/*").await;
+    let modified = header_of(&first, header::LAST_MODIFIED).to_owned();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/main.dart.js")
+                .header(header::IF_MODIFIED_SINCE, modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(header_of(&response, header::CACHE_CONTROL), "no-cache");
+}

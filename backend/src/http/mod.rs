@@ -151,6 +151,7 @@ impl HttpSettings {
             TrustedProxies::default(),
             RateLimits::DEFAULT,
             NonZeroUsize::new(512).unwrap_or(NonZeroUsize::MIN),
+            None,
         )
     }
 
@@ -162,6 +163,7 @@ impl HttpSettings {
         trusted_proxies: TrustedProxies,
         rate_limits: RateLimits,
         max_in_flight_requests: NonZeroUsize,
+        web_dir: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             allowed_origins,
@@ -169,7 +171,7 @@ impl HttpSettings {
             rate_limits,
             max_in_flight_requests,
             auth_metrics: AuthMetrics::global(),
-            web_dir: None,
+            web_dir,
         }
     }
 }
@@ -331,11 +333,13 @@ mod tests {
             proxies.clone(),
             limits,
             NonZeroUsize::new(7).unwrap(),
+            Some(std::path::PathBuf::from("/srv/web")),
         );
         assert_eq!(settings.allowed_origins, ["https://app.example.com"]);
         assert_eq!(*settings.trusted_proxies, proxies);
         assert_eq!(settings.rate_limits, limits);
         assert_eq!(settings.max_in_flight_requests.get(), 7);
+        assert_eq!(settings.web_dir, Some(std::path::PathBuf::from("/srv/web")));
     }
 
     #[test]
@@ -345,5 +349,6 @@ mod tests {
         assert_eq!(*settings.trusted_proxies, TrustedProxies::default());
         assert_eq!(settings.rate_limits, RateLimits::DEFAULT);
         assert_eq!(settings.max_in_flight_requests.get(), 512);
+        assert_eq!(settings.web_dir, None);
     }
 }

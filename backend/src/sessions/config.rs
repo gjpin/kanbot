@@ -511,6 +511,9 @@ mod tests {
     #[test]
     fn parses_session_keys() {
         let keys = SessionKeys::parse(&format!(" new:{KEY_2} , old:{KEY_1} ,")).unwrap();
+        let ids = SessionKeys::parse(&format!("2026-11_a:{KEY_1},B_2:{KEY_2}")).unwrap();
+        assert_eq!(ids.current().id.as_str(), "2026-11_a");
+        assert!(ids.get("B_2").is_some());
         assert_eq!(keys.current().id.as_str(), "new");
         assert_eq!(keys.current().bytes(), &[2; KEY_BYTES]);
         assert_eq!(keys.get("old").unwrap().bytes(), &[1; KEY_BYTES]);
@@ -584,5 +587,11 @@ mod tests {
             error(read(&[("SESSION_IDLE_TIMEOUT", "31d")])),
             SessionConfigError::IdleAboveAbsolute
         ));
+        let equal = read(&[
+            ("SESSION_IDLE_TIMEOUT", "2d"),
+            ("SESSION_ABSOLUTE_TIMEOUT", "48h"),
+        ])
+        .unwrap();
+        assert_eq!(equal.idle_timeout, equal.absolute_timeout);
     }
 }

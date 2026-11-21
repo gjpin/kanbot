@@ -1319,10 +1319,14 @@ async fn a_refused_refresh_ends_the_session(pool: PgPool) {
     expire_soon(&pool).await;
     idp.set_token(Reply::Status(StatusCode::BAD_REQUEST));
 
+    let response = me_by_bearer(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // A bearer token that stopped working is a bad credential.
     assert_eq!(
-        me_by_bearer(&app, &token).await.status(),
-        StatusCode::UNAUTHORIZED
+        response.headers()[header::WWW_AUTHENTICATE],
+        r#"Bearer error="invalid_token""#
     );
+    assert_eq!(response.headers().get(header::SET_COOKIE), None);
     assert_eq!(session_count(&pool).await, 0);
 }
 
@@ -1725,5 +1729,67 @@ async fn sessions_survive_a_key_rotation(pool: PgPool) {
     assert_eq!(
         me_by_bearer(&only_new, &token).await.status(),
         StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn reading_methods_need_no_csrf_proof(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let cookie = format!("__Host-kanbot_session={token}");
+    for method in [axum::http::Method::HEAD, axum::http::Method::OPTIONS] {
+        let request = Request::builder()
+            .method(method.clone())
+            .uri("/me")
+            .header(header::COOKIE, &cookie);
+        assert_ne!(send(&app, request).await, StatusCode::FORBIDDEN, "{method}");
+    }
+}
+
+#[sqlx::test]
+async fn a_cookie_session_the_idp_ended_is_forgotten(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    idp.set_token(Reply::Status(StatusCode::BAD_REQUEST));
+
+    let response = me_by_cookie(&app, &token).await;
+
+    // Anonymous, not a bad credential: the browser can sign in again.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+    assert!(set_cookies(&response).iter().any(|cookie| {
+        cookie.starts_with("__Host-kanbot_session=;") && cookie.contains("Max-Age=0")
+    }));
+    assert_eq!(session_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn a_stored_token_without_a_role_is_forbidden(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    let id = sqlx::query_scalar!("SELECT id FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let no_role = issued_claims(&idp.issuer, "alice", &["staff"]);
+    let sealed = crypto::seal(
+        &common::session_config().keys,
+        id,
+        Field::AccessToken,
+        &secrecy::SecretString::from(sign("rsa-a", &no_role)),
+    )
+    .unwrap();
+    sqlx::query!("UPDATE sessions SET idp_access_token = $1", sealed)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        me_by_bearer(&app, &token).await.status(),
+        StatusCode::FORBIDDEN
     );
 }
