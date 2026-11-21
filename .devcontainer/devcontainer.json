@@ -1,0 +1,34 @@
+// Development container: see .devcontainer/README.md.
+{
+  "name": "kanbot",
+  "build": { "dockerfile": "Dockerfile" },
+  "features": {
+    // v4.1.3: Docker inside the container, for compose (Postgres, Authelia).
+    "ghcr.io/devcontainers/features/docker-in-docker@sha256:fae40f3c8be5a7c3b0db344c1d30341bc2c91ba38d1d5b14cd2ad72e6d65d084": {}
+  },
+  // The local Authelia's name (backend/AGENTS.md): compose publishes it on
+  // this container's loopback.
+  "runArgs": ["--add-host=auth.kanbot.internal:127.0.0.1"],
+  "containerEnv": {
+    "DATABASE_URL": "postgres://kanbot:kanbot@127.0.0.1:5432/kanbot"
+  },
+  "postCreateCommand": "cd backend && sh dev/auth-setup.sh",
+  // The SQL macros check queries against the dev database: keep it migrated.
+  "postStartCommand": "cd backend && docker compose up -d --wait && sqlx migrate run",
+  "forwardPorts": [3000, 9443],
+  "portsAttributes": {
+    "3000": { "label": "backend" },
+    "9443": { "label": "Authelia" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "Dart-Code.dart-code",
+        "Dart-Code.flutter"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}
