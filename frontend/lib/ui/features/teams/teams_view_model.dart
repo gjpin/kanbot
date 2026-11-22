@@ -1,11 +1,11 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/teams_repository.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// The teams the user may see.
-class TeamsViewModel extends ChangeNotifier {
+class TeamsViewModel extends ViewModel {
   TeamsViewModel({required this._repository});
 
   final TeamsRepository _repository;

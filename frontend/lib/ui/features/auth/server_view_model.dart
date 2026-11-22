@@ -1,25 +1,28 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/config/api_config.dart';
 import 'package:kanbot/data/repositories/api_result.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/data/services/api_connection.dart';
+import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/data/services/server_store.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// Choosing the kanbot server (native apps).
-class ServerViewModel extends ChangeNotifier {
+class ServerViewModel extends ViewModel {
   ServerViewModel({
     required this._connection,
     required this._newConnection,
     required this._auth,
-    required this._store,
+    this._store,
     required this._release,
   });
 
   final ApiConnection _connection;
   final ApiConnection Function() _newConnection;
   final AuthRepository _auth;
-  final ServerStore _store;
+
+  /// Native apps only; the web app never chooses a server.
+  final ServerStore? _store;
   final bool _release;
 
   bool _busy = false;
@@ -34,6 +37,7 @@ class ServerViewModel extends ChangeNotifier {
   /// Checks that [raw] is a kanbot server (`GET /auth/config`), then
   /// remembers it and switches to it. The router then moves on to sign-in.
   Future<void> connect(String raw) async {
+    if (_busy) return;
     final Uri server;
     try {
       server = parseApiBaseUrl(raw.trim(), release: _release);
@@ -43,16 +47,43 @@ class ServerViewModel extends ChangeNotifier {
     }
     _set(busy: true, error: null);
     final probe = _newConnection()..connect(server);
-    final checked = await apiResult(probe.api.auth.config);
-    probe.dispose();
+    final Result<void> checked;
+    try {
+      checked = await _probe(probe);
+    } finally {
+      probe.dispose();
+    }
     switch (checked) {
       case Failure(:final error):
         _set(busy: false, error: error);
       case Ok():
-        await _store.write(server);
+        try {
+          await _store?.write(server);
+        } on Exception {
+          // Secure storage failed: connect anyway; the server is asked
+          // for again on the next start.
+        }
         _connection.connect(server);
         _set(busy: false, error: null);
         await _auth.refresh();
+    }
+  }
+
+  /// `GET /auth/config` on [probe]. A server that answers, but not like
+  /// kanbot (another site's page, a `404`), is [NotKanbotServerException].
+  static Future<Result<void>> _probe(ApiConnection probe) async {
+    try {
+      final checked = await apiResult(probe.api.auth.config);
+      return switch (checked) {
+        Ok() => const Ok(null),
+        Failure(error: ApiNotFoundException()) => const Failure(
+          NotKanbotServerException(),
+        ),
+        Failure(:final error) => Failure(error),
+      };
+    } on Object {
+      // Not this API's contract: some other server answered 200.
+      return const Failure(NotKanbotServerException());
     }
   }
 

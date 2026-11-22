@@ -28,30 +28,49 @@ class TelemetryConsent {
   Future<void> pending = Future.value();
 
   void _update() {
-    pending = pending.then((_) => _apply());
+    // Each update runs after the previous one, whether it failed or not.
+    pending = pending.then((_) => _apply(), onError: (_) => _apply());
   }
 
-  Future<void> _apply() async {
+  bool get _allowed {
     final user = _auth.user;
     final server = _auth.server;
-    final baseUrl = _connection.baseUrl;
-    final allowed =
-        _auth.status == AuthStatus.signedIn &&
+    return _auth.status == AuthStatus.signedIn &&
         user != null &&
         user.telemetryOptIn &&
         server != null &&
         server.telemetryAvailable &&
-        baseUrl != null;
-    if (!allowed) {
-      await _exporters.disable();
-      return;
+        _connection.baseUrl != null;
+  }
+
+  Future<void> _apply() async {
+    try {
+      final baseUrl = _connection.baseUrl;
+      if (!_allowed || baseUrl == null) {
+        await _exporters.disable();
+        return;
+      }
+      final store = _tokenStore;
+      final token = store == null ? null : await store.read();
+      // Signed out meanwhile, or (natively) no session token to send it
+      // with: nothing goes out.
+      if (!_allowed || (store != null && token == null)) {
+        await _exporters.disable();
+        return;
+      }
+      await _exporters.enable(telemetryEndpoint(baseUrl), {
+        'x-kanbot-csrf': '1',
+        'authorization': ?(token == null ? null : 'Bearer $token'),
+      });
+    } on Object {
+      // Secure storage or an exporter failed: send nothing rather than
+      // risk sending without consent.
+      try {
+        await _exporters.disable();
+      } on Object {
+        // Nothing more to do.
+      }
     }
-    final store = _tokenStore;
-    final token = store == null ? null : await store.read();
-    await _exporters.enable(telemetryEndpoint(baseUrl), {
-      'x-kanbot-csrf': '1',
-      'authorization': ?(token == null ? null : 'Bearer $token'),
-    });
   }
 
   void dispose() => _auth.removeListener(_update);

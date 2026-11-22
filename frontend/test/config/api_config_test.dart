@@ -42,6 +42,12 @@ void main() {
         ...loopbackUrls,
         'https://localhost:3000',
         'https://127.0.0.1',
+        'https://127.0.0.2',
+        'https://localhost.',
+        'https://api.localhost',
+        'https://0.0.0.0',
+        'https://[0:0:0:0:0:0:0:1]',
+        'https://[::ffff:127.0.0.1]',
       ]) {
         expect(
           () => parseApiBaseUrl(raw, release: true),
@@ -65,6 +71,10 @@ void main() {
           'https://api.example.com?x=1',
           'https://api.example.com#top',
           'https://exa mple.com',
+          'https://..',
+          'https://---',
+          'https://-a.example.com',
+          'https://a..example.com',
         ]) {
           expect(
             () => parseApiBaseUrl(raw, release: release),

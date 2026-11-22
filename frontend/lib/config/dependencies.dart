@@ -39,9 +39,13 @@ class AppDependencies {
     Uri? defaultServer,
   }) {
     final tokenStore = web ? null : TokenStore();
+    final connection = ApiConnection(
+      newHttpClient: http.Client.new,
+      tokenStore: tokenStore,
+    );
+    // Checking another server never carries the current session token.
     ApiConnection newConnection() =>
-        ApiConnection(newHttpClient: http.Client.new, tokenStore: tokenStore);
-    final connection = newConnection();
+        ApiConnection(newHttpClient: http.Client.new);
     final auth = AuthRepository(
       connection: connection,
       web: web,
@@ -81,7 +85,8 @@ class AppDependencies {
   /// The current server.
   final ApiConnection connection;
 
-  /// A connection of its own, to check a server before switching to it.
+  /// A connection of its own, without the session token, to check a
+  /// server before switching to it.
   final ApiConnection Function() newConnection;
 
   /// The session.
@@ -101,11 +106,20 @@ class AppDependencies {
   /// default one natively), then loads the session in the background.
   /// Without a server, the router asks the user for one.
   Future<void> start({Uri? page}) async {
-    final server = web && page != null
-        ? webApiBaseUrl(page)
-        : await serverStore?.read(release: release) ?? defaultServer;
-    if (server == null) return;
-    connection.connect(server);
+    if (web && page != null) {
+      connectWeb(page);
+    } else {
+      final server = await serverStore?.read(release: release) ?? defaultServer;
+      if (server == null) return;
+      connection.connect(server);
+    }
     await auth.refresh();
+  }
+
+  /// The web app: connects to the origin of [page] at once, so the first
+  /// frame already knows its server (it never asks for one). Call before
+  /// `runApp`.
+  void connectWeb(Uri page) {
+    if (!connection.isConnected) connection.connect(webApiBaseUrl(page));
   }
 }

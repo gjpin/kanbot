@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kanbot/config/dependencies.dart';
@@ -41,7 +43,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
   @override
   void initState() {
     super.initState();
-    _viewModel.load().ignore();
+    unawaited(_viewModel.load());
   }
 
   @override
@@ -315,7 +317,7 @@ class _LinkTeamDialogState extends State<LinkTeamDialog> {
   @override
   void initState() {
     super.initState();
-    _load().ignore();
+    unawaited(_load());
   }
 
   Future<void> _load() async {

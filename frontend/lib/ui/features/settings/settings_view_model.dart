@@ -1,13 +1,13 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/data/services/api_connection.dart';
 import 'package:kanbot/data/services/server_store.dart';
 import 'package:kanbot/domain/models/server.dart';
 import 'package:kanbot/domain/models/user.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// The user's settings: telemetry consent, signing out, the server.
-class SettingsViewModel extends ChangeNotifier {
+class SettingsViewModel extends ViewModel {
   SettingsViewModel({
     required this._auth,
     required this._connection,
@@ -47,8 +47,12 @@ class SettingsViewModel extends ChangeNotifier {
   /// Signs out and forgets the server; the router shows the server page.
   Future<void> changeServer() async {
     await _auth.signOut();
-    await _serverStore?.clear();
-    _auth.forgetServer();
+    try {
+      await _serverStore?.clear();
+    } on Exception {
+      // Secure storage failed: the server comes back on the next start.
+    }
+    await _auth.forgetServer();
     _connection.disconnect();
   }
 

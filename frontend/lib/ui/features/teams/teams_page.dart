@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kanbot/config/dependencies.dart';
@@ -29,7 +31,7 @@ class _TeamsPageState extends State<TeamsPage> {
   @override
   void initState() {
     super.initState();
-    _viewModel.load().ignore();
+    unawaited(_viewModel.load());
   }
 
   @override

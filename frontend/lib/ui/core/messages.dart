@@ -28,6 +28,8 @@ abstract final class Messages {
   static const String signIn = 'Sign in';
   static const String signOut = 'Sign out';
   static const String signInCancelled = 'Sign-in was cancelled.';
+  static const String signInFailed =
+      'The browser could not complete the sign-in. Please try again.';
   static const String loading = 'Loading…';
   static const String retry = 'Try again';
 
@@ -124,7 +126,9 @@ abstract final class Messages {
   /// the error code itself (AGENTS.md §3).
   static String error(Exception error) => switch (error) {
     SignInCancelledException() => signInCancelled,
+    SignInFailedException() => signInFailed,
     SignInRefusedException(:final code) => signInRefused(code),
+    NotKanbotServerException() => notKanbot,
     FormatException() => invalidServer,
     ApiUnauthorizedException() => 'Your session has ended. Sign in again.',
     ApiForbiddenException(code: 'account_disabled') =>

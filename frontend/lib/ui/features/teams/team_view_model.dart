@@ -1,8 +1,8 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/teams_repository.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/domain/models/user.dart';
 import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// A team and the members loaded so far; `next`, when set, means there
@@ -10,7 +10,7 @@ import 'package:kanbot/utils/result.dart';
 typedef TeamDetails = ({Team team, List<Member> members, String? next});
 
 /// One team: its settings, identity provider group and members.
-class TeamViewModel extends ChangeNotifier {
+class TeamViewModel extends ViewModel {
   TeamViewModel({required this.id, required this._teams});
 
   final String id;

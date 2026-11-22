@@ -1,11 +1,11 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/users_repository.dart';
 import 'package:kanbot/domain/models/audit.dart';
 import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// The audit log, newest first, a page at a time.
-class AuditViewModel extends ChangeNotifier {
+class AuditViewModel extends ViewModel {
   AuditViewModel({required this._users});
 
   final UsersRepository _users;

@@ -1,6 +1,5 @@
 import 'package:flutter/widgets.dart';
 import 'package:kanbot/config/dependencies.dart';
-import 'package:kanbot/data/services/server_store.dart';
 import 'package:kanbot/ui/core/centered_card.dart';
 import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/features/auth/server_view_model.dart';
@@ -21,7 +20,7 @@ class _ServerPageState extends State<ServerPage> {
     connection: widget.dependencies.connection,
     newConnection: widget.dependencies.newConnection,
     auth: widget.dependencies.auth,
-    store: widget.dependencies.serverStore ?? ServerStore(),
+    store: widget.dependencies.serverStore,
     release: widget.dependencies.release,
   );
   final TextEditingController _url = TextEditingController();

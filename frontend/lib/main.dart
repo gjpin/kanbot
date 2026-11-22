@@ -25,6 +25,7 @@ Future<void> main() async {
     telemetry: telemetry,
     defaultServer: defaultServer,
   );
+  if (kIsWeb) dependencies.connectWeb(browser.currentPage());
   final router = createRouter(dependencies: dependencies);
   reportNavigation(router);
   runApp(KanbotApp(router: router));

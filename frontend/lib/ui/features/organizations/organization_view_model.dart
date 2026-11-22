@@ -1,10 +1,10 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/organizations_repository.dart';
 import 'package:kanbot/data/repositories/teams_repository.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/domain/models/user.dart';
 import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// An organization with its admins and the teams that have access.
@@ -15,7 +15,7 @@ typedef OrganizationDetails = ({
 });
 
 /// One organization: its settings, admins and team links.
-class OrganizationViewModel extends ChangeNotifier {
+class OrganizationViewModel extends ViewModel {
   OrganizationViewModel({
     required this.id,
     required this._organizations,

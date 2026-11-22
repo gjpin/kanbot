@@ -28,11 +28,13 @@ import 'package:kanbot/data/services/token_store.dart';
 class ApiClient extends http.BaseClient {
   ApiClient({
     required this._httpClient,
-    required this._baseUrl,
+    required Uri baseUrl,
     this._tokenStore,
     this.onUnauthorized,
     this.timeout = defaultTimeout,
-  });
+  }) : _baseUrl = baseUrl.path.endsWith('/')
+           ? baseUrl
+           : baseUrl.replace(path: '${baseUrl.path}/');
 
   static const Duration defaultTimeout = Duration(seconds: 15);
 
@@ -49,7 +51,8 @@ class ApiClient extends http.BaseClient {
   /// How long a request may take, including reading the response body.
   final Duration timeout;
 
-  /// The API base URL that every request must stay below.
+  /// The API base URL that every request must stay below, ending with `/`
+  /// (so `/v1` never matches `/v1-other`).
   Uri get baseUrl => _baseUrl;
 
   /// Sends [request] to the API.
@@ -139,8 +142,21 @@ class ApiClient extends http.BaseClient {
     }
   }
 
+  /// A path segment that names a user, organization or team: a UUID.
+  static final RegExp _idSegment = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
+  /// [path] with IDs replaced by `:id`, like a route template: which user
+  /// or organization a request was about is personal data (AGENTS.md §3a).
+  static String templatePath(String path) => path
+      .split('/')
+      .map((segment) => _idSegment.hasMatch(segment) ? ':id' : segment)
+      .join('/');
+
   /// A client span following the HTTP semantic conventions. The URL is
-  /// recorded without its query, which can carry personal data.
+  /// recorded without its query, which can carry personal data, and with
+  /// its IDs as `:id`.
   static APISpan _startSpan(http.BaseRequest request) {
     final url = request.url;
     return OTelAPI.tracer(telemetryScope).startSpan(
@@ -154,7 +170,7 @@ class ApiClient extends http.BaseClient {
           scheme: url.scheme,
           host: url.host,
           port: url.port,
-          path: url.path,
+          path: templatePath(url.path),
         ).toString(),
       }),
     );

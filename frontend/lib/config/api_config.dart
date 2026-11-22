@@ -7,18 +7,39 @@ const String apiBaseUrlDefine = String.fromEnvironment('API_BASE_URL');
 /// Whether `API_BASE_URL` was passed at build time.
 const bool apiBaseUrlDefined = bool.hasEnvironment('API_BASE_URL');
 
-/// Hosts that may be reached over plain `http://` during local development.
-/// `10.0.2.2` is the host machine as seen from the Android emulator.
-const Set<String> _loopbackHosts = {
-  'localhost',
-  '127.0.0.1',
-  '::1',
-  '10.0.2.2',
-};
+/// `10.0.2.2`: the host machine as seen from the Android emulator, which
+/// local development reaches over plain `http://` too.
+const String _emulatorHost = '10.0.2.2';
 
-/// A DNS name, IPv4 address or (bracket-less, as [Uri.host] returns it) IPv6
-/// address. [Uri.parse] percent-encodes anything else instead of rejecting it.
-final RegExp _validHost = RegExp(r'^[a-z0-9.:-]+$');
+/// A DNS name (labels of letters, digits and inner `-`), or an IP address
+/// (IPv6 without brackets, as [Uri.host] returns it). [Uri.parse]
+/// percent-encodes anything else instead of rejecting it.
+final RegExp _validHost = RegExp(
+  r'^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?$'
+  r'|^[0-9a-f:.]*:[0-9a-f:.]*$',
+);
+
+/// Whether [host] (lower case, as [Uri.host] returns it) is this machine or
+/// local development: `localhost` and its subdomains, `127.0.0.0/8`,
+/// `0.0.0.0`, the IPv6 loopback in any spelling, IPv4-mapped loopback, and
+/// the Android emulator's host.
+bool isLoopbackHost(String host) {
+  final name = host.endsWith('.') ? host.substring(0, host.length - 1) : host;
+  if (name == 'localhost' || name.endsWith('.localhost')) return true;
+  if (name == _emulatorHost || name == '0.0.0.0' || name.startsWith('127.')) {
+    return true;
+  }
+  if (!name.contains(':')) return false;
+  final mapped = name.startsWith('::ffff:') ? name.substring(7) : null;
+  if (mapped != null && mapped.startsWith('127.')) return true;
+  // ::1 in any spelling: all groups zero but the last, which is 1.
+  final groups = name.split(':').where((group) => group.isNotEmpty).toList();
+  return groups.isNotEmpty &&
+      int.tryParse(groups.last, radix: 16) == 1 &&
+      groups
+          .take(groups.length - 1)
+          .every((group) => int.tryParse(group, radix: 16) == 0);
+}
 
 /// Parses and validates a kanbot server URL, the API base URL (AGENTS.md
 /// §2: HTTPS only, except loopback during development).
@@ -43,7 +64,7 @@ Uri parseApiBaseUrl(String raw, {required bool release}) {
       'fragment',
     );
   }
-  final isLoopback = _loopbackHosts.contains(uri.host);
+  final isLoopback = isLoopbackHost(uri.host);
   if (release && isLoopback) {
     throw const FormatException(
       'the server URL must not point at a loopback host in a release build',

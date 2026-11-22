@@ -52,6 +52,20 @@ void main() {
     expect(span.attributes.getInt('http.response.status_code'), 200);
   });
 
+  test('records IDs in the URL as :id', () async {
+    await client(MockClient((_) async => http.Response('ok', 200))).get(
+      Uri.parse(
+        'https://api.example.com/v1/organizations/'
+        '0A1B2C3D-0000-4000-8000-000000000001/admins/'
+        '11111111-1111-4111-8111-111111111111',
+      ),
+    );
+    expect(
+      onlySpan().attributes.getString('url.full'),
+      'https://api.example.com/v1/organizations/:id/admins/:id',
+    );
+  });
+
   test('sends the span as the traceparent of the request', () async {
     final sent = <Map<String, String>>[];
 

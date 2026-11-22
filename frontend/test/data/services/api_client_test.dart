@@ -119,6 +119,20 @@ void main() {
     expect(requests, isEmpty);
   });
 
+  test('a base URL without its final slash is no prefix of others', () async {
+    final (httpClient, requests) = recording();
+    final noSlash = ApiClient(
+      httpClient: httpClient,
+      baseUrl: Uri.parse('https://api.example.com/v1'),
+    );
+    expect(noSlash.baseUrl.path, '/v1/');
+    await expectLater(
+      noSlash.get(Uri.parse('https://api.example.com/v1-other/boards')),
+      throwsArgumentError,
+    );
+    expect(requests, isEmpty);
+  });
+
   test('accepts URLs below the base URL', () async {
     final (httpClient, requests) = recording();
 

@@ -24,6 +24,8 @@ Uri telemetryEndpoint(Uri apiBaseUrl) => apiBaseUrl.resolve('telemetry');
 /// details that can identify a person. `--dart-define=OTEL_SDK_DISABLED=true`
 /// turns telemetry off.
 Future<void> initTelemetry(TelemetryExporters exporters) async {
+  final spans = BatchSpanProcessor(exporters.spans);
+  final logs = BatchLogRecordProcessor(exporters.logs);
   await OTel.initialize(
     serviceName: telemetryScope,
     serviceVersion: serviceVersion,
@@ -32,9 +34,15 @@ Future<void> initTelemetry(TelemetryExporters exporters) async {
     resourceAttributes: OTel.attributesFromMap({
       'os.type': defaultTargetPlatform.name,
     }),
-    spanProcessor: BatchSpanProcessor(exporters.spans),
-    logRecordProcessor: BatchLogRecordProcessor(exporters.logs),
+    spanProcessor: spans,
+    logRecordProcessor: logs,
   );
+  // What the processors still hold when export starts was recorded
+  // before consent: flushed into the closed gate, so it is dropped.
+  exporters.flushBuffered = () async {
+    await spans.forceFlush();
+    await logs.forceFlush();
+  };
 }
 
 /// Builds the OTLP/HTTP exporters for the relay at [endpoint], sending
@@ -77,9 +85,16 @@ class TelemetryExporters {
   /// Whether telemetry is being sent.
   bool get enabled => _active != null;
 
-  /// Sends from now on to [endpoint] with [headers].
+  /// Empties the SDK's buffers through the exporters (set by
+  /// [initTelemetry]).
+  Future<void> Function()? flushBuffered;
+
+  /// Sends from now on to [endpoint] with [headers]. Telemetry recorded
+  /// before (still buffered by the SDK) is dropped first: it predates the
+  /// user's consent.
   Future<void> enable(Uri endpoint, Map<String, String> headers) async {
     await disable();
+    await flushBuffered?.call();
     _active = _create(endpoint, headers);
   }
 

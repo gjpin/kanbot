@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/features/organizations/organization_page.dart';
@@ -110,6 +111,30 @@ void main() {
       ..on('GET', '/organizations/$orgId/teams', [
         {'team': teamSummary(), 'access': 'write'},
       ]);
+
+    testWidgets('another organization is another page', (tester) async {
+      const otherId = '33333333-3333-4333-8333-333333333333';
+      final backend = backendFor()
+        ..on(
+          'GET',
+          '/organizations/$otherId',
+          organization(id: otherId, name: 'Globex'),
+        )
+        ..on('GET', '/organizations/$otherId/admins', <Object?>[])
+        ..on('GET', '/organizations/$otherId/teams', <Object?>[]);
+      await pumpApp(
+        tester,
+        await signedIn(backend),
+        location: Routes.organization(orgId),
+      );
+      expect(find.text('Acme'), findsWidgets);
+
+      final router = GoRouter.of(tester.element(find.byType(OrganizationPage)));
+      router.go(Routes.organization(otherId));
+      await tester.pumpAndSettle();
+      expect(find.text('Globex'), findsWidgets);
+      expect(find.text('Acme'), findsNothing);
+    });
 
     testWidgets('readers see the organization, and no controls', (
       tester,

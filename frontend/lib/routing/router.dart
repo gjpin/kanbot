@@ -88,7 +88,13 @@ GoRouter createRouter({
       GoRoute(
         path: '/organizations/:id',
         builder: (context, state) => switch (id(state)) {
-          final id? => OrganizationPage(dependencies: dependencies, id: id),
+          // Keyed by ID: another organization is another page, with its
+          // own ViewModel and data.
+          final id? => OrganizationPage(
+            key: ValueKey(id),
+            dependencies: dependencies,
+            id: id,
+          ),
           null => const NotFoundPage(),
         },
       ),
@@ -99,7 +105,11 @@ GoRouter createRouter({
       GoRoute(
         path: '/teams/:id',
         builder: (context, state) => switch (id(state)) {
-          final id? => TeamPage(dependencies: dependencies, id: id),
+          final id? => TeamPage(
+            key: ValueKey(id),
+            dependencies: dependencies,
+            id: id,
+          ),
           null => const NotFoundPage(),
         },
       ),

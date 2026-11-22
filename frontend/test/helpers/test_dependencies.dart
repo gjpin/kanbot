@@ -41,9 +41,12 @@ AppDependencies testDependencies({
   FlutterSecureStorage.setMockInitialValues(Map.of(storage));
   final server = backend ?? FakeBackend();
   final tokenStore = web ? null : TokenStore();
-  ApiConnection newConnection() =>
-      ApiConnection(newHttpClient: server.client, tokenStore: tokenStore);
-  final connection = newConnection();
+  final connection = ApiConnection(
+    newHttpClient: server.client,
+    tokenStore: tokenStore,
+  );
+  // As in the app: checking a server never carries the session token.
+  ApiConnection newConnection() => ApiConnection(newHttpClient: server.client);
   if (connected) connection.connect(testServer);
   return AppDependencies(
     web: web,

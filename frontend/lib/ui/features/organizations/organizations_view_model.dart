@@ -1,11 +1,11 @@
-import 'package:flutter/foundation.dart';
 import 'package:kanbot/data/repositories/organizations_repository.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/ui/core/loadable.dart';
+import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
 /// The organizations the user may read.
-class OrganizationsViewModel extends ChangeNotifier {
+class OrganizationsViewModel extends ViewModel {
   OrganizationsViewModel({required this._repository});
 
   final OrganizationsRepository _repository;

@@ -29,6 +29,12 @@ final class SignInRefusedException implements Exception {
   final String code;
 }
 
+/// The server did not answer like a kanbot server (a page that is not its
+/// API, a sign-in page on another site).
+final class NotKanbotServerException implements Exception {
+  const NotKanbotServerException();
+}
+
 /// How a platform receives the end of a native sign-in.
 typedef NativeRedirect = ({String redirectUri, String callback});
 
@@ -135,6 +141,11 @@ class AuthRepository extends ChangeNotifier {
           return Failure(error);
       }
     }
+    // The server says where to sign in: only ever a page of its own.
+    final baseUrl = _connection.baseUrl;
+    if (baseUrl == null || !isBelow(server.loginUrl, baseUrl)) {
+      return const Failure(NotKanbotServerException());
+    }
     if (_web) {
       _navigate(server.loginUrl.replace(queryParameters: {'platform': 'web'}));
       return const Ok(null);
@@ -160,9 +171,17 @@ class AuthRepository extends ChangeNotifier {
       );
     } on SignInCancelledException catch (error) {
       return Failure(error);
+    } on SignInFailedException catch (error) {
+      return Failure(error);
     }
+    final expected = Uri.parse(redirect.redirectUri);
     final code = result.queryParameters['code'];
-    if (code == null || result.path != Uri.parse(redirect.redirectUri).path) {
+    final ours =
+        result.scheme == expected.scheme &&
+        result.host == expected.host &&
+        result.port == expected.port &&
+        result.path == expected.path;
+    if (!ours || code == null || code.isEmpty) {
       return Failure(
         SignInRefusedException(result.queryParameters['error'] ?? 'unknown'),
       );
@@ -190,8 +209,8 @@ class AuthRepository extends ChangeNotifier {
     await _tokenStore?.clear();
     _setSignedOut();
     if (result case Ok(:final value) when _web) {
-      final logoutUrl = value.logoutUrl;
-      if (logoutUrl != null) _navigate(Uri.parse(logoutUrl));
+      final logoutUrl = Uri.tryParse(value.logoutUrl ?? '');
+      if (logoutUrl != null && isLogoutUrl(logoutUrl)) _navigate(logoutUrl);
     }
   }
 
@@ -227,11 +246,37 @@ class AuthRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Forgets the server's settings (a native user changes server).
-  void forgetServer() {
+  /// Forgets the server's settings and its session token (a native user
+  /// changes server): the token must never reach another server.
+  Future<void> forgetServer() async {
     _server = null;
+    try {
+      await _tokenStore?.clear();
+    } on Exception {
+      // Secure storage failed: the token cannot be read either, and a new
+      // sign-in replaces it.
+    }
     _setSignedOut();
   }
+}
+
+/// Whether [url] is a page of the server at [baseUrl]: same scheme, host
+/// and port, below its path, without credentials.
+bool isBelow(Uri url, Uri baseUrl) =>
+    url.scheme == baseUrl.scheme &&
+    url.host == baseUrl.host &&
+    url.port == baseUrl.port &&
+    url.userInfo.isEmpty &&
+    url.path.startsWith(baseUrl.path);
+
+/// Whether [url] may be the identity provider's logout page: `https` (or
+/// `http` on a loopback host, for development), with a host and no
+/// credentials. Anything else (`javascript:`, a relative URL) is ignored.
+bool isLogoutUrl(Uri url) {
+  final loopback = const {'localhost', '127.0.0.1', '::1'}.contains(url.host);
+  return (url.scheme == 'https' || (url.scheme == 'http' && loopback)) &&
+      url.host.isNotEmpty &&
+      url.userInfo.isEmpty;
 }
 
 /// The native redirect on Android, iOS and macOS: the app's scheme.

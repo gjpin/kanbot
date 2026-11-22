@@ -169,18 +169,56 @@ void main() {
     });
 
     test('a redirect elsewhere is refused', () async {
-      webAuth.answer = (_) => Uri.parse('dev.sideral.kanbot:/other?code=kbc_x');
+      for (final answer in [
+        'dev.sideral.kanbot:/other?code=kbc_x',
+        'other.app:/auth/done?code=kbc_x',
+        'https://evil.example/auth/done?code=kbc_x',
+        'dev.sideral.kanbot:/auth/done?code=',
+      ]) {
+        webAuth.answer = (_) => Uri.parse(answer);
+        final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+        final result = await auth.signIn();
+        expect(
+          result,
+          isA<Failure<void>>().having(
+            (f) => f.error,
+            'error',
+            isA<SignInRefusedException>(),
+          ),
+          reason: answer,
+        );
+      }
+      expect(backend.sent('POST', '/auth/token'), isEmpty);
+    });
+
+    test('a failing browser hand-off is a failure', () async {
+      webAuth.answer = (_) => throw const SignInFailedException();
       final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
-      final result = await auth.signIn();
       expect(
-        result,
+        await auth.signIn(),
         isA<Failure<void>>().having(
           (f) => f.error,
           'error',
-          isA<SignInRefusedException>(),
+          isA<SignInFailedException>(),
         ),
       );
-      expect(backend.sent('POST', '/auth/token'), isEmpty);
+    });
+
+    test('a sign-in page on another site is never opened', () async {
+      backend.on('GET', '/auth/config', {
+        ...authConfig(),
+        'login_url': 'https://evil.example/auth/login',
+      });
+      final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+      expect(
+        await auth.signIn(),
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<NotKanbotServerException>(),
+        ),
+      );
+      expect(webAuth.opened, isEmpty);
     });
 
     test('cancelling is a failure, not an error', () async {
@@ -272,6 +310,30 @@ void main() {
         '1',
       );
       expect(auth.status, AuthStatus.signedIn);
+    });
+
+    test('a logout URL that is not a web page is ignored', () async {
+      for (final logoutUrl in [
+        'javascript:alert(1)',
+        'http://idp.example.com/logout',
+        'https://user:pass@idp.example.com/logout',
+        '/relative',
+      ]) {
+        final backend = FakeBackend()
+          ..on('GET', '/auth/config', authConfig())
+          ..on('GET', '/me', me())
+          ..on('POST', '/auth/logout', {'logout_url': logoutUrl});
+        final navigations = <Uri>[];
+        final auth = testDependencies(
+          backend: backend,
+          web: true,
+          navigations: navigations,
+        ).auth;
+        await auth.refresh();
+        await auth.signOut();
+        expect(auth.status, AuthStatus.signedOut, reason: logoutUrl);
+        expect(navigations, isEmpty, reason: logoutUrl);
+      }
     });
   });
 

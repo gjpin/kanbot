@@ -71,6 +71,18 @@ void main() {
     expect(gate.enabled, isFalse);
   });
 
+  test('what was buffered before consent is dropped', () async {
+    final gate = exporters();
+    final order = <String>[];
+    gate.flushBuffered = () async {
+      // Still closed while the SDK empties its buffers.
+      order.add('flushed while ${gate.enabled ? 'open' : 'closed'}');
+    };
+    await gate.enable(Uri.parse('https://kanbot.example.com/telemetry'), {});
+    expect(order, ['flushed while closed']);
+    expect(gate.enabled, isTrue);
+  });
+
   /// A session for [user], with telemetry consent watching it.
   Future<(TelemetryConsent, TelemetryExporters, AppDependencies)> watch(
     FakeBackend backend, {
@@ -166,6 +178,54 @@ void main() {
     await consent.pending;
     expect(gate.enabled, isTrue);
     await dependencies.auth.signOut();
+    await consent.pending;
+    expect(gate.enabled, isFalse);
+    consent.dispose();
+  });
+
+  test('a failing update sends nothing and does not stop later ones', () async {
+    final backend = FakeBackend();
+    final (consent, _, dependencies) = await watch(backend, user: me());
+    consent.dispose();
+    var calls = 0;
+    final gate = TelemetryExporters(
+      create: (endpoint, headers) {
+        calls++;
+        if (calls == 1) throw StateError('exporter failed');
+        final recorder = _Recorder();
+        return (spans: recorder, logs: recorder);
+      },
+    );
+    final watching = TelemetryConsent(
+      auth: dependencies.auth,
+      connection: dependencies.connection,
+      exporters: gate,
+      tokenStore: TokenStore(),
+    );
+    backend.on('PUT', '/me/preferences', me(telemetryOptIn: true));
+    await dependencies.auth.setTelemetryOptIn(optIn: true);
+    await watching.pending;
+    expect(gate.enabled, isFalse, reason: 'the exporter failed');
+
+    // The next change is still applied.
+    backend.on('PUT', '/me/preferences', me(telemetryOptIn: true));
+    await dependencies.auth.setTelemetryOptIn(optIn: true);
+    await watching.pending;
+    expect(gate.enabled, isTrue);
+    watching.dispose();
+  });
+
+  test('a native session without a token sends nothing', () async {
+    final backend = FakeBackend();
+    final (consent, gate, dependencies) = await watch(
+      backend,
+      user: me(telemetryOptIn: true),
+    );
+    expect(gate.enabled, isTrue);
+    await TokenStore().clear();
+    // The next change finds no session token: nothing may go out.
+    backend.on('PUT', '/me/preferences', me(telemetryOptIn: true));
+    await dependencies.auth.setTelemetryOptIn(optIn: true);
     await consent.pending;
     expect(gate.enabled, isFalse);
     consent.dispose();

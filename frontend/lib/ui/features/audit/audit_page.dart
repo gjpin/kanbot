@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/ui/core/app_page.dart';
@@ -24,7 +26,7 @@ class _AuditPageState extends State<AuditPage> {
   @override
   void initState() {
     super.initState();
-    _viewModel.load().ignore();
+    unawaited(_viewModel.load());
   }
 
   @override

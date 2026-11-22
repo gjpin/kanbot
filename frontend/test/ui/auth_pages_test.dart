@@ -48,9 +48,53 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(ServerPage), findsOneWidget);
-      expect(find.textContaining('no longer exists'), findsOneWidget);
+      expect(find.text(Messages.notKanbot), findsOneWidget);
       expect(dependencies.connection.isConnected, isFalse);
       expect(await ServerStore().read(release: false), isNull);
+
+      // Some other site answering 200 with its own JSON: the same, and the
+      // page can be used again.
+      backend.on('GET', '/auth/config', {'hello': 'world'});
+      await tester.tap(find.text(Messages.connect));
+      await tester.pumpAndSettle();
+      expect(find.text(Messages.notKanbot), findsOneWidget);
+      expect(dependencies.connection.isConnected, isFalse);
+    });
+
+    testWidgets('changing server never sends the old session token', (
+      tester,
+    ) async {
+      // The old server is unreachable, so the token stayed stored; the user
+      // changes server.
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', authConfig())
+        ..on('GET', '/me', problem(503, 'unavailable'), status: 503);
+      final dependencies = testDependencies(
+        backend: backend,
+        storage: {'auth_token': 'kbs_old-server-token'},
+      );
+      await dependencies.auth.refresh();
+      await pumpApp(tester, dependencies, location: Routes.login);
+      await tester.tap(find.text(Messages.changeServer));
+      await tester.pumpAndSettle();
+      expect(find.byType(ServerPage), findsOneWidget);
+      expect(await TokenStore().read(), isNull, reason: 'forgotten');
+
+      backend.requests.clear();
+      await tester.enterText(
+        find.byType(EditableText),
+        'https://other.example.com',
+      );
+      await tester.tap(find.text(Messages.connect));
+      await tester.pumpAndSettle();
+      expect(backend.requests, isNotEmpty);
+      for (final request in backend.requests) {
+        expect(
+          request.headers['authorization'],
+          isNull,
+          reason: request.url.path,
+        );
+      }
     });
 
     testWidgets('connects, remembers the server, then asks to sign in', (

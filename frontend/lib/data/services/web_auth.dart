@@ -1,9 +1,17 @@
+import 'dart:io' show IOException;
+
 import 'package:flutter/services.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 
 /// Signing in was cancelled: the user closed the browser, or it timed out.
 final class SignInCancelledException implements Exception {
   const SignInCancelledException();
+}
+
+/// The browser hand-off failed for another reason (no browser, the
+/// loopback port taken, a platform error).
+final class SignInFailedException implements Exception {
+  const SignInFailedException();
 }
 
 /// Opens the server's sign-in page in the system browser and waits for the
@@ -13,7 +21,8 @@ abstract interface class WebAuth {
   /// Opens [url]; completes with the URL the browser was sent to once it
   /// reaches [callback] (a scheme, or `http://127.0.0.1:<port>`).
   ///
-  /// Throws [SignInCancelledException] when the user gives up.
+  /// Throws [SignInCancelledException] when the user gives up, and
+  /// [SignInFailedException] when the hand-off fails otherwise.
   Future<Uri> authenticate({required Uri url, required String callback});
 }
 
@@ -48,7 +57,12 @@ class FlutterWebAuth implements WebAuth {
       return Uri.parse(result);
     } on PlatformException catch (error) {
       if (error.code == 'CANCELED') throw const SignInCancelledException();
-      rethrow;
+      throw const SignInFailedException();
+    } on FormatException {
+      throw const SignInFailedException();
+    } on IOException {
+      // The loopback server could not listen (Windows, Linux).
+      throw const SignInFailedException();
     }
   }
 }
