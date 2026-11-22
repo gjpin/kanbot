@@ -55,8 +55,8 @@ jobs:
           tool: cargo-llvm-cov@0.9.1
       - name: Install sqlx-cli
         run: cargo install "sqlx-cli@$SQLX_CLI_VERSION" --locked --no-default-features --features postgres,rustls
-      # The local stack of backend/AGENTS.md: Postgres and Authelia
-      # (compose.yaml, images pinned by digest).
+      # The local stack of backend/AGENTS.md: Postgres, Authelia and
+      # Keycloak (compose.yaml, images pinned by digest).
       - name: Local stack
         run: |
           echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
@@ -70,17 +70,31 @@ jobs:
       - name: Tests with coverage threshold
         run: cargo llvm-cov --all-features --locked --fail-under-lines "$COVERAGE_MIN_LINES"
 
+  # Every Cargo workspace, with backend/deny.toml. The fuzz targets are
+  # never shipped, and libfuzzer-sys is partly NCSA-licensed, which
+  # deny.toml does not allow: their licenses are not checked.
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - manifest: backend/Cargo.toml
+            checks: ""
+          - manifest: backend/openshell-api/codegen/Cargo.toml
+            checks: ""
+          - manifest: backend/fuzz/Cargo.toml
+            checks: advisories bans sources
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
         with:
-          manifest-path: backend/Cargo.toml
+          manifest-path: ${{ matrix.manifest }}
           command: check
+          command-arguments: ${{ matrix.checks }}
 
   migrations:
     if: github.event_name == 'pull_request'
@@ -139,8 +153,8 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       # Mutants in database and authentication code are caught only by
-      # tests that use the database and the local Authelia (compose.yaml,
-      # images pinned by digest).
+      # tests that use the database and the local identity providers
+      # (compose.yaml, images pinned by digest).
       - name: Local stack
         run: |
           echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts

@@ -22,7 +22,7 @@
       "groupSlug": "{{manager}}-non-major"
     },
     {
-      "description": "Keep the PostgreSQL image identical in compose.yaml and CI.",
+      "description": "The PostgreSQL image (compose.yaml, which CI uses too) in a PR of its own: a database upgrade deserves its own review.",
       "matchDepNames": ["postgres"],
       "groupName": "postgres",
       "groupSlug": "postgres"
@@ -62,14 +62,32 @@
     {
       "customType": "regex",
       "description": "The pinned Rust toolchain, and the crate's rust-version kept equal to it (same dep, same PR).",
-      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/", "/^backend/Cargo\\.toml$/"],
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/", "/^backend/Cargo\\.toml$/", "/^\\.devcontainer/Dockerfile$/"],
       "matchStrings": [
         "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
-        "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+        "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "ARG RUST_TOOLCHAIN=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "rust",
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "rust-lang/rust"
+    },
+    {
+      "customType": "regex",
+      "description": "Tools the dev container installs (`# renovate:` above `ARG NAME=version`). The checksum or commit next to a version is not updated: until someone updates it by hand, building the container fails its check (CI does not build it), so an unverified download never gets in.",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+ARG [A-Z0-9_]+=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "The protoc that regenerates the OpenShell client. Its checksums are not updated: until someone updates them by hand, the script refuses the download (CI does not run it).",
+      "managerFilePatterns": ["/^backend/openshell-api/codegen/fetch-protoc\\.sh$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+version=(?<currentValue>\\S+)"
+      ],
+      "extractVersionTemplate": "^v(?<version>.+)$"
     }
   ]
 }

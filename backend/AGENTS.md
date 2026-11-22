@@ -68,9 +68,9 @@ backend/
 └── fuzz/                    # cargo-fuzz targets (own crate and lockfile; nightly, run manually; see fuzz/README.md)
 ```
 
-Create `http/extract.rs`, `benches/` and `fuzz/` only when there is something to put in them.
+Add a directory or a shared module only when there is something to put in it.
 
-Authentication and authorization are being built in phases, following [`docs/plan/auth.md`](../docs/plan/auth.md). Phases 2 (bearer tokens), 3 (sessions) and 4 (authorization) are implemented.
+Authentication, authorization and the OpenShell integration follow [`docs/plan/auth.md`](../docs/plan/auth.md), whose phases are implemented; [`docs/oidc.md`](../docs/oidc.md), [`docs/authorization.md`](../docs/authorization.md) and [`docs/openshell.md`](../docs/openshell.md) describe them as they are.
 
 ### Layering rules
 
@@ -329,7 +329,7 @@ The model, the built-in permissions and the deployer policy guide are in [`docs/
 
 - `cargo deny check` blocks known vulnerabilities, yanked crates, disallowed licenses, unknown registries and git dependencies.
 - The toolchain is pinned in `rust-toolchain.toml`. `Cargo.lock` is committed.
-- Outbound HTTPS (the OTLP exporter, the relay) uses `reqwest` with `native-tls` (OpenSSL on Linux, so builds need its headers). The rustls stack pulls in `webpki-root-certs` (CDLA-Permissive-2.0), which `deny.toml` does not allow. `opentelemetry-otlp` gets TLS through the shared `reqwest` dependency, so keep its `native-tls` feature.
+- Outbound HTTPS (the identity provider, the OTLP exporter, the relay) uses `reqwest` with `native-tls` (OpenSSL on Linux, so builds need its headers). The OpenShell gateway is gRPC: `tonic` with rustls (`tls-ring`) and the system's roots (`tls-native-roots`), which do not need `webpki-root-certs`. The rustls stack pulls in `webpki-root-certs` (CDLA-Permissive-2.0), which `deny.toml` does not allow. `opentelemetry-otlp` gets TLS through the shared `reqwest` dependency, so keep its `native-tls` feature.
 
 ## 6. Performance
 
@@ -353,7 +353,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 127.0.0.1 auth.kanbot.internal
 ```
 
-`dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, Authelia's certificate, secrets and OIDC signing key into the git-ignored `dev/.generated/`. It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`. With `--sign-in <url>`, the same example plays the system browser for a native app's sign-in (the frontend's Linux end-to-end test uses it).
+`dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, the certificate Authelia and Keycloak serve, Authelia's secrets and OIDC signing key into the git-ignored `dev/.generated/` (mounted into their containers), and keeps the CA's key in the git-ignored `dev/.generated-ca/` (not mounted). It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`. With `--sign-in <url>`, the same example plays the system browser for a native app's sign-in (the frontend's Linux end-to-end test uses it).
 
 ```sh
 sh dev/auth-setup.sh

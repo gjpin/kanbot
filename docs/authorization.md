@@ -37,13 +37,13 @@ organization ◄──(read | write)── team ◄──(member | maintainer)�
 |---|---|---|
 | `read` | organization | members of a team linked with `read` or `write`; its admins |
 | `write` | organization | members of a team linked with `write`; its admins |
-| `manageOrganization` (rename) | organization | its admins |
+| `manageOrganization` (rename, change the slug) | organization | its admins |
 | `manageOrganizationAdmins` | organization | its admins |
 | `manageTeamLinks` | organization | its admins |
 | `deleteOrganization` | organization | platform admins (never the Default organization) |
 | `linkOpenShellWorkspace` | organization | platform admins ([openshell.md](openshell.md)) |
 | `viewTeam` (see it and its members) | team | its members; admins of any organization |
-| `manageTeam` (rename, delete) | team | its maintainers |
+| `manageTeam` (rename, change the slug, delete) | team | its maintainers |
 | `manageTeamMembers` | team | its maintainers (not for a synced team) |
 | `setTeamIdpGroup` | team | platform admins |
 | `createOrganization` | platform | platform admins |
@@ -207,7 +207,7 @@ which makes the `contractors` group (the dev user `dave`) read-only.
 ## For developers
 
 - Every feature that touches organization data asks `authz` (`backend/AGENTS.md`
-  §3b): `authz::service::require` before a change, `can` or `decisions` to show
+  §3c): `authz::service::require` before a change, `can` or `decisions` to show
   what is allowed, `visible_organizations` or `visible_teams` for lists. Never
   write a role check by hand.
 - A new action goes in the schema, a built-in policy and `authz::model::Action`,

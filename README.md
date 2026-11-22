@@ -8,4 +8,4 @@
 
 ## Development
 
-- [Development container](.devcontainer/README.md): every tool the checks need, with Postgres and the local Authelia.
+- [Development container](.devcontainer/README.md): every tool the checks need, with Postgres and the local Authelia and Keycloak.

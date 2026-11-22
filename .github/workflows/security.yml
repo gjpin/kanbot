@@ -32,8 +32,8 @@ jobs:
           # Fail the job on findings instead of uploading them to code scanning.
           advanced-security: false
 
-  # Secrets in the whole history. Test-only keys and the documented
-  # development secrets are allowed in .gitleaks.toml.
+  # Secrets in the whole history. Only the test-only signing keys are
+  # allowed (.gitleaks.toml).
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 10

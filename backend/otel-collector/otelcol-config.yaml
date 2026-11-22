@@ -5,9 +5,9 @@
 # collector needs at least the same processors.
 #
 # - memory_limiter: refuses data instead of running out of memory.
-# - filter/kanbot: keeps only telemetry from our own services. The relay is
-#   public, so anyone can send OTLP to it; data claiming to be another
-#   service is dropped instead of polluting dashboards.
+# - filter/kanbot: keeps only telemetry from our own services. Any signed-in
+#   user who opted in can send OTLP through the relay; data claiming to be
+#   another service is dropped instead of polluting dashboards.
 
 receivers:
   otlp:

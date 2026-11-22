@@ -1,18 +1,18 @@
 # OIDC authentication
 
-> **Status: partly implemented.** This document describes how kanbot
+> **Status: implemented.** This document describes how kanbot
 > authenticates users with an external OpenID Connect (OIDC) identity provider
-> (IdP), and how to set up each supported IdP. **Implemented** and tested end
-> to end against Authelia: bearer-token validation (the API as a resource
-> server), and the login flow through the kanbot backend with sessions for
-> the web and native apps. Authorization (organizations, teams, Cedar) is in
-> [`authorization.md`](authorization.md). **Not yet:** the apps' side of the
-> login. Configuration names may still change before the first
-> release. The provider setups other than Authelia and Keycloak have not been tested with
-> kanbot yet. Facts about each IdP were checked
-> against its official documentation on 2026-11-20, at the version noted in its
-> section. The implementation plan is [`docs/plan/auth.md`](plan/auth.md); each
-> section here becomes current documentation as its part is implemented.
+> (IdP), and how to set up each supported IdP: bearer-token validation (the
+> API as a resource server), and the login flow through the kanbot backend
+> with sessions for the web and native apps. It is tested end to end against
+> Authelia and Keycloak (the backend), and the Linux desktop app's sign-in
+> against Authelia. Authorization (organizations, teams, Cedar) is in
+> [`authorization.md`](authorization.md). Configuration names may still
+> change before the first release. The provider setups other than Authelia
+> and Keycloak have not been tested with kanbot yet. Facts about each IdP
+> were checked against its official documentation on 2026-11-20, at the
+> version noted in its section. The implementation plan is
+> [`docs/plan/auth.md`](plan/auth.md).
 
 ## How kanbot uses OIDC
 

@@ -2,7 +2,7 @@
 # infos and warnings are fatal.
 #
 # Do not change this file without a maintainer's approval, and do not
-# suppress its diagnostics. See frontend/AGENTS.md §1 and §12.
+# suppress its diagnostics. See frontend/AGENTS.md §1 and §11.
 
 include: package:flutter_lints/flutter.yaml
 

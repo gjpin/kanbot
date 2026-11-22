@@ -1,17 +1,22 @@
-# kanbot
+# kanbot app
 
-A new Flutter project.
+The Flutter client of the kanbot API, for Android, iOS, web, macOS, Linux and
+Windows. It is built with [shad](https://shad.serverpod.dev/) and talks to
+the backend through a client generated from `../backend/openapi.json`.
 
-## Getting Started
+- Rules and every check to run: [`AGENTS.md`](AGENTS.md).
+- Sign-in: [`../docs/oidc.md`](../docs/oidc.md); the end-to-end test:
+  [`integration_test/README.md`](integration_test/README.md).
 
-This project is a starting point for a Flutter application.
+## Running it
 
-A few resources to get you started if this is your first Flutter project:
+With the backend running (`../backend/AGENTS.md`):
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```sh
+flutter run -d macos   # or linux, windows; a native app asks for its server
+dart run tool/build_web.dart   # the web app, served by the backend (WEB_DIR)
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+`--dart-define=API_BASE_URL=http://localhost:3000` sets the server a native
+app suggests on first launch. The web app always talks to the server it is
+loaded from.

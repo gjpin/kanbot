@@ -7,7 +7,8 @@ Everything needed to work on kanbot and run every check in
   (rustfmt, clippy, llvm-tools-preview), `sqlx-cli`, `cargo-deny`,
   `cargo-llvm-cov` and `cargo-mutants`, at the versions CI uses;
 - Flutter (the version CI uses), with the Linux desktop and web artifacts;
-- Docker, for `backend/compose.yaml`: Postgres and the local Authelia.
+- Docker, for `backend/compose.yaml`: Postgres and the local Authelia and
+  Keycloak.
 
 On creation it runs `backend/dev/auth-setup.sh`; on every start it runs
 `docker compose up -d --wait` and `sqlx migrate run` in `backend/`. `auth.kanbot.internal` already

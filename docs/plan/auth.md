@@ -43,8 +43,8 @@ the original conversation. Everything decided is recorded here.
   project owns (no Universal Links or App Links for login).
 - **Supported IdPs:** Keycloak, Authelia, Okta (custom authorization server),
   Microsoft Entra ID (single tenant, v2 tokens).
-  - authentik is pending: its access-token `aud` cannot be set apart from the
-    client ID.
+  - authentik is not supported: its access-token `aud` cannot be set apart
+    from the client ID (`docs/oidc.md`).
   - Google, Apple, GitHub and any IdP with opaque access tokens are out of scope.
   - Requirements and per-IdP setup are in `docs/oidc.md`.
 - **Two ways to authenticate an API request:**
@@ -236,9 +236,6 @@ and `RUST_LOG`.
 | `SESSION_ABSOLUTE_TIMEOUT` | 3 | no | `30d` | Session ends after this long regardless. Sessions also end when the IdP refuses a refresh |
 | `WEB_DIR` | 3 | no | unset (off) | Directory with the Flutter web build to serve at `/` |
 | `AUTHZ_POLICY_FILE` | 4 | no | none | Deployer `forbid`-only Cedar policies |
-
-`docs/oidc.md` currently says `SESSION_ENCRYPTION_KEY` (singular). Update it to
-the table above in phase 3.
 
 ## Security invariants (all phases)
 
@@ -889,7 +886,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 
 ## Phase 7: OpenShell integration (later)
 
-- [x] **7.1** (reported: see the findings below; 7.2 onward waits for the human) Check OpenShell's `.proto` files for workspace membership APIs and
+- [x] **7.1** (reported: see the findings below) Check OpenShell's `.proto` files for workspace membership APIs and
   roles, and whether the gateway accepts an `aud` array containing its audience.
   Report to the human before building.
   **7.1 findings** (OpenShell v0.1.9, `proto/openshell.proto`, server

@@ -1,11 +1,10 @@
 # Secret scanning (gitleaks, .github/workflows/security.yml): the default
-# rules, minus two folders whose secrets are deliberately committed.
+# rules, minus the one finding that is deliberate. Keep this narrow: an
+# allowlisted path hides every secret later committed there.
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Test-only signing keys (backend/tests/fixtures/oidc/README.md) and the documented development-only secrets of the local stack (backend/dev/)."
-paths = [
-  '''^backend/tests/fixtures/oidc/''',
-  '''^backend/dev/''',
-]
+description = "Test-only signing keys (backend/tests/fixtures/oidc/README.md): private keys, in PEM files of that folder only."
+targetRules = ["private-key"]
+paths = ['''^backend/tests/fixtures/oidc/[a-z0-9-]+\.pem$''']

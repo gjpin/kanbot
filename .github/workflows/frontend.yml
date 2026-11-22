@@ -84,7 +84,8 @@ jobs:
         run: |
           echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
           sh dev/auth-setup.sh
-          docker compose up -d --wait
+          # Only what dev/dev.env uses: Keycloak is not needed here.
+          docker compose up -d --wait postgres authelia
       - name: Backend
         working-directory: backend
         env:
