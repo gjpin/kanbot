@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dartastic_opentelemetry/dartastic_opentelemetry.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:kanbot/config/dependencies.dart';
@@ -15,8 +17,9 @@ final Uri testServer = Uri.parse('https://kanbot.example.com/');
 class FakeWebAuth implements WebAuth {
   FakeWebAuth(this.answer);
 
-  /// The redirect for the opened URL; throw to simulate a cancel.
-  Uri Function(Uri url) answer;
+  /// The redirect for the opened URL, now or later; throw to simulate a
+  /// cancel.
+  FutureOr<Uri> Function(Uri url) answer;
   final List<Uri> opened = [];
   final List<String> callbacks = [];
 

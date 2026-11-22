@@ -8,6 +8,7 @@ import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/data/services/server_store.dart';
 import 'package:kanbot/data/services/token_store.dart';
+import 'package:kanbot/data/services/web_auth.dart';
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/features/auth/login_page.dart';
@@ -194,6 +195,35 @@ void main() {
       expect(webAuth.opened, hasLength(1));
       expect(await TokenStore().read(server: testServer), 'kbs_new');
       expect(find.byType(OrganizationsPage), findsOneWidget);
+    });
+
+    testWidgets('a sign-in in the browser can be started again', (
+      tester,
+    ) async {
+      final redirect = Completer<Uri>();
+      final webAuth = FakeWebAuth((_) => redirect.future);
+      await signedOut(tester, webAuth: webAuth);
+      final signIn = find.widgetWithText(ShadButton, Messages.signIn);
+
+      await tester.tap(signIn);
+      await tester.pump();
+      expect(find.byType(ShadSpinner), findsOneWidget);
+      expect(tester.widget<ShadButton>(signIn).onPressed, isNotNull);
+      expect(
+        tester
+            .widget<ShadButton>(
+              find.widgetWithText(ShadButton, Messages.changeServer),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(signIn);
+      await tester.pump();
+      expect(webAuth.opened, hasLength(2));
+      redirect.completeError(const SignInCancelledException());
+      await tester.pumpAndSettle();
+      expect(find.text(Messages.signInCancelled), findsOneWidget);
     });
 
     testWidgets('a cancelled sign-in stays on the page', (tester) async {

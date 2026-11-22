@@ -74,17 +74,18 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
             ShadButton(
-              onPressed: _viewModel.busy
-                  ? null
-                  : unreachable
-                  ? _viewModel.retry
-                  : _viewModel.signIn,
+              onPressed: unreachable
+                  ? (_viewModel.busy ? null : _viewModel.retry)
+                  : (_viewModel.canSignIn ? _viewModel.signIn : null),
               leading: _viewModel.busy ? const ShadSpinner(size: 16) : null,
               child: Text(unreachable ? Messages.retry : Messages.signIn),
             ),
             if (_viewModel.canChangeServer)
               ShadButton.link(
-                onPressed: _viewModel.busy ? null : _viewModel.changeServer,
+                // A sign-in still in the browser is for the old server.
+                onPressed: _viewModel.canSignIn
+                    ? _viewModel.changeServer
+                    : null,
                 child: const Text(Messages.changeServer),
               ),
           ],

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -321,6 +322,74 @@ void main() {
         ),
       );
       expect(webAuth.opened, isEmpty);
+    });
+
+    test('signing in again replaces a sign-in still in the browser', () async {
+      final redirects = <Completer<Uri>>[];
+      webAuth.answer = (_) {
+        redirects.add(Completer());
+        return redirects.last.future;
+      };
+      backend.on('POST', '/auth/token', {
+        'session_token': 'kbs_new',
+        'expires_at': '2026-12-21T00:00:00Z',
+      });
+      final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+      expect(auth.waitingForBrowser, isFalse);
+
+      final first = auth.signIn();
+      await pumpEventQueue();
+      expect(auth.waitingForBrowser, isTrue);
+      final second = auth.signIn();
+      await pumpEventQueue();
+      expect(webAuth.opened, hasLength(2));
+
+      // The first browser still finishes: its code is not redeemed.
+      redirects[0].complete(
+        Uri.parse('dev.sideral.kanbot:/auth/done?code=kbc_old'),
+      );
+      expect(
+        await first,
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<SignInCancelledException>(),
+        ),
+      );
+      expect(auth.waitingForBrowser, isTrue);
+      redirects[1].complete(
+        Uri.parse('dev.sideral.kanbot:/auth/done?code=kbc_new'),
+      );
+      expect(await second, isA<Ok<void>>());
+
+      expect(auth.waitingForBrowser, isFalse);
+      final redeemed = backend.sent('POST', '/auth/token');
+      expect(redeemed, hasLength(1));
+      expect(jsonDecode(redeemed.single.body), containsPair('code', 'kbc_new'));
+      expect(auth.status, AuthStatus.signedIn);
+    });
+
+    test('changing server drops a sign-in still in the browser', () async {
+      final redirect = Completer<Uri>();
+      webAuth.answer = (_) => redirect.future;
+      final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+
+      final signIn = auth.signIn();
+      await pumpEventQueue();
+      await auth.forgetServer();
+      expect(auth.waitingForBrowser, isFalse);
+      redirect.complete(Uri.parse('dev.sideral.kanbot:/auth/done?code=kbc_x'));
+
+      expect(
+        await signIn,
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<SignInCancelledException>(),
+        ),
+      );
+      expect(backend.sent('POST', '/auth/token'), isEmpty);
+      expect(auth.status, AuthStatus.signedOut);
     });
 
     test('cancelling is a failure, not an error', () async {

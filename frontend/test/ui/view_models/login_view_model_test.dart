@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/data/services/api_exception.dart';
+import 'package:kanbot/data/services/web_auth.dart';
 import 'package:kanbot/ui/features/auth/login_view_model.dart';
 
 import '../../helpers/fake_backend.dart';
@@ -34,6 +37,43 @@ void main() {
 
     expect(viewModel.error, isA<_Unexpected>());
     expect(viewModel.busy, isFalse);
+  });
+
+  test('signing in again replaces a sign-in in the browser', () async {
+    final backend = FakeBackend()..on('GET', '/auth/config', authConfig());
+    final redirects = <Completer<Uri>>[];
+    final webAuth = FakeWebAuth((_) {
+      redirects.add(Completer());
+      return redirects.last.future;
+    });
+    final viewModel = _viewModel(
+      testDependencies(backend: backend, webAuth: webAuth),
+    );
+
+    final first = viewModel.signIn();
+    // Not before the browser opened: a double tap opens it once.
+    expect(viewModel.canSignIn, isFalse);
+    await viewModel.signIn();
+    await pumpEventQueue();
+    expect(webAuth.opened, hasLength(1));
+    // The user may have closed it without the app knowing.
+    expect(viewModel.busy, isTrue);
+    expect(viewModel.canSignIn, isTrue);
+
+    final second = viewModel.signIn();
+    await pumpEventQueue();
+    expect(webAuth.opened, hasLength(2));
+    redirects[0].completeError(const SignInCancelledException());
+    await first;
+    // The replaced sign-in's outcome is not this page's.
+    expect(viewModel.error, isNull);
+    expect(viewModel.busy, isTrue);
+
+    redirects[1].completeError(const SignInCancelledException());
+    await second;
+    expect(viewModel.error, isA<SignInCancelledException>());
+    expect(viewModel.busy, isFalse);
+    expect(viewModel.canSignIn, isTrue);
   });
 
   test('a retry that meets a contract break says so', () async {

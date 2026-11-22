@@ -86,7 +86,19 @@ class AuthRepository extends ChangeNotifier {
   ServerInfo? _server;
   Exception? _lastError;
 
+  /// Numbers native sign-ins: a newer one, or a server change, replaces
+  /// the one before it.
+  int _signIns = 0;
+
+  /// The native sign-in waiting for the browser, if any.
+  int? _inBrowser;
+
   AuthStatus get status => _status;
+
+  /// Whether a native sign-in waits for the browser. Signing in again
+  /// then replaces it: the user may have closed the browser, which the
+  /// app does not learn on Windows and Linux until the sign-in times out.
+  bool get waitingForBrowser => _inBrowser != null;
 
   /// The signed-in user, while [status] is [AuthStatus.signedIn].
   User? get user => _user;
@@ -175,11 +187,13 @@ class AuthRepository extends ChangeNotifier {
 
   Future<Result<void>> _signInNative(Uri loginUrl, Uri baseUrl) async {
     final pkce = Pkce.generate();
+    final attempt = ++_signIns;
     final NativeRedirect redirect;
     final Uri result;
     try {
       // Windows and Linux: a free loopback port, which can fail.
       redirect = await _nativeRedirect();
+      _setInBrowser(attempt);
       result = await _webAuth.authenticate(
         url: loginUrl.replace(
           queryParameters: {
@@ -197,7 +211,11 @@ class AuthRepository extends ChangeNotifier {
       return Failure(error);
     } on IOException {
       return const Failure(SignInFailedException());
+    } finally {
+      if (_inBrowser == attempt) _setInBrowser(null);
     }
+    // Replaced meanwhile: its code is not redeemed.
+    if (attempt != _signIns) return const Failure(SignInCancelledException());
     final expected = Uri.parse(redirect.redirectUri);
     final code = result.queryParameters['code'];
     final ours =
@@ -332,6 +350,11 @@ class AuthRepository extends ChangeNotifier {
     _setSignedOut();
   }
 
+  void _setInBrowser(int? attempt) {
+    _inBrowser = attempt;
+    notifyListeners();
+  }
+
   void _setSignedOut() {
     _user = null;
     _status = AuthStatus.signedOut;
@@ -344,6 +367,9 @@ class AuthRepository extends ChangeNotifier {
   Future<void> forgetServer() async {
     _server = null;
     _lastError = null;
+    // A sign-in still in the browser was for the old server.
+    _signIns++;
+    _inBrowser = null;
     await _forgetToken();
     _setSignedOut();
   }

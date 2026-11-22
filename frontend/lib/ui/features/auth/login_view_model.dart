@@ -21,10 +21,18 @@ class LoginViewModel extends ViewModel {
 
   bool _busy = false;
 
+  /// Numbers [_run]s: only the latest one's outcome is shown.
+  int _runs = 0;
+
   /// This page's own error: a failed sign-in, or the server's redirect.
   Exception? _error;
 
   bool get busy => _busy;
+
+  /// Whether [signIn] does anything: when idle, and while a sign-in waits
+  /// for the browser, which signing in again replaces (the user may have
+  /// closed it).
+  bool get canSignIn => !_busy || _auth.waitingForBrowser;
 
   /// Why the last sign-in failed (from this page, or from the server's
   /// redirect, `/login?error=...` on the web), else why the session could
@@ -44,27 +52,34 @@ class LoginViewModel extends ViewModel {
   /// Native apps can change server; the web app belongs to its server.
   bool get canChangeServer => _serverStore != null;
 
-  Future<void> signIn() => _run(_auth.signIn);
+  Future<void> signIn() async {
+    if (canSignIn) await _run(_auth.signIn);
+  }
 
   /// Tries to load the session again (the server was unreachable).
-  Future<void> retry() => _run(_auth.refresh);
+  Future<void> retry() async {
+    if (!_busy) await _run(_auth.refresh);
+  }
 
-  /// Runs [action], showing its failure. Anything it throws that is not an
-  /// [Exception] is a bug (AGENTS.md §5): it propagates to be reported, and
-  /// the repository's error says what happened.
+  /// Runs [action], showing its failure unless a later run replaced it.
+  /// Anything it throws that is not an [Exception] is a bug (AGENTS.md
+  /// §5): it propagates to be reported, and the repository's error says
+  /// what happened.
   Future<void> _run(Future<Result<void>> Function() action) async {
-    if (_busy) return;
+    final run = ++_runs;
     _busy = true;
     _error = null;
     notifyListeners();
     try {
       final result = await action();
-      if (result case Failure(:final error)) _error = error;
+      if (result case Failure(:final error) when run == _runs) _error = error;
     } on Exception catch (error) {
-      _error = error;
+      if (run == _runs) _error = error;
     } finally {
-      _busy = false;
-      notifyListeners();
+      if (run == _runs) {
+        _busy = false;
+        notifyListeners();
+      }
     }
   }
 
