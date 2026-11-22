@@ -1106,13 +1106,14 @@ mod link_and_sync {
             )
             .await;
         // The interval's first run happens now, with nothing linked; only the
-        // database's change notification can sync before the next one,
-        // minutes away (after the minimum gap between runs).
-        sync::spawn_sync(
+        // database's change notification can sync before the next one, an
+        // hour away (and nothing fails, so no retry runs either).
+        sync::spawn_sync_with(
             pool.clone(),
             Arc::clone(&setup.policies),
             Arc::clone(&setup.openshell),
             setup.idp.issuer.clone(),
+            fast(3_600_000),
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let (status, _) = setup
