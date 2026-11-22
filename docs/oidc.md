@@ -54,9 +54,13 @@ App exchanges the one-time code and its PKCE verifier for a kanbot session token
   out without opening a browser.
 - **Refreshing** holds no database connection or lock while the IdP answers:
   one request takes a short lease and refreshes, the others keep using the
-  stored token while it is valid. Only `invalid_grant` ends a session; any
-  other refusal (a wrong client secret, an outage) is the server's problem,
-  and the session lasts until its token expires.
+  stored token while it is valid. The refresh finishes and is stored even if
+  the request that started it goes away. Only `invalid_grant` ends a session;
+  any other refusal (a wrong client secret, an outage) is the server's
+  problem, and the session lasts until its token expires. A session the IdP
+  issued no refresh token for ends when its access token expires. While the
+  IdP rotates its signing keys, a stored token signed with a key kanbot has
+  not fetched yet gets `503`, not a sign-out.
 - **The native handoff is protected.** The one-time code is bound to the app's
   PKCE challenge, expires within about a minute and can be used once, as
   recommended by [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252). An app
@@ -170,7 +174,7 @@ equals `OIDC_CLIENT_ID` or is listed in `OIDC_ALLOWED_CLIENTS`.
 | `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP` | no | Allows an `http://` issuer on a numeric loopback address. Development only. |
 | `PUBLIC_URL` | yes | Kanbot's external base URL, for example `https://kanbot.example.com` (`http` only on `localhost` or a loopback address, for development: Safari refuses the session cookie over plain `http`, so test Safari over `https`). The callback URL is `<PUBLIC_URL>/auth/callback`. Register `<PUBLIC_URL>/` as an allowed post-logout redirect URI at the identity provider too. |
 | `SESSION_ENCRYPTION_KEYS` (or `SESSION_ENCRYPTION_KEYS_FILE`) | yes | Comma-separated `<key id>:<base64 of 32 random bytes>` entries (for example `k1:$(openssl rand -base64 32)`), used to encrypt stored IdP tokens. The first encrypts and all decrypt: to rotate, put a new key first and drop the old one after `SESSION_ABSOLUTE_TIMEOUT`. |
-| `SESSION_IDLE_TIMEOUT` | no | A session ends after this long without use. Default `7d`. |
+| `SESSION_IDLE_TIMEOUT` | no | A session ends after this long without use (at most a tenth of it, and at most a minute, earlier). Default `7d`. |
 | `SESSION_ABSOLUTE_TIMEOUT` | no | A session ends after this long regardless. Default `30d`. Sessions also end when the IdP refuses a refresh. |
 
 ## Clients to register at the IdP

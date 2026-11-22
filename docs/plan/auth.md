@@ -661,10 +661,17 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
   sign in again; a bad `kbs_` bearer token is a 401. New metric reasons:
   `session_invalid`, `session_ended`)
   - accept `__Host-kanbot_session` or `Authorization: Bearer kbs_...`;
-  - look up the hash, check expiry, update `last_used_at` at most once a minute;
-  - refresh the IdP access token when it expires within 60 s, under a row lock
-    (`SELECT ... FOR UPDATE`), so concurrent requests or instances never use the
-    same refresh token twice;
+  - look up the hash, check expiry; once the request is authenticated, move the
+    idle expiry forward when it lags a full idle timeout by more than a tenth of
+    it (at most a minute), so a session is written at most that often;
+  - refresh the IdP access token when it expires within 60 s, under a short
+    lease on the session row (`refreshing_until`, taken with a single
+    `UPDATE`; no row lock or connection is held while the IdP answers), so
+    concurrent requests or instances never use the same refresh token twice.
+    The refresh runs in a task of its own, so a dropped request does not lose
+    a rotated refresh token;
+  - without a refresh token, the stored access token is used until it expires,
+    then the session ends;
   - store the rotated refresh token;
   - re-check the new access token with the phase 2 rules (roles are re-evaluated
     on every refresh);
