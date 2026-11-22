@@ -22,6 +22,8 @@ pub mod users;
 
 use std::{net::SocketAddr, sync::Arc};
 
+use secrecy::SecretString;
+
 use tokio::net::TcpListener;
 
 use crate::{
@@ -108,8 +110,8 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
 ///
 /// Returns [`StartupError::Migrate`] if the database is unreachable or a
 /// migration fails.
-pub async fn migrate(config: Config) -> Result<(), StartupError> {
-    db::migrate(&config.database_url, &db::MIGRATOR).await?;
+pub async fn migrate(database_url: &SecretString) -> Result<(), StartupError> {
+    db::migrate(database_url, &db::MIGRATOR).await?;
     tracing::info!("migrations are up to date");
     Ok(())
 }

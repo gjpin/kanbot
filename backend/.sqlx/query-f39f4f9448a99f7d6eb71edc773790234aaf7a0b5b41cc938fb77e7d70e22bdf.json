@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT display_name FROM users WHERE id = $1",
+  "query": "SELECT display_name, groups FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,17 @@
             "name": "display_name"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "groups",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "groups"
+          }
+        }
       }
     ],
     "parameters": {
@@ -21,8 +32,9 @@
       ]
     },
     "nullable": [
-      true
+      true,
+      false
     ]
   },
-  "hash": "c40468988a153c5df4f51e7e57fe0468cacec62b6f8d64a049b2a28fed419de4"
+  "hash": "f39f4f9448a99f7d6eb71edc773790234aaf7a0b5b41cc938fb77e7d70e22bdf"
 }

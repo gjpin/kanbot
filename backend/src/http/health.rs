@@ -1,14 +1,43 @@
 //! Liveness (`/health`) and readiness (`/ready`) probes.
 
-use axum::{extract::State, http::StatusCode};
+use std::{
+    sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
+};
+
+use axum::{Extension, extract::State, http::StatusCode};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{db, error::AppError, http::problem::Problem, state::AppState};
 
-pub fn routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new()
-        .routes(routes!(health))
-        .routes(routes!(ready))
+/// `/health`.
+pub fn liveness_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(health))
+}
+
+/// `/ready`. Needs a [`Readiness`] extension.
+pub fn readiness_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(ready))
+}
+
+/// How long a readiness answer is reused. `/ready` is public: without this,
+/// every call would cost a database round trip.
+const READINESS_TTL: Duration = Duration::from_secs(1);
+
+/// The last readiness answer and when it was found.
+#[derive(Clone, Default)]
+pub struct Readiness(Arc<Mutex<Option<(Instant, bool)>>>);
+
+impl Readiness {
+    fn cached(&self, now: Instant) -> Option<bool> {
+        let last = *self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        last.filter(|(at, _)| now.saturating_duration_since(*at) < READINESS_TTL)
+            .map(|(_, ready)| ready)
+    }
+
+    fn store(&self, now: Instant, ready: bool) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((now, ready));
+    }
 }
 
 /// Liveness: the process is up and serving HTTP.
@@ -37,16 +66,29 @@ async fn health() -> &'static str {
          body = Problem, content_type = "application/problem+json"),
     ),
 )]
-async fn ready(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+async fn ready(
+    State(state): State<AppState>,
+    Extension(readiness): Extension<Readiness>,
+) -> Result<StatusCode, AppError> {
     if !state.keys.is_loaded() {
         tracing::warn!("not ready: the identity provider's signing keys have not loaded");
         return Err(AppError::Unavailable);
     }
-    let mut conn = state.db.acquire().await?;
-    if db::migrations_are_current(&mut conn, state.migrator).await? {
+    let now = Instant::now();
+    let ready = if let Some(ready) = readiness.cached(now) {
+        ready
+    } else {
+        let mut conn = state.db.acquire().await?;
+        let ready = db::migrations_are_current(&mut conn, state.migrator).await?;
+        readiness.store(now, ready);
+        if !ready {
+            tracing::warn!("not ready: migrations are pending");
+        }
+        ready
+    };
+    if ready {
         Ok(StatusCode::OK)
     } else {
-        tracing::warn!("not ready: migrations are pending");
         Err(AppError::Unavailable)
     }
 }

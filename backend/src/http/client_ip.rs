@@ -123,9 +123,12 @@ pub fn client_ip<'a>(
     if !trusted.contains(client) {
         return client;
     }
+    // A value that is not ASCII stops the walk like any other bad hop: a
+    // proxy may have appended the real client to a client-sent line, and
+    // skipping that line would trust what the client wrote before it.
     let hops: Vec<&str> = forwarded_for
         .into_iter()
-        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.to_str().unwrap_or(""))
         .flat_map(|value| value.split(','))
         .map(str::trim)
         .collect();
@@ -246,6 +249,19 @@ mod tests {
             client_ip(ip("10.0.0.1"), &xff(&["1.1.1.1, 198.51.100.1"]), &trusted),
             ip("198.51.100.1")
         );
+    }
+
+    #[test]
+    fn a_value_that_is_not_ascii_stops_the_walk() {
+        // The client sent "1.1.1.1" and a non-ASCII line; the proxy appended
+        // the real client to the latter. The walk stops there, at the proxy,
+        // and never trusts what the client wrote.
+        let trusted = proxies("10.0.0.0/8");
+        let values = vec![
+            HeaderValue::from_static("1.1.1.1"),
+            HeaderValue::from_bytes(b"\xe9, 198.51.100.1").unwrap(),
+        ];
+        assert_eq!(client_ip(ip("10.0.0.1"), &values, &trusted), ip("10.0.0.1"));
     }
 
     #[test]

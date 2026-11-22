@@ -83,8 +83,11 @@ impl PlatformRole {
     }
 }
 
-/// Who a valid token speaks for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Longest display name kept, in characters; longer ones are cut.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 200;
+
+/// Who a valid token speaks for. Its `Debug` leaves out the personal data.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Principal {
     pub issuer: String,
     /// The value of `OIDC_SUBJECT_CLAIM`.
@@ -94,9 +97,35 @@ pub struct Principal {
     pub client_id: Option<String>,
     /// `name`, else `preferred_username`. Personal data: never log it.
     pub display_name: Option<String>,
-    /// The string values of the groups claim (`OIDC_GROUPS_CLAIM`).
-    /// Personal data: never log it.
-    pub groups: Vec<String>,
+    /// The string values of the groups claim (`OIDC_GROUPS_CLAIM`), or
+    /// `None` when the token has no such claim (another client, a scope not
+    /// requested): then nothing is known about the user's groups, which is
+    /// not the same as having none. Personal data: never log it.
+    pub groups: Option<Vec<String>>,
+    /// The token's `exp`, in seconds since the Unix epoch.
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for Principal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Principal")
+            .field("issuer", &self.issuer)
+            .field("role", &self.role)
+            .field("client_id", &self.client_id)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a verified token for another service (the `OpenShell` gateway)
+/// carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForeignToken {
+    /// Every audience of the token.
+    pub audiences: Vec<String>,
+    /// The value of `OIDC_SUBJECT_CLAIM`, if any. Personal data in
+    /// general: never log it.
+    pub subject: Option<String>,
     /// The token's `exp`, in seconds since the Unix epoch.
     pub expires_at: u64,
 }
@@ -139,7 +168,7 @@ impl<'a> UnverifiedToken<'a> {
             return Err(Rejection::Malformed);
         }
         let header = jsonwebtoken::decode_header(token).map_err(|_| Rejection::Malformed)?;
-        if header.crit.is_some() {
+        if header.crit.is_some() || !acceptable_type(header.typ.as_deref()) {
             return Err(Rejection::Malformed);
         }
         let kid = header.kid.ok_or(Rejection::Malformed)?;
@@ -227,7 +256,12 @@ impl<'a> UnverifiedToken<'a> {
 
         let client_id = ["azp", "client_id", "cid"]
             .iter()
-            .find_map(|claim| claims.get(*claim).and_then(Value::as_str))
+            .find_map(|claim| {
+                claims
+                    .get(*claim)
+                    .and_then(Value::as_str)
+                    .filter(|client| !client.is_empty())
+            })
             .map(str::to_owned);
         if let Some(allowed) = &config.allowed_clients
             && !allowed
@@ -240,11 +274,17 @@ impl<'a> UnverifiedToken<'a> {
         let display_name = ["name", "preferred_username"]
             .iter()
             .find_map(|claim| claims.get(*claim).and_then(Value::as_str))
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
+            .filter(|name| !name.is_empty() && !name.contains('\0'))
+            .map(|name| name.chars().take(MAX_DISPLAY_NAME_CHARS).collect());
 
-        // Groups are optional: without them, the user is in no synced team.
-        let groups = strings(config.groups_claim.resolve(&claims)).unwrap_or_default();
+        // Optional. A group the database cannot store (NUL) cannot name a
+        // team either.
+        let groups = strings(config.groups_claim.resolve(&claims)).map(|groups| {
+            groups
+                .into_iter()
+                .filter(|group| !group.contains('\0'))
+                .collect()
+        });
 
         Ok(Principal {
             issuer: config.issuer.as_str().to_owned(),
@@ -278,7 +318,8 @@ impl UnverifiedToken<'_> {
             return Err(Rejection::BadAlgorithm);
         }
         let mut validation = Validation::new(key.algorithm());
-        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        // `iat` is required in ID tokens (OpenID Connect Core, section 2).
+        validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub"]);
         validation.set_issuer(&[issuer.as_str()]);
         validation.set_audience(&[client_id]);
         validation.validate_exp = false;
@@ -312,6 +353,73 @@ impl UnverifiedToken<'_> {
                 .map(str::to_owned),
         })
     }
+}
+
+impl UnverifiedToken<'_> {
+    /// Verifies a token kanbot obtained for another service: the signature
+    /// with `key`, `iss` exactly `issuer`, `aud` containing `audience`, and
+    /// the times at `now`. Nothing about kanbot's own audience or roles:
+    /// the caller decides what else it needs.
+    ///
+    /// # Errors
+    ///
+    /// The first [`Rejection`] found.
+    pub fn verify_foreign(
+        &self,
+        key: &VerifyingKey,
+        config: &OidcConfig,
+        audience: &str,
+        now: u64,
+    ) -> Result<ForeignToken, Rejection> {
+        if self.algorithm != key.algorithm() {
+            return Err(Rejection::BadAlgorithm);
+        }
+        let mut validation = Validation::new(key.algorithm());
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        validation.set_issuer(&[config.issuer.as_str()]);
+        validation.set_audience(&[audience]);
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        let claims =
+            jsonwebtoken::decode::<Map<String, Value>>(self.token, key.decoding_key(), &validation)
+                .map_err(|error| rejection(error.kind()))?
+                .claims;
+        if claims.get("iss").and_then(Value::as_str) != Some(config.issuer.as_str()) {
+            return Err(Rejection::WrongIssuer);
+        }
+        let expires_at = check_times(&claims, now)?;
+        let audiences = match claims.get("aud") {
+            Some(Value::String(one)) => vec![one.clone()],
+            Some(Value::Array(many)) => many
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => return Err(Rejection::WrongAudience),
+        };
+        let subject = config
+            .subject_claim
+            .resolve(&claims)
+            .and_then(Value::as_str)
+            .filter(|subject| !subject.is_empty())
+            .map(str::to_owned);
+        Ok(ForeignToken {
+            audiences,
+            subject,
+            expires_at,
+        })
+    }
+}
+
+/// The header's `typ`: absent, or one that names a JWT access or ID token
+/// (RFC 7519, RFC 9068), in any case. Other typed JWTs, such as logout
+/// tokens, `DPoP` proofs or security events, are not tokens kanbot accepts.
+fn acceptable_type(typ: Option<&str>) -> bool {
+    typ.is_none_or(|typ| {
+        ["jwt", "at+jwt", "application/jwt", "application/at+jwt"]
+            .iter()
+            .any(|allowed| typ.eq_ignore_ascii_case(allowed))
+    })
 }
 
 /// `exp` must not be past, `nbf` and `iat` (when present) not in the

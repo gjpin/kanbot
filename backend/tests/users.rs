@@ -27,7 +27,7 @@ fn principal(subject: &str) -> Principal {
         role: PlatformRole::User,
         client_id: Some("kanbot-cli".to_owned()),
         display_name: Some("Alice".to_owned()),
-        groups: vec!["kanbot-user".to_owned()],
+        groups: Some(vec!["kanbot-user".to_owned()]),
         expires_at: 1_800_000_000,
     }
 }
@@ -199,17 +199,29 @@ async fn updates_a_changed_display_name_or_role(pool: PgPool) {
     assert_eq!(row.display_name.as_deref(), Some("Alice Liddell"));
     assert_eq!(row.platform_role, "admin");
 
-    let mut nameless = promoted;
+    // A token without a name (another client, no profile scope) keeps the
+    // stored one, and so does one without a groups claim.
+    let mut nameless = promoted.clone();
     nameless.display_name = None;
-    service::authenticate(&pool, &nameless).await.unwrap();
-    let name = sqlx::query_scalar!(
-        "SELECT display_name FROM users WHERE id = $1",
+    nameless.groups = None;
+    let seen = service::authenticate(&pool, &nameless).await.unwrap();
+    assert_eq!(seen.groups, ["kanbot-user"]);
+    assert!(!seen.groups_claimed);
+    let row = sqlx::query!(
+        "SELECT display_name, groups FROM users WHERE id = $1",
         user.id.as_uuid()
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(name, None);
+    assert_eq!(row.display_name.as_deref(), Some("Alice Liddell"));
+    assert_eq!(row.groups, ["kanbot-user"]);
+
+    // An empty claim is known: no groups.
+    let mut groupless = promoted;
+    groupless.groups = Some(Vec::new());
+    let seen = service::authenticate(&pool, &groupless).await.unwrap();
+    assert!(seen.groups.is_empty() && seen.groups_claimed);
 }
 
 #[sqlx::test]
@@ -349,11 +361,34 @@ async fn invalid_credentials_are_refused_without_a_reason(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn invalid_credentials_are_refused_on_public_routes_too(pool: PgPool) {
+async fn public_routes_never_look_at_credentials(pool: PgPool) {
+    // A browser sends its session cookie with every request: a public
+    // route answers the same whatever credentials come with it.
+    let (status, challenge, _) = call(
+        common::app_with_pool(pool.clone()),
+        Method::GET,
+        "/auth/config",
+        Some(&bearer("not-a-jwt")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(challenge, None);
+    let health = Request::get("/health")
+        .header(header::AUTHORIZATION, bearer("not-a-jwt"))
+        .header(header::COOKIE, "__Host-kanbot_session=kbs_unknown")
+        .body(Body::empty())
+        .unwrap();
+    let response = common::app_with_pool(pool).oneshot(health).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn invalid_credentials_are_refused_on_protected_routes(pool: PgPool) {
     let (status, challenge, _) = call(
         common::app_with_pool(pool),
         Method::GET,
-        "/health",
+        "/me",
         Some(&bearer("not-a-jwt")),
         None,
     )
@@ -642,6 +677,15 @@ mod search_and_permissions {
             body["errors"],
             json!([{ "pointer": "/query", "code": "too_long" }])
         );
+        // NUL and other control characters: 422, not a database error.
+        for query in ["%00", "a%0Ab", "%1F"] {
+            let (status, body) = api.get(&format!("/users?query={query}"), &root).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}");
+            assert_eq!(
+                body["errors"],
+                json!([{ "pointer": "/query", "code": "invalid" }])
+            );
+        }
         assert_eq!(
             api.get(&format!("/users?query={}", "x".repeat(100)), &root)
                 .await

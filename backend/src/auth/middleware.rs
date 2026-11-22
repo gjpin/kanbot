@@ -6,8 +6,13 @@
 //!   extractor.
 //! - Invalid credentials: `401` at once, never treated as anonymous.
 //! - Valid credentials: the user is recorded, their IdP-synced team
-//!   memberships are brought up to date, and the user is attached to the
-//!   request.
+//!   memberships are brought up to date (when the token carries the groups
+//!   claim), and the user is attached to the request.
+//!
+//! Cheap checks come first, so a refused request costs no database work:
+//! the failed-authentication budget, then CSRF for the session cookie, then
+//! the per-user limit (keyed by the session token, or by the subject of a
+//! verified access token).
 
 use std::{
     net::IpAddr,
@@ -26,6 +31,8 @@ use opentelemetry::{
     metrics::{Counter, Meter},
 };
 
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter, clock::Clock};
+
 use crate::{
     auth::{
         failures::FailureLimiter,
@@ -36,7 +43,8 @@ use crate::{
     http::{
         client_ip::{ClientIp, TrustedProxies},
         middleware::rate_limit::{
-            RateLimit, ip_key, request_client_ip, spawn_periodic, too_many_requests, whole_seconds,
+            InvalidRateLimit, RateLimit, ip_key, request_client_ip, spawn_periodic,
+            too_many_requests, whole_seconds,
         },
         problem::{ErrorCode, Problem},
     },
@@ -84,29 +92,70 @@ pub struct Authentication {
     trusted_proxies: Arc<TrustedProxies>,
     /// Failed authentications per client (`RATE_LIMIT_AUTH_FAILURE_*`).
     failures: Arc<FailureLimiter<IpAddr>>,
+    /// Requests per user (`RATE_LIMIT_USER_*`), keyed by [`user_key`].
+    users: Arc<DefaultKeyedRateLimiter<[u8; 32]>>,
     metrics: AuthMetrics,
 }
 
+/// The limits [`Authentication`] applies.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthLimits {
+    /// Failed authentications per client (`RATE_LIMIT_AUTH_FAILURE_*`).
+    pub failure: RateLimit,
+    /// Requests per user (`RATE_LIMIT_USER_*`).
+    pub user: RateLimit,
+}
+
 impl Authentication {
-    /// Spawns a task (on the current Tokio runtime) that periodically
-    /// forgets clients of the failure limiter.
-    #[must_use]
+    /// Spawns tasks (on the current Tokio runtime) that periodically forget
+    /// idle clients and users.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRateLimit`] if a limit's period rounds to zero.
     pub fn new(
         app: AppState,
         trusted_proxies: Arc<TrustedProxies>,
-        failure_limit: RateLimit,
+        limits: AuthLimits,
         metrics: AuthMetrics,
-    ) -> Self {
-        let failures = Arc::new(FailureLimiter::new(failure_limit));
+    ) -> Result<Self, InvalidRateLimit> {
+        if limits.failure.period().is_zero() {
+            return Err(InvalidRateLimit);
+        }
+        let failures = Arc::new(FailureLimiter::new(limits.failure));
         let cleanup = Arc::clone(&failures);
         spawn_periodic(move || cleanup.retain_recent(Instant::now()));
-        Self {
+        let quota = Quota::with_period(limits.user.period())
+            .ok_or(InvalidRateLimit)?
+            .allow_burst(limits.user.burst);
+        let users: Arc<DefaultKeyedRateLimiter<[u8; 32]>> = Arc::new(RateLimiter::keyed(quota));
+        let cleanup = Arc::clone(&users);
+        spawn_periodic(move || {
+            cleanup.retain_recent();
+            cleanup.shrink_to_fit();
+        });
+        Ok(Self {
             app,
             trusted_proxies,
             failures,
+            users,
             metrics,
-        }
+        })
     }
+
+    /// Spends one request of `key`'s per-user budget, or says how long to
+    /// wait.
+    fn spend(&self, key: &[u8; 32]) -> Result<(), std::time::Duration> {
+        self.users.check_key(key).map_err(|not_until| {
+            not_until.wait_time_from(governor::clock::DefaultClock::default().now())
+        })
+    }
+}
+
+/// The per-user limiter's key for a verified access token's subject. The
+/// issuer is fixed, so the subject names the user.
+fn user_key(subject: &str) -> [u8; 32] {
+    secrets::hash(&format!("subject:{subject}"))
 }
 
 /// What the request presented. `Authorization` wins over the cookie.
@@ -173,6 +222,8 @@ enum Refusal {
     /// A session cookie that no longer works: not an error.
     StaleCookie(Rejection),
     Error(AppError),
+    /// Over the per-user limit, for this long.
+    Limited(std::time::Duration),
 }
 
 impl From<Rejection> for Refusal {
@@ -203,34 +254,41 @@ pub async fn authenticate(
     if let Err(wait) = auth.failures.peek(&client, Instant::now()) {
         return too_many_requests(whole_seconds(wait));
     }
+    if let Credentials::Session {
+        from_cookie: true, ..
+    } = credentials
+        && !csrf_safe(&request, &auth.app.sessions.public_url.origin())
+    {
+        tracing::info!("cross-site request refused");
+        return AppError::Forbidden.into_response();
+    }
     let bearer = match credentials {
         Credentials::Bearer(token) => Some(secrecy::SecretString::from(token.to_owned())),
         _ => None,
     };
     let result = match credentials {
         Credentials::None | Credentials::Unusable => Err(Refusal::Token(Rejection::Malformed)),
-        Credentials::Bearer(token) => user(&auth.app, token).await.map(|user| (user, None)),
+        Credentials::Bearer(token) => user(&auth, token).await.map(|user| (user, None)),
         Credentials::Session { token, from_cookie } => {
+            // Unknown shapes cannot match a session; they fail below.
+            if let Some(hash) = secrets::presented(secrets::SESSION_TOKEN, token)
+                && let Err(wait) = auth.spend(&hash)
+            {
+                return too_many_requests(whole_seconds(wait));
+            }
             session_user(&auth.app, token, from_cookie).await
         }
     };
     let result = match result {
-        Ok((user, session)) => {
+        Ok((user, session)) if user.groups_claimed => {
             match teams::sync_idp_groups(&auth.app.db, user.id, &user.groups).await {
                 Ok(()) => Ok((user, session)),
                 Err(error) => Err(Refusal::Error(error)),
             }
         }
-        Err(refusal) => Err(refusal),
+        other => other,
     };
     match result {
-        Ok((_, Some(session)))
-            if session.from_cookie
-                && !csrf_safe(&request, &auth.app.sessions.public_url.origin()) =>
-        {
-            tracing::info!(session.id = %session.id, "cross-site request refused");
-            AppError::Forbidden.into_response()
-        }
         Ok((user, session)) => {
             request.extensions_mut().insert(user);
             request.extensions_mut().insert(ClientIp(ip));
@@ -252,6 +310,7 @@ pub async fn authenticate(
                 .append(header::SET_COOKIE, sessions::clear_session_cookie());
             response
         }
+        Err(Refusal::Limited(wait)) => too_many_requests(whole_seconds(wait)),
         Err(refusal) => refuse(&auth, client, refusal).into_response(),
     }
 }
@@ -330,13 +389,15 @@ fn refuse(auth: &Authentication, client: IpAddr, refusal: Refusal) -> AppError {
         }
         Refusal::Error(error) => error,
         // Handled by the caller; never an error response.
-        Refusal::StaleCookie(_) => AppError::InvalidToken,
+        Refusal::StaleCookie(_) | Refusal::Limited(_) => AppError::InvalidToken,
     }
 }
 
 /// The user of a bearer token. A token whose key cannot be checked yet
-/// (keys not loaded) is `503`, not `401`: it may well be valid.
-async fn user(state: &AppState, token: &str) -> Result<AuthenticatedUser, Refusal> {
+/// (keys not loaded) is `503`, not `401`: it may well be valid. The
+/// per-user limit applies once the token is verified, before the database.
+async fn user(auth: &Authentication, token: &str) -> Result<AuthenticatedUser, Refusal> {
+    let state = &auth.app;
     let unverified = UnverifiedToken::parse(token)?;
     let key = match state.keys.key(unverified.kid()).await {
         KeyLookup::Found(key) => key,
@@ -344,13 +405,17 @@ async fn user(state: &AppState, token: &str) -> Result<AuthenticatedUser, Refusa
         KeyLookup::NotLoaded => return Err(Refusal::Error(AppError::Unavailable)),
     };
     let principal = unverified.verify(&key, state.keys.config(), now())?;
+    auth.spend(&user_key(&principal.subject))
+        .map_err(Refusal::Limited)?;
     users::authenticate(&state.db, &principal)
         .await
         .map_err(Refusal::Error)
 }
 
+/// Seconds since the Unix epoch. A clock before 1970 reads as the far
+/// future, so every token is expired: failing closed.
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
+        .map_or(u64::MAX, |since| since.as_secs())
 }

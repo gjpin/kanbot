@@ -63,6 +63,7 @@ fuzz_target!(|data: &[u8]| {
             display_name: Some(input.string()),
             telemetry_opt_in: input.bool(),
             groups: (0..input.byte() % 4).map(|_| input.string()).collect(),
+            groups_claimed: true,
             client_id: input.bool().then(|| input.string()),
         },
         via: match input.byte() % 3 {

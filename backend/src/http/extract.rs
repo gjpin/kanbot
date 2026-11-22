@@ -3,7 +3,7 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{
-    auth::{middleware::CurrentSession, token::PlatformRole},
+    auth::middleware::CurrentSession,
     authz::model::{Actor, Via},
     error::AppError,
     http::client_ip::ClientIp,
@@ -30,23 +30,6 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
                 .map(Self)
                 .ok_or(AppError::Unauthorized),
         )
-    }
-}
-
-/// An authenticated platform admin: `401` without a user, `403` for any
-/// other user.
-pub struct RequireAdmin(pub AuthenticatedUser);
-
-impl<S: Send + Sync> FromRequestParts<S> for RequireAdmin {
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let AuthUser(user) = AuthUser::from_request_parts(parts, state).await?;
-        if user.role == PlatformRole::Admin {
-            Ok(Self(user))
-        } else {
-            Err(AppError::Forbidden)
-        }
     }
 }
 
@@ -113,7 +96,7 @@ mod tests {
     use axum::http::Request;
 
     use super::*;
-    use crate::users::model::UserId;
+    use crate::{auth::token::PlatformRole, users::model::UserId};
 
     fn parts(user: Option<AuthenticatedUser>) -> Parts {
         let mut request = Request::new(());
@@ -130,6 +113,7 @@ mod tests {
             display_name: None,
             telemetry_opt_in: false,
             groups: Vec::new(),
+            groups_claimed: true,
             client_id: None,
         }
     }
@@ -182,24 +166,6 @@ mod tests {
         assert!(matches!(
             Caller::from_request_parts(&mut parts(Some(alice)), &()).await,
             Err(AppError::Internal(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn require_admin_needs_an_admin() {
-        let admin = user(PlatformRole::Admin);
-        let RequireAdmin(found) =
-            RequireAdmin::from_request_parts(&mut parts(Some(admin.clone())), &())
-                .await
-                .unwrap();
-        assert_eq!(found, admin);
-        assert!(matches!(
-            RequireAdmin::from_request_parts(&mut parts(Some(user(PlatformRole::User))), &()).await,
-            Err(AppError::Forbidden)
-        ));
-        assert!(matches!(
-            RequireAdmin::from_request_parts(&mut parts(None), &()).await,
-            Err(AppError::Unauthorized)
         ));
     }
 }

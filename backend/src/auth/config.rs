@@ -81,6 +81,8 @@ pub enum OidcConfigError {
     },
     #[error("OIDC_CA_FILE {0:?} holds no valid PEM certificate")]
     CaFileInvalid(String),
+    #[error("OIDC_ADMIN_ROLE and OIDC_USER_ROLE must differ: every user would be an admin")]
+    SameRoles,
 }
 
 impl OidcConfig {
@@ -114,6 +116,15 @@ impl OidcConfig {
         };
         let admin_role = RoleName(non_empty(lookup, "OIDC_ADMIN_ROLE")?);
         let user_role = RoleName(non_empty(lookup, "OIDC_USER_ROLE")?);
+        if admin_role == user_role {
+            return Err(OidcConfigError::SameRoles.into());
+        }
+        if allow_insecure_http {
+            tracing::warn!(
+                "OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP is set: the identity provider is reached \
+                 over plain HTTP; development and tests only"
+            );
+        }
         let subject_claim = match optional(lookup, "OIDC_SUBJECT_CLAIM")? {
             Some(raw) if !raw.trim().is_empty() => ClaimPath::parse(&raw),
             _ => ClaimPath::parse(DEFAULT_SUBJECT_CLAIM),
@@ -538,6 +549,14 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_the_same_role_for_admins_and_users() {
+        assert!(matches!(
+            oidc_error(read(&[("OIDC_USER_ROLE", "kanbot-admin")])),
+            OidcConfigError::SameRoles
+        ));
     }
 
     #[test]

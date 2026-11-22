@@ -46,7 +46,8 @@ pub async fn authenticate(
         role: principal.role,
         display_name: principal.display_name.clone(),
         telemetry_opt_in: seen.telemetry_opt_in,
-        groups: principal.groups.clone(),
+        groups_claimed: principal.groups.is_some(),
+        groups: principal.groups.clone().unwrap_or(seen.groups),
         client_id: principal.client_id.clone(),
     })
 }

@@ -28,6 +28,7 @@ fn actor(id: Uuid, role: PlatformRole, groups: &[&str]) -> Actor {
             display_name: None,
             telemetry_opt_in: false,
             groups: groups.iter().map(|group| (*group).to_owned()).collect(),
+            groups_claimed: true,
             client_id: None,
         },
         via: Via::Bearer,

@@ -87,6 +87,13 @@ impl FieldError {
     }
 }
 
+/// SQLSTATEs that say the database is busy or going away, not that the
+/// query is wrong: a statement timeout (`57014`), too many connections
+/// (`53300`), and shutdown or recovery (`57P01`..`57P03`).
+fn transient_sqlstate(code: &str) -> bool {
+    matches!(code, "57014" | "53300" | "57P01" | "57P02" | "57P03")
+}
+
 impl AppError {
     fn code(&self) -> ErrorCode {
         match self {
@@ -105,6 +112,11 @@ impl AppError {
                 sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_),
             )
             | Self::Unavailable => ErrorCode::Unavailable,
+            Self::Database(sqlx::Error::Database(error))
+                if error.code().is_some_and(|code| transient_sqlstate(&code)) =>
+            {
+                ErrorCode::Unavailable
+            }
             // Anything else (a failed query, a decode error) is a bug.
             Self::Database(_) | Self::Internal(_) => ErrorCode::Internal,
         }

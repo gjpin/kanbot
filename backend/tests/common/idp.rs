@@ -370,7 +370,17 @@ pub fn access_token(subject: &str, groups: &[&str]) -> String {
 /// If a fixture is missing.
 #[must_use]
 pub fn static_key_cache() -> Arc<KeyCache> {
-    let config = config(STATIC_ISSUER, &[]);
+    static_key_cache_with(&[])
+}
+
+/// [`static_key_cache`] with these settings on top.
+///
+/// # Panics
+///
+/// If the settings are invalid.
+#[must_use]
+pub fn static_key_cache_with(extra: &[(&'static str, &str)]) -> Arc<KeyCache> {
+    let config = config(STATIC_ISSUER, extra);
     let client = IdpClient::new(&[]).unwrap();
     let keys: Vec<Value> = DEFAULT_KEYS.iter().map(|name| jwk(name)).collect();
     Arc::new(KeyCache::with_keys(

@@ -253,3 +253,27 @@ async fn failed_writes_map_to_conflict_not_found_or_database(pool: sqlx::PgPool)
         AppError::Database(sqlx::Error::PoolTimedOut)
     ));
 }
+
+/// A statement timeout is the database being busy: `503`, not a bug.
+#[sqlx::test]
+async fn a_statement_timeout_is_unavailable(pool: sqlx::PgPool) {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query!("SET LOCAL statement_timeout = 10")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let timeout = sqlx::query!("SELECT pg_sleep(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+    let response = axum::response::IntoResponse::into_response(AppError::from(timeout));
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // A failed query is still a bug.
+    let mut tx = pool.begin().await.unwrap();
+    let broken = sqlx::query_scalar!("SELECT 1 / (random() * 0)::int AS x")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_err();
+    let response = axum::response::IntoResponse::into_response(AppError::from(broken));
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}

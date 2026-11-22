@@ -1522,6 +1522,24 @@ async fn cookie_sessions_need_csrf_proof_to_change_anything(pool: PgPool) {
     // Reading needs no proof.
     let read = Request::get("/me").header(header::COOKIE, &cookie);
     assert_eq!(send(&app, read).await, StatusCode::OK);
+
+    // A cross-site request is refused before the session is used at all:
+    // it does not even keep the session alive.
+    sqlx::query!("UPDATE sessions SET last_used_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(&app, put(Some("https://evil.example"), Some("1"))).await,
+        StatusCode::FORBIDDEN
+    );
+    let touched = sqlx::query_scalar!(
+        r#"SELECT last_used_at > now() - interval '1 minute' AS "touched!" FROM sessions"#
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!touched);
 }
 
 #[sqlx::test]

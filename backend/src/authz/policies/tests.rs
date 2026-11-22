@@ -19,6 +19,7 @@ fn actor(role: PlatformRole) -> Actor {
             display_name: None,
             telemetry_opt_in: false,
             groups: vec!["engineering".to_owned()],
+            groups_claimed: true,
             client_id: Some("kanbot".to_owned()),
         },
         via: Via::Web,

@@ -68,7 +68,7 @@ pub struct Credentials {
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
+        .map_or(u64::MAX, |since| since.as_secs())
 }
 
 /// The audiences and expiry of a JWT's payload. The signature is not

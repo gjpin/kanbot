@@ -71,7 +71,7 @@ fn accepts_a_valid_token() {
             role: PlatformRole::User,
             client_id: Some("kanbot-cli".to_owned()),
             display_name: Some("Alice".to_owned()),
-            groups: vec!["kanbot-user".to_owned(), "staff".to_owned()],
+            groups: Some(vec!["kanbot-user".to_owned(), "staff".to_owned()]),
             expires_at: 1_800_000_300,
         }
     );
@@ -400,7 +400,7 @@ fn roles_claim() {
     // Non-string items are ignored.
     let principal = role(json!([1, null, {"x": 1}, "kanbot-user"])).unwrap();
     assert_eq!(principal.role, PlatformRole::User);
-    assert_eq!(principal.groups, ["kanbot-user"]);
+    assert_eq!(principal.groups.unwrap(), ["kanbot-user"]);
 
     for groups in [
         json!(["staff"]),
@@ -440,17 +440,147 @@ fn groups_come_from_the_groups_claim() {
     let config = config(&[("OIDC_GROUPS_CLAIM", "teams")]);
     let claims = with(claims(), "teams", json!(["platform", 7, "ops"]));
     let principal = validate_with(&sign("rsa-a", &claims), &config, &keys(&[])).unwrap();
-    assert_eq!(principal.groups, ["platform", "ops"]);
+    assert_eq!(principal.groups.unwrap(), ["platform", "ops"]);
     assert_eq!(principal.role, PlatformRole::User);
 
-    // No groups claim, or not an array: no groups, still signed in.
+    // An empty claim is known to be empty.
+    let empty = with(claims.clone(), "teams", json!([]));
+    let principal = validate_with(&sign("rsa-a", &empty), &config, &keys(&[])).unwrap();
+    assert_eq!(principal.groups, Some(Vec::new()));
+
+    // No groups claim, or not an array: unknown, still signed in.
     for claims in [
         without(claims.clone(), "teams"),
         with(claims, "teams", json!("platform")),
     ] {
         let principal = validate_with(&sign("rsa-a", &claims), &config, &keys(&[])).unwrap();
-        assert_eq!(principal.groups, Vec::<String>::new());
+        assert_eq!(principal.groups, None);
     }
+}
+
+#[test]
+fn values_the_database_cannot_store_are_dropped() {
+    let principal = validate(&sign(
+        "rsa-a",
+        &with(
+            with(claims(), "groups", json!(["kanbot-user", "bad\u{0}group"])),
+            "name",
+            json!("Al\u{0}ice"),
+        ),
+    ))
+    .unwrap();
+    assert_eq!(principal.groups.unwrap(), ["kanbot-user"]);
+    assert_eq!(principal.display_name, None);
+}
+
+#[test]
+fn long_display_names_are_cut() {
+    let name = "é".repeat(500);
+    let principal = validate(&sign("rsa-a", &with(claims(), "name", json!(name)))).unwrap();
+    assert_eq!(principal.display_name.unwrap().chars().count(), 200);
+}
+
+#[test]
+fn an_empty_client_claim_falls_through_to_the_next() {
+    let claims = with(
+        with(claims(), "azp", json!("")),
+        "client_id",
+        json!("kanbot-cli"),
+    );
+    assert_eq!(
+        validate(&sign("rsa-a", &claims))
+            .unwrap()
+            .client_id
+            .as_deref(),
+        Some("kanbot-cli")
+    );
+}
+
+#[test]
+fn debug_output_leaves_out_personal_data() {
+    let principal = validate(&sign("rsa-a", &claims())).unwrap();
+    let debug = format!("{principal:?}");
+    assert!(
+        !debug.contains("Alice") && !debug.contains("user-1") && !debug.contains("staff"),
+        "{debug}"
+    );
+    assert!(debug.contains("kanbot-cli"), "{debug}");
+}
+
+#[test]
+fn only_jwt_access_and_id_token_types_are_accepted() {
+    let token = |typ: Value| {
+        sign_with_header(
+            &json!({ "alg": "RS256", "kid": "rsa-a", "typ": typ }),
+            &encoding_key("rsa-a"),
+            Algorithm::RS256,
+            &claims(),
+        )
+    };
+    for typ in [
+        "JWT",
+        "jwt",
+        "at+jwt",
+        "application/at+JWT",
+        "application/jwt",
+    ] {
+        assert!(validate(&token(json!(typ))).is_ok(), "{typ}");
+    }
+    for typ in ["logout+jwt", "dpop+jwt", "secevent+jwt", "JOSE", ""] {
+        assert_eq!(
+            validate(&token(json!(typ))),
+            Err(Rejection::Malformed),
+            "{typ}"
+        );
+    }
+}
+
+#[test]
+fn foreign_tokens_are_verified_for_their_own_audience() {
+    let config = config(&[]);
+    let keys = keys(&[]);
+    let verify = |claims: &Value| {
+        let token = sign("rsa-a", claims);
+        let token = UnverifiedToken::parse(&token)?;
+        let key = keys.get(token.kid()).ok_or(Rejection::UnknownKey)?;
+        token.verify_foreign(&key, &config, "openshell-gateway", NOW)
+    };
+    let gateway = with(claims(), "aud", json!(["openshell-gateway", "other"]));
+    let verified = verify(&gateway).unwrap();
+    assert_eq!(verified.audiences, ["openshell-gateway", "other"]);
+    assert_eq!(verified.subject.as_deref(), Some("user-1"));
+    assert_eq!(verified.expires_at, 1_800_000_300);
+    // No role needed; the subject is optional.
+    assert!(verify(&without(without(gateway.clone(), "groups"), "sub")).is_ok());
+    assert_eq!(verify(&claims()), Err(Rejection::WrongAudience));
+    assert_eq!(
+        verify(&with(
+            gateway.clone(),
+            "iss",
+            json!("https://other.example.com")
+        )),
+        Err(Rejection::WrongIssuer)
+    );
+    assert_eq!(
+        verify(&with(gateway.clone(), "exp", json!(NOW - 61))),
+        Err(Rejection::Expired)
+    );
+    let forged = sign_with_header(
+        &json!({ "alg": "RS256", "kid": "rsa-a" }),
+        &encoding_key("rsa-b"),
+        Algorithm::RS256,
+        &gateway,
+    );
+    let parsed = UnverifiedToken::parse(&forged).unwrap();
+    assert_eq!(
+        parsed.verify_foreign(
+            &keys.get("rsa-a").unwrap(),
+            &config,
+            "openshell-gateway",
+            NOW
+        ),
+        Err(Rejection::BadSignature)
+    );
 }
 
 #[test]

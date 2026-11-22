@@ -191,6 +191,8 @@ where
         loop {
             interval.tick().await;
             limiter.retain_recent();
+            // The map keeps its largest size otherwise.
+            limiter.shrink_to_fit();
         }
     });
     Ok(router.layer(GovernorLayer::new(config).error_handler(|error| rejection(&error))))
@@ -235,7 +237,10 @@ where
         .allow_burst(limit.burst);
     let limiter: Arc<DefaultKeyedRateLimiter<UserId>> = Arc::new(RateLimiter::keyed(quota));
     let cleanup = Arc::clone(&limiter);
-    spawn_periodic(move || cleanup.retain_recent());
+    spawn_periodic(move || {
+        cleanup.retain_recent();
+        cleanup.shrink_to_fit();
+    });
     Ok(router.layer(axum::middleware::from_fn_with_state(limiter, per_user)))
 }
 

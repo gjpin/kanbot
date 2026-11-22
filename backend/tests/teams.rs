@@ -194,6 +194,43 @@ async fn every_authenticated_request_syncs_the_groups(pool: PgPool) {
     assert_eq!(memberships(&pool, alice).await, []);
 }
 
+#[sqlx::test]
+async fn a_token_without_the_groups_claim_keeps_the_memberships(pool: PgPool) {
+    // Roles and groups in separate claims: a token from another client may
+    // carry the roles without the groups.
+    let keys = common::idp::static_key_cache_with(&[("OIDC_GROUPS_CLAIM", "teams")]);
+    let app = common::app_with_keys(pool.clone(), &kanbot_backend::db::MIGRATOR, keys);
+    let team = insert_team(&pool, "platform", Some("platform-team")).await;
+    let token = |teams: Option<&[&str]>| {
+        let mut claims = common::idp::claims("alice", &["kanbot-user"]);
+        if let Some(teams) = teams {
+            claims["teams"] = serde_json::json!(teams);
+        }
+        common::idp::sign("rsa-a", &claims)
+    };
+
+    assert_eq!(
+        get_me(&app, &token(Some(&["platform-team"]))).await,
+        StatusCode::OK
+    );
+    let alice = UserId::from_uuid(
+        sqlx::query_scalar!("SELECT id FROM users WHERE subject = 'alice'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(memberships(&pool, alice).await.len(), 1);
+
+    assert_eq!(get_me(&app, &token(None)).await, StatusCode::OK);
+    assert_eq!(
+        memberships(&pool, alice).await,
+        [(team, "member".to_owned(), "idp".to_owned())],
+        "unknown groups are not no groups"
+    );
+    assert_eq!(get_me(&app, &token(Some(&[]))).await, StatusCode::OK);
+    assert_eq!(memberships(&pool, alice).await, []);
+}
+
 fn team_slugs(list: &Value) -> Vec<&str> {
     list.as_array()
         .unwrap()

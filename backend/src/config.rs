@@ -114,6 +114,26 @@ pub enum ConfigError {
     OpenShell(#[from] crate::openshell::config::OpenShellConfigError),
 }
 
+/// `DATABASE_URL`, all that `kanbot-backend migrate` reads.
+///
+/// # Errors
+///
+/// [`ConfigError::Var`] if it is missing or not Unicode.
+pub fn database_url_from_env() -> Result<SecretString, ConfigError> {
+    database_url(&std::env::var)
+}
+
+fn database_url(
+    lookup: &impl Fn(&'static str) -> Result<String, VarError>,
+) -> Result<SecretString, ConfigError> {
+    lookup("DATABASE_URL")
+        .map(SecretString::from)
+        .map_err(|source| ConfigError::Var {
+            name: "DATABASE_URL",
+            source,
+        })
+}
+
 impl Config {
     /// Reads the configuration from the process environment.
     ///
@@ -140,12 +160,7 @@ impl Config {
             .parse()
             .map_err(ConfigError::ListenAddr)?;
 
-        let database_url = lookup("DATABASE_URL")
-            .map(SecretString::from)
-            .map_err(|source| ConfigError::Var {
-                name: "DATABASE_URL",
-                source,
-            })?;
+        let database_url = database_url(&lookup)?;
 
         let cors_allowed_origins = optional(&lookup, "CORS_ALLOWED_ORIGINS")?
             .unwrap_or_default()
@@ -331,6 +346,7 @@ fn authz_policies(
 /// exact form browsers send in the `Origin` header. Rejects `*`, paths and
 /// trailing slashes, which would never match a request.
 fn parse_origin(raw: &str) -> Result<HeaderValue, ConfigError> {
+    let invalid = || ConfigError::CorsOrigin(raw.to_owned());
     let origin = raw.to_ascii_lowercase();
     let host = origin
         .strip_prefix("https://")
@@ -340,9 +356,15 @@ fn parse_origin(raw: &str) -> Result<HeaderValue, ConfigError> {
                 && host
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
-        });
-    host.and_then(|_| HeaderValue::from_str(&origin).ok())
-        .ok_or_else(|| ConfigError::CorsOrigin(raw.to_owned()))
+        })
+        .ok_or_else(invalid)?;
+    // A real URL with a host and a valid port, written as browsers send it
+    // (a default port is left out).
+    let url = Url::parse(&origin).map_err(|_| invalid())?;
+    if url.host_str().is_none_or(str::is_empty) || host.ends_with(':') {
+        return Err(invalid());
+    }
+    HeaderValue::from_str(&url.origin().ascii_serialization()).map_err(|_| invalid())
 }
 
 /// An `http(s)` base URL. Credentials belong in the collector's network
@@ -426,6 +448,28 @@ mod tests {
     }
 
     #[test]
+    fn migrations_need_only_the_database_url() {
+        // Nothing else is set (no OIDC, no session keys), so the server
+        // could not start: migrate can.
+        let only = |name: &'static str| match name {
+            "DATABASE_URL" => Ok("postgres://db".to_owned()),
+            _ => Err(VarError::NotPresent),
+        };
+        assert_eq!(
+            database_url(&only).unwrap().expose_secret(),
+            "postgres://db"
+        );
+        assert!(Config::from_lookup(only).is_err());
+        assert!(matches!(
+            database_url(&lookup(&[])),
+            Err(ConfigError::Var {
+                name: "DATABASE_URL",
+                source: VarError::NotPresent
+            })
+        ));
+    }
+
+    #[test]
     fn requires_database_url() {
         let err = Config::from_lookup(lookup(&[])).err().unwrap();
         assert!(matches!(
@@ -475,6 +519,18 @@ mod tests {
     }
 
     #[test]
+    fn cors_origins_are_written_as_browsers_send_them() {
+        assert_eq!(
+            origins("https://app.example.com:443,http://localhost:80,http://[::1]:8080").unwrap(),
+            [
+                "https://app.example.com",
+                "http://localhost",
+                "http://[::1]:8080"
+            ]
+        );
+    }
+
+    #[test]
     fn empty_cors_origins_allow_none() {
         assert_eq!(origins("").unwrap(), Vec::<HeaderValue>::new());
     }
@@ -490,6 +546,10 @@ mod tests {
             "https://app.example.com/path",
             "https://user@app.example.com",
             "https://app example.com",
+            "https://:",
+            "https://app.example.com:",
+            "https://app.example.com:9999999",
+            "https://[::1",
         ] {
             let err = origins(bad).err().unwrap();
             assert!(
@@ -771,9 +831,16 @@ mod tests {
     proptest! {
         #[test]
         fn accepts_well_formed_origins(
-            origin in "https?://[a-z0-9-]{1,20}(\\.[a-z]{2,6}){0,2}(:[0-9]{1,5})?"
+            origin in "https?://[a-z][a-z0-9-]{0,19}(\\.[a-z]{2,6}){0,2}(:[1-9][0-9]{0,3})?"
         ) {
-            prop_assert_eq!(origins(&origin).unwrap(), [origin.as_str()]);
+            let default_port = origin.starts_with("https://") && origin.ends_with(":443")
+                || origin.starts_with("http://") && origin.ends_with(":80");
+            let expected = if default_port {
+                origin.rsplit_once(':').unwrap().0.to_owned()
+            } else {
+                origin.clone()
+            };
+            prop_assert_eq!(origins(&origin).unwrap(), [expected.as_str()]);
         }
 
         #[test]

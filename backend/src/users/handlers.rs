@@ -91,7 +91,7 @@ pub(super) async fn search(
     Query(search): Query<UserSearch>,
 ) -> Result<Json<Vec<UserSummaryDto>>, AppError> {
     let query = UserQuery::parse(search.query.as_deref().unwrap_or_default())
-        .ok_or_else(|| AppError::Validation(vec![FieldError::new("/query", "too_long")]))?;
+        .map_err(|code| AppError::Validation(vec![FieldError::new("/query", code)]))?;
     let users = service::search(&state.db, &state.authz, &actor, &query).await?;
     Ok(Json(users.into_iter().map(UserSummaryDto::from).collect()))
 }

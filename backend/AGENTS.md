@@ -36,7 +36,7 @@ backend/
 │   │   ├── web.rs           # serving the Flutter web build (WEB_DIR) and its Content-Security-Policy
 │   │   ├── client_ip.rs     # client address behind trusted proxies (X-Forwarded-For)
 │   │   ├── middleware/      # cross-cutting middleware (request telemetry, security headers, rate limit, ...)
-│   │   └── extract.rs       # shared custom extractors (AuthUser, RequireAdmin)
+│   │   └── extract.rs       # shared custom extractors (AuthUser, Caller, UserAccessToken)
 │   ├── auth/                # OIDC: config, discovery, JWKS key cache, access-token validation, authentication middleware
 │   ├── users/               # users table (upserted on each authenticated request), /me
 │   ├── sessions/            # kanbot sessions: /auth/* login flow, native handoff, IdP token refresh, cleanup
@@ -181,9 +181,11 @@ Tests (`#[test]`, `#[cfg(test)]`) may use `unwrap`, `expect`, `panic!`, indexing
 - Database pool: `max_connections`, `acquire_timeout` and a PostgreSQL `statement_timeout`.
 
 - Per-client rate limiting (`http/middleware/rate_limit.rs`, `tower_governor`), keyed by client IP (`http/client_ip.rs`): `X-Forwarded-For` is read only from `TRUSTED_PROXIES`, so clients cannot choose their own key. The server must keep serving with `into_make_service_with_connect_info`; without it, requests fail closed (`500`). Applied to every route.
-- Per-user rate limiting (`rate_limit::limit_per_user`, `governor`'s keyed limiter by user ID), inside the authentication middleware. Applied to every route (`RATE_LIMIT_USER_*`), and to the telemetry relay (`RATE_LIMIT_TELEMETRY_*`).
+- Per-user rate limiting (`RATE_LIMIT_USER_*`), in the authentication middleware, before any database work: keyed by the session token, or by the subject of a verified access token. The telemetry relay has its own limit per user ID (`rate_limit::limit_per_user`, `RATE_LIMIT_TELEMETRY_*`).
 - Failed-authentication limiting (`auth/middleware.rs`, `auth/failures.rs`), per client IP: every refused credential (`401`) spends budget; a client over budget gets `429` for any request with credentials, before they are checked. It is a small GCRA of its own because `governor` cannot check a key without spending budget.
 - Load shedding: a global cap on requests in flight (`tower` `GlobalConcurrencyLimit` + `LoadShed`; a plain `ConcurrencyLimit` added with `Router::layer` would cap each route separately). Above it, requests get `503` with `Retry-After`.
+- `/health` sits outside the cap and every rate limit, so a busy instance is never restarted by its liveness probe. `/ready` is limited, and reuses its answer for a second.
+- The authentication middleware wraps only the protected routes (and the relay). The public routes and the web build's files never look at credentials: a browser sends the session cookie with every file it loads.
 
 ### Rate limits
 
@@ -202,7 +204,7 @@ The defaults are sized for a 10,000-employee company where everyone may reach ka
 - Limits are kept in memory per server instance, so N instances allow N times the traffic. Say so wherever deployment is documented.
 - IPv6 clients are keyed by their **/64** prefix, IPv4 clients by their full address.
 - Client IPs come from `http/client_ip.rs`, so `TRUSTED_PROXIES` applies.
-- The failed-authentication limiter is checked before credentials are validated. The per-user limiter runs after authentication, keyed by the user ID.
+- The failed-authentication limiter is checked before credentials are validated. The per-user limiter runs before the database: for a session, keyed by its token; for an access token, by its subject once the signature is verified. A refused stale cookie or a valid token without a role spends no failed-authentication budget: after a mass session expiry, or with role-less users behind one corporate address, that would lock everyone out.
 - Rejections are `429 rate_limited` problems with `Retry-After`.
 - A rate limit of zero, or one that is not a number, is a startup error.
 
@@ -214,7 +216,7 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 
 | Variable | Phase | Default | Meaning |
 |---|---|---|---|
-| `DATABASE_URL` | | required | PostgreSQL connection string (secret) |
+| `DATABASE_URL` | | required | PostgreSQL connection string (secret). The only variable `kanbot-backend migrate` reads |
 | `DATABASE_MAX_CONNECTIONS` | 2 | `10` | Pool size per instance |
 | `LISTEN_ADDR` | | `127.0.0.1:3000` | HTTP listen address |
 | `CORS_ALLOWED_ORIGINS` | | none | Browser origins allowed cross-origin, comma-separated. Optional when the backend serves the web build (`WEB_DIR`) |
@@ -225,7 +227,7 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `OIDC_ISSUER` | 2 | required | Must equal the tokens' `iss` and the discovery document's `issuer` exactly. HTTPS only |
 | `OIDC_AUDIENCE` | 2 | required | Accepted access-token audience, for example `kanbot-api` |
 | `OIDC_ROLES_CLAIM` | 2 | required | Dot path to the roles array (`groups`, `roles`, `realm_access.roles`) |
-| `OIDC_ADMIN_ROLE` | 2 | required | Role that grants platform admin, for example `kanbot-admin`. Must not be empty |
+| `OIDC_ADMIN_ROLE` | 2 | required | Role that grants platform admin, for example `kanbot-admin`. Must not be empty, nor equal `OIDC_USER_ROLE` |
 | `OIDC_USER_ROLE` | 2 | required | Role that grants access, for example `kanbot-user`. Must not be empty |
 | `OIDC_SUBJECT_CLAIM` | 2 | `sub` | Claim that identifies the user. `oid` for Entra ID |
 | `OIDC_ALLOWED_CLIENTS` | 2 | any | Comma-separated client IDs, matched against `azp`, then `client_id`, then `cid`. Must not contain `OIDC_AUDIENCE` |
@@ -282,7 +284,8 @@ These rules hold in every change:
 - **Never log, trace or put in metrics:** tokens, codes, cookies, the client secret or session keys; raw claims other than issuer, subject ID and client ID; display names or emails. Record internal IDs (`user.id`) instead.
 - **Database errors** are logged as the error kind, SQLSTATE and constraint name only. Postgres error details can contain row values (`Key (subject)=(...) already exists`).
 - **Auth failures return stable problem codes only**, never the reason. `401` responses carry `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750) when a bearer token was presented, and plain `WWW-Authenticate: Bearer` when none was. The reason goes only into the bounded `reason` attribute of the `kanbot.auth.token.rejections` metric.
-- **Invalid credentials are a `401`**, never treated as anonymous. Until the IdP's keys have loaded, authenticated requests get `503 unavailable`, not `401`.
+- **Invalid credentials are a `401`** on every protected route, never treated as anonymous. Until the IdP's keys have loaded, authenticated requests get `503 unavailable`, not `401`. The public routes do not look at credentials at all.
+- **Claims:** a token without the groups claim says nothing about groups: the stored ones (`users.groups`) are used and team sync is skipped. A token without a display name keeps the stored one. Values the database cannot store (NUL) are dropped.
 - **Outbound calls** (IdP discovery, JWKS, token endpoint) have connect and total timeouts, do not follow redirects, and cap how many response bytes they read.
 - **CSRF:** a state-changing request authenticated by the session cookie needs `Origin` equal to `PUBLIC_URL`'s origin and `X-Kanbot-CSRF: 1`, else `403`. Bearer requests are exempt.
 - **Cookies** are `__Host-` (`Secure`, `Path=/`, no `Domain`) and `HttpOnly`: the session is `SameSite=Strict`, the login binding `SameSite=Lax` (it must survive the IdP's redirect).

@@ -77,12 +77,17 @@ async fn status(app: &Router, request: Request<Body>) -> StatusCode {
     app.clone().oneshot(request).await.unwrap().status()
 }
 
+/// A public route that is rate limited (`/health` is not).
 fn health() -> Request<Body> {
+    Request::get("/auth/config").body(Body::empty()).unwrap()
+}
+
+fn liveness() -> Request<Body> {
     Request::get("/health").body(Body::empty()).unwrap()
 }
 
 fn health_forwarded_for(client: &str) -> Request<Body> {
-    Request::get("/health")
+    Request::get("/auth/config")
         .header("x-forwarded-for", client)
         .body(Body::empty())
         .unwrap()
@@ -115,6 +120,8 @@ async fn rate_limits_each_client_ip() {
     assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(rejected.headers()[header::RETRY_AFTER], "1");
     assert_eq!(problem_code(rejected).await, "rate_limited");
+    // Liveness is never limited: a busy instance must not be restarted.
+    assert_eq!(status(&app, liveness()).await, StatusCode::OK);
 
     // The limiter is shared by every router built from these settings only;
     // a client with another address has its own budget.
@@ -265,6 +272,51 @@ async fn rate_limits_each_user(pool: PgPool) {
     }
 }
 
+#[sqlx::test]
+async fn the_user_limit_comes_before_the_database(pool: PgPool) {
+    // Over the limit, a request is refused before the session is looked
+    // up: even an unknown session token gets 429, not 401.
+    let app = app_from(
+        common::PEER,
+        pool.clone(),
+        settings(RateLimits {
+            user: limit(1, 1),
+            ..RateLimits::DEFAULT
+        }),
+    );
+    let session = |token: &str| {
+        Request::get("/me")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let unknown = format!("kbs_{}", "a".repeat(43));
+    assert_eq!(
+        status(&app, session(&unknown)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(&app, session(&unknown)).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // An access token over the limit never reaches the users table.
+    assert_eq!(status(&app, me(Some("alice"))).await, StatusCode::OK);
+    sqlx::query!("DELETE FROM users")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&app, me(Some("alice"))).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let users = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM users"#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+}
+
 /// A collector that answers after `delay`.
 async fn slow_collector(delay: Duration) -> reqwest::Url {
     let app = Router::new().route(
@@ -317,6 +369,7 @@ async fn sheds_load_above_the_in_flight_cap(pool: PgPool) {
     assert_eq!(shed.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(shed.headers()[header::RETRY_AFTER], "1");
     assert_eq!(problem_code(shed).await, "unavailable");
+    assert_eq!(status(&app, liveness()).await, StatusCode::OK, "never shed");
 
     assert_eq!(in_flight.await.unwrap().unwrap().status(), StatusCode::OK);
     assert_eq!(status(&app, health()).await, StatusCode::OK);

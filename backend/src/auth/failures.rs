@@ -77,10 +77,19 @@ impl<K: Eq + Hash> FailureLimiter<K> {
     /// Forgets keys that are back to a full burst at `now`, so memory does
     /// not grow with every key ever seen.
     pub fn retain_recent(&self, now: Instant) {
+        let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        arrivals.retain(|_, arrival| *arrival > now);
+        // A flood of clients would otherwise keep its memory for good.
+        arrivals.shrink_to_fit();
+    }
+
+    /// How many keys the map has room for without growing.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
         self.arrivals
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, arrival| *arrival > now);
+            .capacity()
     }
 
     /// How many keys are tracked.
@@ -200,5 +209,20 @@ mod tests {
         assert_eq!(limiter.len(), 1);
         limiter.retain_recent(at(start, 2900));
         assert!(limiter.is_empty());
+    }
+
+    #[test]
+    fn forgetting_gives_the_memory_back() {
+        let limiter = FailureLimiter::new(RateLimit {
+            per_second: NonZeroU32::new(1).unwrap(),
+            burst: NonZeroU32::new(1).unwrap(),
+        });
+        let start = Instant::now();
+        for key in 0..10_000_u32 {
+            limiter.check(key, start).unwrap();
+        }
+        assert!(limiter.capacity() >= 10_000);
+        limiter.retain_recent(at(start, 2000));
+        assert!(limiter.capacity() < 100, "{}", limiter.capacity());
     }
 }

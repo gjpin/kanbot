@@ -9,7 +9,8 @@ use crate::{
 
 /// Records that the principal's user was seen, creating the user on first
 /// sight. One statement: it writes only when the user is new, was last
-/// seen over 5 minutes ago, or their display name or role changed.
+/// seen over 5 minutes ago, or their display name, role or groups changed.
+/// A token without a display name or groups claim keeps the stored ones.
 ///
 /// `None` only when another request created the same user concurrently;
 /// the caller retries.
@@ -18,24 +19,29 @@ pub(super) async fn record_seen(
     db: &PgPool,
     principal: &Principal,
 ) -> Result<Option<SeenUser>, sqlx::Error> {
+    let groups: Option<&[String]> = principal.groups.as_deref();
     let row = sqlx::query!(
         r#"
         WITH upserted AS (
-            INSERT INTO users (id, issuer, subject, display_name, platform_role)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO users (id, issuer, subject, display_name, platform_role, groups)
+            VALUES ($1, $2, $3, $4, $5, COALESCE($6::text[], '{}'))
             ON CONFLICT (issuer, subject) DO UPDATE
-                SET display_name = EXCLUDED.display_name,
+                SET display_name = COALESCE(EXCLUDED.display_name, users.display_name),
                     platform_role = EXCLUDED.platform_role,
+                    groups = COALESCE($6, users.groups),
                     last_seen_at = now()
                 WHERE users.last_seen_at < now() - interval '5 minutes'
-                   OR users.display_name IS DISTINCT FROM EXCLUDED.display_name
+                   OR (EXCLUDED.display_name IS NOT NULL
+                       AND users.display_name IS DISTINCT FROM EXCLUDED.display_name)
                    OR users.platform_role <> EXCLUDED.platform_role
-            RETURNING id, disabled_at IS NOT NULL AS disabled, telemetry_opt_in
+                   OR ($6::text[] IS NOT NULL AND users.groups IS DISTINCT FROM $6)
+            RETURNING id, disabled_at IS NOT NULL AS disabled, telemetry_opt_in, groups
         )
-        SELECT id AS "id!", disabled AS "disabled!", telemetry_opt_in AS "telemetry_opt_in!"
+        SELECT id AS "id!", disabled AS "disabled!", telemetry_opt_in AS "telemetry_opt_in!",
+               groups AS "groups!"
         FROM upserted
         UNION ALL
-        SELECT id, disabled_at IS NOT NULL, telemetry_opt_in
+        SELECT id, disabled_at IS NOT NULL, telemetry_opt_in, groups
         FROM users
         WHERE issuer = $2 AND subject = $3 AND NOT EXISTS (SELECT 1 FROM upserted)
         "#,
@@ -44,6 +50,7 @@ pub(super) async fn record_seen(
         principal.subject,
         principal.display_name,
         principal.role.as_str(),
+        groups,
     )
     .fetch_optional(db)
     .await?;
@@ -51,6 +58,7 @@ pub(super) async fn record_seen(
         id: UserId::from_uuid(row.id),
         disabled: row.disabled,
         telemetry_opt_in: row.telemetry_opt_in,
+        groups: row.groups,
     }))
 }
 

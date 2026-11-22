@@ -826,8 +826,10 @@ async fn key_for<'t>(
     }
 }
 
+/// Seconds since the Unix epoch; a clock before 1970 fails closed (see
+/// `auth::middleware`).
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
+        .map_or(u64::MAX, |since| since.as_secs())
 }

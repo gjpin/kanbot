@@ -1,9 +1,11 @@
 //! The identity provider's signing keys: parsing the JWKS, and the cache
 //! that keeps them fresh.
 //!
-//! Only keys kanbot can verify safely are kept: RSA of at least 2048 bits,
-//! EC P-256 and P-384, and Ed25519, meant for signatures. Anything else is
-//! skipped, never an error, so one odd key cannot take authentication down.
+//! Only keys kanbot can verify safely are kept: RSA of 2048 to 8192 bits,
+//! EC P-256 and P-384, and Ed25519, meant for signatures (`use` and
+//! `key_ops`), whose key material is valid. Anything else is skipped, never
+//! an error, so one odd key cannot take authentication down, shadow a good
+//! key with the same `kid`, or replace a good key set.
 
 use std::{
     collections::HashMap,
@@ -16,7 +18,7 @@ use std::{
 
 use jsonwebtoken::{
     Algorithm, DecodingKey,
-    jwk::{AlgorithmParameters, EllipticCurve, Jwk, PublicKeyUse},
+    jwk::{AlgorithmParameters, EllipticCurve, Jwk, KeyOperations, PublicKeyUse},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -31,6 +33,12 @@ use crate::auth::{
 pub const MAX_JWKS_BYTES: usize = 256 * 1024;
 /// Smallest RSA modulus accepted, in bits.
 pub const MIN_RSA_BITS: usize = 2048;
+/// Largest RSA modulus accepted, in bits: the verifier refuses larger ones.
+pub const MAX_RSA_BITS: usize = 8192;
+/// Largest RSA public exponent the verifier accepts: 2^33 - 1.
+const MAX_RSA_EXPONENT: u64 = (1 << 33) - 1;
+/// Length of an Ed25519 public key, in bytes.
+const ED25519_KEY_BYTES: usize = 32;
 /// An unknown `kid` refreshes the keys at most this often.
 pub const UNKNOWN_KEY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// First retry delay after a failed refresh. Doubles up to
@@ -96,21 +104,63 @@ impl KeySet {
 
 fn usable_key(value: &Value) -> Option<(String, VerifyingKey)> {
     let jwk: Jwk = serde_json::from_value(value.clone()).ok()?;
-    if !matches!(
-        jwk.common.public_key_use,
-        None | Some(PublicKeyUse::Signature)
-    ) {
+    if !for_signatures(&jwk) {
         return None;
     }
-    let kid = jwk.common.key_id.clone()?;
+    let kid = jwk.common.key_id.clone().filter(|kid| !kid.is_empty())?;
     let algorithm = algorithm_for(&jwk)?;
     let key = DecodingKey::from_jwk(&jwk).ok()?;
-    if let AlgorithmParameters::RSA(_) = jwk.algorithm
-        && rsa_modulus_bits(&key)? < MIN_RSA_BITS
-    {
-        return None;
+    valid_material(&key, algorithm).then_some((kid, VerifyingKey { algorithm, key }))
+}
+
+/// Whether the key may verify signatures: `use` absent or `sig`, and
+/// `key_ops` (RFC 7517, section 4.3) absent or listing only `verify`.
+fn for_signatures(jwk: &Jwk) -> bool {
+    let usable = matches!(
+        jwk.common.public_key_use,
+        None | Some(PublicKeyUse::Signature)
+    );
+    let operations = jwk.common.key_operations.as_ref().is_none_or(|operations| {
+        !operations.is_empty()
+            && operations
+                .iter()
+                .all(|operation| *operation == KeyOperations::Verify)
+    });
+    usable && operations
+}
+
+/// Whether the key material can verify anything. A key that cannot would
+/// fail every token (a short Ed25519 key even panics in `jsonwebtoken`), so
+/// it is skipped like any other unusable key.
+fn valid_material(key: &DecodingKey, algorithm: Algorithm) -> bool {
+    match key.kind() {
+        jsonwebtoken::DecodingKeyKind::RsaModulusExponent { n, e } => {
+            rsa_modulus_bits(key).is_some_and(|bits| (MIN_RSA_BITS..=MAX_RSA_BITS).contains(&bits))
+                && n.last().is_some_and(|byte| byte % 2 == 1)
+                && rsa_exponent_is_valid(e)
+        }
+        jsonwebtoken::DecodingKeyKind::SecretOrDer(bytes) => {
+            let length_ok = algorithm != Algorithm::EdDSA || bytes.len() == ED25519_KEY_BYTES;
+            // Building the verifier checks EC and Ed25519 points; the empty
+            // signature then simply does not match.
+            length_ok && jsonwebtoken::crypto::verify("", b"", key, algorithm).is_ok()
+        }
     }
-    Some((kid, VerifyingKey { algorithm, key }))
+}
+
+/// An odd exponent of at least 3 that the verifier accepts.
+fn rsa_exponent_is_valid(e: &[u8]) -> bool {
+    let significant: Vec<u8> = e.iter().copied().skip_while(|byte| *byte == 0).collect();
+    let mut bytes = [0_u8; 8];
+    let Some(start) = bytes.len().checked_sub(significant.len()) else {
+        return false;
+    };
+    let Some(tail) = bytes.get_mut(start..) else {
+        return false;
+    };
+    tail.copy_from_slice(&significant);
+    let value = u64::from_be_bytes(bytes);
+    value >= 3 && value % 2 == 1 && value <= MAX_RSA_EXPONENT
 }
 
 /// The key's algorithm: its `alg` if that is allowed for its type, else
@@ -272,10 +322,12 @@ impl KeyCache {
         let refreshed_meanwhile = self.refreshes.load(Ordering::Acquire) != seen;
         let now = Instant::now();
         if !refreshed_meanwhile && !throttled(*last, now) {
-            *last = Some(now);
             if let Err(error) = self.refresh_locked(false).await {
                 tracing::warn!(%error, "signing keys could not be refreshed for an unknown key id");
             }
+            // From the end of the fetch: a slow identity provider is not
+            // asked again the moment it answers.
+            *last = Some(Instant::now());
         }
         drop(last);
         match self.keys().and_then(|keys| keys.get(kid)) {
@@ -435,6 +487,87 @@ mod tests {
     #[test]
     fn skips_weak_rsa_keys() {
         assert_eq!(algorithm(&fixture("rsa-1024")), None);
+    }
+
+    fn b64(bytes: &[u8]) -> Value {
+        json!(crate::base64::encode_url(bytes))
+    }
+
+    #[test]
+    fn skips_keys_with_broken_material() {
+        let rsa = fixture("rsa-a");
+        let n = crate::base64::decode_url(rsa["n"].as_str().unwrap()).unwrap();
+        let mut even = n.clone();
+        *even.last_mut().unwrap() &= 0xfe;
+        let mut huge = vec![0xff_u8; 1025];
+        *huge.last_mut().unwrap() = 0x01;
+        for (what, jwk) in [
+            (
+                "short Ed25519",
+                with(fixture("ed25519"), "x", b64(&[7; 31])),
+            ),
+            ("long Ed25519", with(fixture("ed25519"), "x", b64(&[7; 33]))),
+            (
+                "EC point off the curve",
+                with(fixture("p256"), "y", b64(&[1; 32])),
+            ),
+            ("RSA exponent 1", with(rsa.clone(), "e", b64(&[1]))),
+            ("even RSA exponent", with(rsa.clone(), "e", b64(&[1, 0, 0]))),
+            (
+                "RSA exponent over 2^33",
+                with(rsa.clone(), "e", b64(&[2, 0, 0, 0, 1])),
+            ),
+            ("even RSA modulus", with(rsa.clone(), "n", b64(&even))),
+            (
+                "RSA modulus over 8192 bits",
+                with(rsa.clone(), "n", b64(&huge)),
+            ),
+        ] {
+            assert_eq!(algorithm(&jwk), None, "{what}");
+        }
+        assert_eq!(
+            algorithm(&with(rsa, "e", b64(&[0, 0, 3]))),
+            Some(Algorithm::RS256),
+            "leading zeros are fine"
+        );
+    }
+
+    #[test]
+    fn a_broken_key_does_not_shadow_a_good_one() {
+        let broken = with(fixture("ed25519"), "x", b64(&[7; 31]));
+        let good = with(fixture("p256"), "kid", broken["kid"].clone());
+        let set = KeySet::from_jwks(&[broken.clone(), good]);
+        assert_eq!(
+            set.get(broken["kid"].as_str().unwrap())
+                .unwrap()
+                .algorithm(),
+            Algorithm::ES256
+        );
+        // Only broken keys: nothing usable, so the old set stays in use.
+        assert!(KeySet::from_jwks(&[broken]).is_empty());
+    }
+
+    #[test]
+    fn skips_keys_whose_operations_are_not_verify() {
+        for ops in [json!(["encrypt"]), json!(["verify", "encrypt"]), json!([])] {
+            assert_eq!(
+                algorithm(&with(fixture("rsa-a"), "key_ops", ops.clone())),
+                None,
+                "{ops}"
+            );
+        }
+        assert_eq!(
+            algorithm(&with(fixture("rsa-a"), "key_ops", json!(["verify"]))),
+            Some(Algorithm::RS256)
+        );
+    }
+
+    #[test]
+    fn skips_keys_with_an_empty_kid() {
+        assert_eq!(
+            KeySet::from_jwks(&[with(fixture("rsa-a"), "kid", json!(""))]).len(),
+            0
+        );
     }
 
     #[test]

@@ -58,6 +58,7 @@ async fn keeps_end_session_and_drops_disallowed_endpoints() {
     let mut document = idp.discovery_document();
     document["end_session_endpoint"] = json!(format!("{}/logout", idp.issuer));
     document["token_endpoint"] = json!("http://idp.example.com/token");
+    document["authorization_endpoint"] = json!(format!("{}/authorize#fragment", idp.issuer));
     idp.set_discovery(Reply::Json(document));
     let config = idp.config(&[]);
     let client = IdpClient::new(&[]).unwrap();
@@ -68,6 +69,15 @@ async fn keeps_end_session_and_drops_disallowed_endpoints() {
         discovery.end_session_endpoint.unwrap().as_str(),
         format!("{}/logout", idp.issuer)
     );
+    assert_eq!(discovery.token_endpoint, None);
+    assert_eq!(discovery.authorization_endpoint, None);
+
+    // Credentials in an endpoint are never used.
+    let mut document = idp.discovery_document();
+    let with_credentials = idp.issuer.replacen("://", "://user:pass@", 1);
+    document["token_endpoint"] = json!(format!("{with_credentials}/token"));
+    idp.set_discovery(Reply::Json(document));
+    let discovery = discover(&client, &config).await.unwrap();
     assert_eq!(discovery.token_endpoint, None);
 }
 

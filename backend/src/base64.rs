@@ -1,5 +1,6 @@
-//! Base64 (RFC 4648): unpadded base64url for the tokens kanbot issues, and
-//! decoding of standard base64 for the keys it is given.
+//! Base64 (RFC 4648): unpadded base64url for the tokens kanbot issues and
+//! reads (JWT segments), and decoding of standard base64 for the keys it is
+//! given.
 
 const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -39,10 +40,22 @@ pub fn decode_standard(text: &str) -> Option<Vec<u8>> {
     if padding > 2 || (padding > 0 && !text.len().is_multiple_of(4)) {
         return None;
     }
+    decode(unpadded, STANDARD)
+}
+
+/// Decodes unpadded base64url (RFC 4648, section 5), as in JWTs. `None` for
+/// any other character (`+`, `/` and `=` included), an impossible length,
+/// or non-zero bits after the last byte.
+#[must_use]
+pub fn decode_url(text: &str) -> Option<Vec<u8>> {
+    decode(text, URL_SAFE)
+}
+
+fn decode(unpadded: &str, alphabet: &[u8; 64]) -> Option<Vec<u8>> {
     let values = unpadded
         .bytes()
         .map(|c| {
-            STANDARD
+            alphabet
                 .iter()
                 .position(|&s| s == c)
                 .and_then(|value| u32::try_from(value).ok())
@@ -133,6 +146,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decodes_base64url_strictly() {
+        assert_eq!(decode_url("-_8").unwrap(), [0xfb, 0xff]);
+        assert_eq!(decode_url("Zm9vYmE").unwrap(), b"fooba");
+        for input in ["+/8", "Zg==", "Zg=", "Z", "Zh", "Zm9 v"] {
+            assert_eq!(decode_url(input), None, "{input}");
+        }
+    }
+
     fn to_standard(url: &str) -> String {
         url.replace('-', "+").replace('_', "/")
     }
@@ -147,8 +169,14 @@ mod tests {
         }
 
         #[test]
+        fn base64url_decoding_reverses_encoding(bytes in prop::collection::vec(any::<u8>(), 0..100)) {
+            prop_assert_eq!(decode_url(&encode_url(&bytes)).unwrap(), bytes);
+        }
+
+        #[test]
         fn decoding_never_panics(text in "\\PC*") {
             let _ = decode_standard(&text);
+            let _ = decode_url(&text);
         }
     }
 }

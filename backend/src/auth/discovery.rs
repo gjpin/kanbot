@@ -201,9 +201,16 @@ pub async fn discover(
                     || config.jwks_allowed_origins.contains(&origin))
         })
         .ok_or(DiscoveryError::JwksUri)?;
+    // Any origin: some identity providers serve these from another host
+    // than the issuer, and the issuer, which also names the signing keys,
+    // is trusted anyway. Never credentials or a fragment in them.
     let endpoint = |raw: Option<String>| {
-        raw.and_then(|raw| Url::parse(&raw).ok())
-            .filter(|url| config.is_allowed_url(url))
+        raw.and_then(|raw| Url::parse(&raw).ok()).filter(|url| {
+            config.is_allowed_url(url)
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+        })
     };
     Ok(Discovery {
         jwks_uri,

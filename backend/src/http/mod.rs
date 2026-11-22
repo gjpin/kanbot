@@ -32,7 +32,7 @@ use utoipa::{
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    auth::middleware::{AuthMetrics, Authentication},
+    auth::middleware::{AuthLimits, AuthMetrics, Authentication},
     error::{FieldError, StartupError},
     http::{
         client_ip::TrustedProxies,
@@ -107,24 +107,43 @@ impl Modify for SecuritySchemes {
 /// Every route, with its `OpenAPI` description. Merge each feature's
 /// `routes()` here.
 fn api() -> OpenApiRouter<AppState> {
-    let (routes, login_routes) = api_parts();
-    routes.merge(login_routes)
+    let parts = api_parts();
+    parts
+        .protected
+        .merge(parts.public)
+        .merge(parts.login)
+        .merge(parts.liveness)
 }
 
-/// The API, and apart from it the sign-in routes, which have their own
-/// rate limit.
-fn api_parts() -> (OpenApiRouter<AppState>, OpenApiRouter<AppState>) {
+/// The API in the parts the middleware treats differently.
+struct ApiParts {
+    /// Every route that needs (or may use) a user: behind authentication.
+    protected: OpenApiRouter<AppState>,
+    /// The public routes that never look at credentials: `/ready` and
+    /// `/auth/config`.
+    public: OpenApiRouter<AppState>,
+    /// The sign-in routes: public, with their own rate limit.
+    login: OpenApiRouter<AppState>,
+    /// `/health`: outside every limit, so a busy instance is not restarted.
+    liveness: OpenApiRouter<AppState>,
+}
+
+fn api_parts() -> ApiParts {
     let mut doc = ApiDoc::openapi();
     // utoipa copies the crate's license, which a private crate does not have.
     doc.info.license = None;
-    let routes = OpenApiRouter::with_openapi(doc)
-        .merge(health::routes())
+    let protected = OpenApiRouter::with_openapi(doc)
         .merge(crate::users::routes())
         .merge(crate::sessions::routes())
         .merge(crate::organizations::routes())
         .merge(crate::teams::routes())
         .merge(crate::audit::routes());
-    (routes, crate::sessions::login_routes())
+    ApiParts {
+        protected,
+        public: health::readiness_routes().merge(crate::sessions::public_routes()),
+        login: crate::sessions::login_routes(),
+        liveness: health::liveness_routes(),
+    }
 }
 
 /// How the HTTP layer protects the app (see `backend/AGENTS.md`).
@@ -190,9 +209,12 @@ impl Default for HttpSettings {
 /// Spawns the rate limiters' cleanup tasks on the current Tokio runtime.
 ///
 /// A request passes, outermost first: the middleware stack
-/// ([`with_middleware`]), the in-flight cap, the per-client limit, the
-/// authentication middleware (with the failed-authentication limit), the
-/// per-user limit, then the route.
+/// ([`with_middleware`]), the in-flight cap, the per-client limit, then for
+/// the API's protected routes (and the relay) the authentication
+/// middleware (with the failed-authentication and per-user limits), then
+/// the route. `/health` skips the cap and the limits. The public routes
+/// and the web app's files skip authentication: they never use a user, and
+/// a browser sends the session cookie with every file it loads.
 ///
 /// # Errors
 ///
@@ -202,41 +224,47 @@ pub fn router(
     settings: HttpSettings,
     relay: Option<Router>,
 ) -> Result<Router, StartupError> {
-    let (routes, login_routes) = api_parts();
-    let (routes, _) = routes.split_for_parts();
-    let (login_routes, _) = login_routes.split_for_parts();
-    let login_routes = rate_limit::limit_per_client(
-        login_routes.with_state(state.clone()),
+    let parts = api_parts();
+    let (protected, _) = parts.protected.split_for_parts();
+    let (public, _) = parts.public.split_for_parts();
+    let (login, _) = parts.login.split_for_parts();
+    let (liveness, _) = parts.liveness.split_for_parts();
+    let login = rate_limit::limit_per_client(
+        login.with_state(state.clone()),
         Arc::clone(&settings.trusted_proxies),
         settings.rate_limits.login,
     )?;
-    let routes = routes
-        .with_state(state.clone())
-        .merge(login_routes)
+    let public = public
         .with_state(state.clone())
         .layer(axum::Extension(crate::sessions::TelemetryAvailable(
             relay.is_some(),
-        )));
-    let routes = match relay {
-        Some(relay) => routes.merge(relay),
-        None => routes,
+        )))
+        .layer(axum::Extension(health::Readiness::default()))
+        .merge(login);
+    let protected = protected.with_state(state.clone());
+    let protected = match relay {
+        Some(relay) => protected.merge(relay),
+        None => protected,
     };
+    // Every protected route, the relay included: credentials are checked
+    // wherever they are presented.
+    let protected = protected.layer(axum::middleware::from_fn_with_state(
+        Authentication::new(
+            state.clone(),
+            Arc::clone(&settings.trusted_proxies),
+            AuthLimits {
+                failure: settings.rate_limits.auth_failure,
+                user: settings.rate_limits.user,
+            },
+            settings.auth_metrics,
+        )?,
+        crate::auth::middleware::authenticate,
+    ));
+    let routes = protected.merge(public);
     let routes = match &settings.web_dir {
         Some(dir) => web::with_web_app(routes, dir),
         None => routes,
     };
-    let routes = rate_limit::limit_per_user(routes, settings.rate_limits.user)?;
-    // Every route, the relay included: credentials are checked wherever
-    // they are presented.
-    let routes = routes.layer(axum::middleware::from_fn_with_state(
-        Authentication::new(
-            state,
-            Arc::clone(&settings.trusted_proxies),
-            settings.rate_limits.auth_failure,
-            settings.auth_metrics,
-        ),
-        crate::auth::middleware::authenticate,
-    ));
     let routes =
         rate_limit::limit_per_client(routes, settings.trusted_proxies, settings.rate_limits.ip)?;
     let routes = routes.layer(
@@ -256,6 +284,7 @@ pub fn router(
                 settings.max_in_flight_requests.get(),
             )),
     );
+    let routes = routes.merge(liveness.with_state(state));
     Ok(with_middleware(routes, &settings.allowed_origins))
 }
 
@@ -268,7 +297,8 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 
 /// Wraps `app` in the middleware stack. Layers added later wrap the earlier
 /// ones. The request span (and HTTP metrics) is outermost, so it covers the
-/// whole stack. Sensitive headers are marked before anything can log them,
+/// whole stack; it records no headers. Sensitive headers are marked before
+/// any inner layer or handler can log them,
 /// every error response gets a problem details body, and security headers
 /// are added to every response, including errors produced by the middleware
 /// itself.
@@ -291,6 +321,8 @@ pub fn with_middleware(app: Router, allowed_origins: &[HeaderValue]) -> Router {
             HeaderName::from_static("traceparent"),
             HeaderName::from_static("tracestate"),
         ])
+        // So a cross-origin app can back off and tell why it was refused.
+        .expose_headers([header::RETRY_AFTER, header::WWW_AUTHENTICATE])
         .max_age(CORS_MAX_AGE);
 
     let app = app

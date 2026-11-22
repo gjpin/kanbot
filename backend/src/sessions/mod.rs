@@ -27,9 +27,12 @@ pub fn login_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::token))
 }
 
-/// The other `/auth` routes.
+/// `/auth/config`: public, it never looks at credentials.
+pub fn public_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(handlers::config))
+}
+
+/// `/auth/logout`, behind authentication.
 pub fn routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new()
-        .routes(routes!(handlers::config))
-        .routes(routes!(handlers::logout))
+    OpenApiRouter::new().routes(routes!(handlers::logout))
 }
