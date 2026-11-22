@@ -3,6 +3,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::sessions::model::ATTEMPT_LIFETIME;
+
 /// A login attempt to store.
 pub(super) struct NewAttempt<'a> {
     pub id: Uuid,
@@ -14,9 +16,6 @@ pub(super) struct NewAttempt<'a> {
     pub app_redirect_uri: Option<&'a str>,
     pub app_code_challenge: Option<&'a str>,
 }
-
-/// How long a login attempt may take.
-pub(super) const ATTEMPT_LIFETIME_SECONDS: f64 = 600.0;
 
 #[tracing::instrument(skip_all)]
 pub(super) async fn insert_attempt(
@@ -36,7 +35,7 @@ pub(super) async fn insert_attempt(
         attempt.browser_binding_hash,
         attempt.app_redirect_uri,
         attempt.app_code_challenge,
-        ATTEMPT_LIFETIME_SECONDS,
+        ATTEMPT_LIFETIME.as_secs_f64(),
     )
     .execute(db)
     .await?;
@@ -183,6 +182,7 @@ pub(super) async fn activate_native_session(
 }
 
 /// A live session found by its token.
+#[derive(Clone)]
 pub(super) struct ActiveSession {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -192,8 +192,17 @@ pub(super) struct ActiveSession {
     pub idp_access_token: Vec<u8>,
     /// The access token expires within the refresh window.
     pub refresh_due: bool,
-    /// `last_used_at` is over a minute old.
+    /// The idle expiry has fallen more than [`Idle::slack_seconds`] behind
+    /// a full idle timeout (and is not at the absolute expiry).
     pub touch_due: bool,
+}
+
+/// The idle timeout, and how far the idle expiry may fall behind it before
+/// a use moves it forward.
+#[derive(Clone, Copy)]
+pub(super) struct Idle {
+    pub seconds: f64,
+    pub slack_seconds: f64,
 }
 
 /// How long before the identity provider's access token expires it is
@@ -204,39 +213,44 @@ pub(super) const REFRESH_WINDOW_SECONDS: f64 = 60.0;
 pub(super) async fn find_session(
     db: &PgPool,
     token_hash: &[u8],
+    idle: Idle,
 ) -> Result<Option<ActiveSession>, sqlx::Error> {
     sqlx::query_as!(
         ActiveSession,
         r#"SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,
                   s.access_expires_at < now() + make_interval(secs => $2) AS "refresh_due!",
-                  s.last_used_at < now() - interval '1 minute' AS "touch_due!"
+                  s.idle_expires_at < LEAST(now() + make_interval(secs => $3)
+                                              - make_interval(secs => $4),
+                                            s.absolute_expires_at) AS "touch_due!"
            FROM sessions s
            JOIN users u ON u.id = s.user_id
            WHERE s.token_hash = $1 AND s.idle_expires_at > now()
              AND s.absolute_expires_at > now()"#,
         token_hash,
         REFRESH_WINDOW_SECONDS,
+        idle.seconds,
+        idle.slack_seconds,
     )
     .fetch_optional(db)
     .await
 }
 
-/// Records use: `last_used_at` now, and the idle expiry moved forward (never
-/// past the absolute one). At most once a minute, even when concurrent
-/// requests all found it due.
+/// Records use: `last_used_at` now, and the idle expiry moved forward to a
+/// full idle timeout (never past the absolute one). Only while it is due,
+/// so concurrent requests that all found it due write once.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
-pub(super) async fn touch_session(
-    db: &PgPool,
-    id: Uuid,
-    idle_seconds: f64,
-) -> Result<(), sqlx::Error> {
+pub(super) async fn touch_session(db: &PgPool, id: Uuid, idle: Idle) -> Result<(), sqlx::Error> {
     sqlx::query!(
         "UPDATE sessions
          SET last_used_at = now(),
              idle_expires_at = LEAST(now() + make_interval(secs => $2), absolute_expires_at)
-         WHERE id = $1 AND last_used_at < now() - interval '1 minute'",
+         WHERE id = $1
+           AND idle_expires_at < LEAST(now() + make_interval(secs => $2)
+                                         - make_interval(secs => $3),
+                                       absolute_expires_at)",
         id,
-        idle_seconds,
+        idle.seconds,
+        idle.slack_seconds,
     )
     .execute(db)
     .await?;
@@ -281,9 +295,11 @@ pub(super) async fn release_refresh(db: &PgPool, id: Uuid) -> Result<(), sqlx::E
     Ok(())
 }
 
-/// The session's stored access token, while it is live.
+/// The session's sealed identity provider access token, while the session
+/// is live (neither idle too long nor past its absolute lifetime). The
+/// token itself may have expired. `None` if the session is gone or over.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
-pub(super) async fn stored_access_token(
+pub(super) async fn live_session_access_token(
     db: &PgPool,
     id: Uuid,
 ) -> Result<Option<Vec<u8>>, sqlx::Error> {
@@ -407,13 +423,4 @@ pub(super) async fn delete_expired_sessions(db: &PgPool, limit: i64) -> Result<u
     .execute(db)
     .await?
     .rows_affected())
-}
-
-/// The session's sealed identity provider access token. `None` if the
-/// session is gone.
-#[tracing::instrument(skip_all, fields(session.id = %id))]
-pub(super) async fn access_token(db: &PgPool, id: Uuid) -> Result<Option<Vec<u8>>, sqlx::Error> {
-    sqlx::query_scalar!("SELECT idp_access_token FROM sessions WHERE id = $1", id)
-        .fetch_optional(db)
-        .await
 }

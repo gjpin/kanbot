@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,\n                  s.access_expires_at < now() + make_interval(secs => $2) AS \"refresh_due!\",\n                  s.last_used_at < now() - interval '1 minute' AS \"touch_due!\"\n           FROM sessions s\n           JOIN users u ON u.id = s.user_id\n           WHERE s.token_hash = $1 AND s.idle_expires_at > now()\n             AND s.absolute_expires_at > now()",
+  "query": "SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,\n                  s.access_expires_at < now() + make_interval(secs => $2) AS \"refresh_due!\",\n                  s.idle_expires_at < LEAST(now() + make_interval(secs => $3)\n                                              - make_interval(secs => $4),\n                                            s.absolute_expires_at) AS \"touch_due!\"\n           FROM sessions s\n           JOIN users u ON u.id = s.user_id\n           WHERE s.token_hash = $1 AND s.idle_expires_at > now()\n             AND s.absolute_expires_at > now()",
   "describe": {
     "columns": [
       {
@@ -74,6 +74,8 @@
     "parameters": {
       "Left": [
         "Bytea",
+        "Float8",
+        "Float8",
         "Float8"
       ]
     },
@@ -87,5 +89,5 @@
       null
     ]
   },
-  "hash": "79ba43422eb04e9ff0f9b4eb8644314b080de5a7754c89207dca4ca5fdc3c39c"
+  "hash": "8181ef7e2b26342c749179ed519148ea444bf75f3a4e526a5840bb64f63c2b26"
 }

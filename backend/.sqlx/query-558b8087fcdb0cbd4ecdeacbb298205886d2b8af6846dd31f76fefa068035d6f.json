@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET idp_access_token = $1, last_used_at = now() - interval '1 hour',\n                             idle_expires_at = now() + interval '1 hour'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "558b8087fcdb0cbd4ecdeacbb298205886d2b8af6846dd31f76fefa068035d6f"
+}

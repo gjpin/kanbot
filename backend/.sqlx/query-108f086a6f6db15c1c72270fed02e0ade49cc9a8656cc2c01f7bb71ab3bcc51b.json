@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT last_used_at > now() - interval '1 minute' AS \"touched!\" FROM sessions",
+  "query": "SELECT idle_expires_at > now() + interval '2 hours' AS \"touched!\" FROM sessions",
   "describe": {
     "columns": [
       {
@@ -17,5 +17,5 @@
       null
     ]
   },
-  "hash": "0245a9c4017ee1b4a516f06a899140dedd60cef5c31a39ed5e7a4634be51cb9b"
+  "hash": "108f086a6f6db15c1c72270fed02e0ade49cc9a8656cc2c01f7bb71ab3bcc51b"
 }

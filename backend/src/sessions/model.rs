@@ -12,6 +12,10 @@ pub const APP_REDIRECT_URI: &str = "dev.sideral.kanbot:/auth/done";
 const LOOPBACK_PREFIX: &str = "http://127.0.0.1:";
 const LOOPBACK_PATH: &str = "/auth/done";
 
+/// How long a login attempt may take: its row, and the web login cookie
+/// that binds it to the browser.
+pub const ATTEMPT_LIFETIME: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Which app is signing in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET idle_expires_at = now() + interval '28 seconds'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "af91cb01a6314bbfe416be5d72314cfaf874d2caf361ec45b5cf9018782c3a82"
+}

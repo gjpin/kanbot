@@ -15,7 +15,7 @@ use crate::{
     http::problem::{ErrorCode, Problem},
     sessions::{
         dto::{AuthConfig, LoginQuery, LogoutResponse, TokenRequest, TokenResponse},
-        model::LoginRequest,
+        model::{ATTEMPT_LIFETIME, LoginRequest},
         service::{self, CallbackParams, Destination, LoginOutcome},
     },
     state::AppState,
@@ -23,8 +23,14 @@ use crate::{
 
 /// Binds a web login attempt to the browser that started it.
 pub const LOGIN_COOKIE: &str = "__Host-kanbot_login";
+/// The session cookie's name, as a literal for [`clear_session_cookie`].
+macro_rules! session_cookie {
+    () => {
+        "__Host-kanbot_session"
+    };
+}
 /// The web app's session.
-pub const SESSION_COOKIE: &str = "__Host-kanbot_session";
+pub const SESSION_COOKIE: &str = session_cookie!();
 
 /// The value of cookie `name` in the request, if exactly one is sent.
 #[must_use]
@@ -61,9 +67,10 @@ fn single<'q>(query: &'q [(String, String)], name: &str) -> Result<Option<&'q st
 /// A `Set-Cookie` value that removes the session cookie.
 #[must_use]
 pub fn clear_session_cookie() -> HeaderValue {
-    HeaderValue::from_static(
-        "__Host-kanbot_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
-    )
+    HeaderValue::from_static(concat!(
+        session_cookie!(),
+        "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
+    ))
 }
 
 /// A `Set-Cookie` header value for a `__Host-` cookie: `Secure`,
@@ -113,7 +120,12 @@ pub(super) async fn login(
     let mut response = Redirect::to(start.authorization_url.as_str()).into_response();
     if let Some(binding) = start.browser_binding {
         // Lax: it must come back on the IdP's redirect to the callback.
-        let cookie = set_cookie(LOGIN_COOKIE, binding.expose_secret(), 600, "Lax")?;
+        let cookie = set_cookie(
+            LOGIN_COOKIE,
+            binding.expose_secret(),
+            ATTEMPT_LIFETIME.as_secs(),
+            "Lax",
+        )?;
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
     Ok(response)

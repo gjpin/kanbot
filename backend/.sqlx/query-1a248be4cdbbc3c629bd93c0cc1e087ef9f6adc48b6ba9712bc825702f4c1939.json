@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT last_used_at > now() - interval '1 minute'\n                  OR idle_expires_at > now() + interval '2 hours' AS \"touched!\" FROM sessions",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "touched!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1a248be4cdbbc3c629bd93c0cc1e087ef9f6adc48b6ba9712bc825702f4c1939"
+}

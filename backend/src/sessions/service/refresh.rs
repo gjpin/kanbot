@@ -1,14 +1,16 @@
 //! Refreshing a session's tokens at the identity provider, one request at
 //! a time across replicas (a lease on the session row).
 
+use std::sync::Arc;
+
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::{
     KeyFailure, MAX_TOKEN_RESPONSE_BYTES, SessionRefusal, TokenResponse, key_for, now,
-    session::verify_stored, stored_expiry,
+    session::verify_stored, stored_expiry, unverified_expiry,
 };
 use crate::{
     auth::{
@@ -47,16 +49,63 @@ enum RefreshFailure {
 /// meanwhile; the others use the stored token while it is valid, or wait
 /// briefly for the new one. Roles are re-evaluated: the new token passes
 /// the bearer rules or the session ends.
+///
+/// The lease, the call and storing its answer run in a task of their own,
+/// so a request that is dropped meanwhile (the client went away, or the
+/// request timed out) does not lose a rotated refresh token the identity
+/// provider has already issued. The task is bounded by the identity
+/// provider client's timeouts.
 pub(super) async fn refresh(
+    db: &PgPool,
+    keys: &Arc<KeyCache>,
+    config: &Arc<SessionConfig>,
+    session: &repo::ActiveSession,
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let claimed = tokio::spawn(
+        claim_and_refresh(
+            db.clone(),
+            Arc::clone(keys),
+            Arc::clone(config),
+            session.clone(),
+        )
+        .instrument(tracing::Span::current()),
+    );
+    match claimed.await {
+        Ok(Some(refreshed)) => refreshed,
+        Ok(None) => refreshed_elsewhere(db, keys, config, session).await,
+        Err(error) => {
+            tracing::error!(%error, session.id = %session.id, "session refresh task failed");
+            Err(SessionRefusal::Error(AppError::Internal("session refresh")))
+        }
+    }
+}
+
+/// Takes the refresh lease and refreshes; `None` if another request holds
+/// the lease or has just refreshed.
+async fn claim_and_refresh(
+    db: PgPool,
+    keys: Arc<KeyCache>,
+    config: Arc<SessionConfig>,
+    session: repo::ActiveSession,
+) -> Option<Result<crate::auth::token::Principal, SessionRefusal>> {
+    match repo::claim_refresh(&db, session.id).await {
+        Ok(Some(sealed_refresh)) => {
+            Some(refresh_claimed(&db, &keys, &config, &session, sealed_refresh).await)
+        }
+        Ok(None) => None,
+        Err(error) => Some(Err(error.into())),
+    }
+}
+
+/// The refresh, once this request holds the lease.
+async fn refresh_claimed(
     db: &PgPool,
     keys: &KeyCache,
     config: &SessionConfig,
     session: &repo::ActiveSession,
+    sealed_refresh: Option<Vec<u8>>,
 ) -> Result<crate::auth::token::Principal, SessionRefusal> {
     let id = session.id;
-    let Some(sealed_refresh) = repo::claim_refresh(db, id).await? else {
-        return refreshed_elsewhere(db, keys, config, session).await;
-    };
     let tokens = match sealed_refresh.as_deref() {
         Some(sealed) => request_refresh(keys, config, id, sealed).await,
         None => Err(RefreshFailure::NoRefreshToken),
@@ -75,8 +124,16 @@ pub(super) async fn refresh(
             Err(SessionRefusal::Ended)
         }
         Err(RefreshFailure::NoRefreshToken) => {
+            // Nothing can replace the stored token: once it fails (it has
+            // expired), the session is over.
+            let verified = verify_stored(keys, config, id, &session.idp_access_token).await;
+            if matches!(verified, Err(SessionRefusal::Invalid)) {
+                repo::delete_session(db, id).await?;
+                tracing::info!(session.id = %id, "session ended: token failed, no refresh token");
+                return Err(SessionRefusal::Ended);
+            }
             repo::release_refresh(db, id).await?;
-            verify_stored(keys, config, id, &session.idp_access_token).await
+            verified
         }
         Err(RefreshFailure::Failed) => {
             repo::release_refresh(db, id).await?;
@@ -104,7 +161,7 @@ async fn refreshed_elsewhere(
         if step > 0 {
             tokio::time::sleep(REFRESH_WAIT_STEP).await;
         }
-        let sealed = repo::stored_access_token(db, id)
+        let sealed = repo::live_session_access_token(db, id)
             .await?
             .ok_or(SessionRefusal::Invalid)?;
         match verify_stored(keys, config, id, &sealed).await {
@@ -231,18 +288,6 @@ async fn verified_id_token<'t>(
         .verify_id_token(&key, &keys.config().issuer, &config.client_id, now())
         .ok()
         .map(|_| id_token)
-}
-
-/// The `exp` of a JWT, unverified: only to schedule the next refresh of a
-/// token that every use still verifies.
-fn unverified_expiry(token: &str) -> Option<u64> {
-    #[derive(Deserialize)]
-    struct Claims {
-        exp: u64,
-    }
-    let payload = token.split('.').nth(1)?;
-    let claims: Claims = serde_json::from_slice(&crate::base64::decode_url(payload)?).ok()?;
-    Some(claims.exp)
 }
 
 /// Seals and stores refreshed tokens, keeping the stored refresh and ID

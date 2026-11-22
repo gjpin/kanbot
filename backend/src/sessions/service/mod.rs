@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::{
     auth::{
         keys::{KeyCache, KeyLookup, VerifyingKey},
-        token::{Rejection, UnverifiedToken},
+        token::{LEEWAY_SECONDS, Rejection, UnverifiedToken},
     },
     error::AppError,
     sessions::{crypto, secrets},
@@ -90,4 +90,42 @@ fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(u64::MAX, |since| since.as_secs())
+}
+
+/// The `exp` of a JWT, unverified: only to schedule the next refresh of a
+/// token that every use still verifies, or to tell that a token cannot
+/// pass any more, whatever its key.
+fn unverified_expiry(token: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Claims {
+        exp: u64,
+    }
+    let payload = token.split('.').nth(1)?;
+    let claims: Claims = serde_json::from_slice(&crate::base64::decode_url(payload)?).ok()?;
+    Some(claims.exp)
+}
+
+/// Whether the token has expired under the bearer rules' leeway, judging
+/// by its unverified `exp` (no `exp`: expired).
+fn expired(token: &str, now: u64) -> bool {
+    unverified_expiry(token).is_none_or(|exp| exp.saturating_add(LEEWAY_SECONDS) < now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expired;
+
+    fn token(payload: &str) -> String {
+        format!("e30.{}.c2ln", crate::base64::encode_url(payload.as_bytes()))
+    }
+
+    #[test]
+    fn a_token_expires_once_past_the_leeway() {
+        let token_at_1000 = token(r#"{"exp":1000}"#);
+        assert!(!expired(&token_at_1000, 999));
+        assert!(!expired(&token_at_1000, 1060));
+        assert!(expired(&token_at_1000, 1061));
+        assert!(expired(&token("{}"), 0), "no exp");
+        assert!(expired("not a token", 0));
+    }
 }
