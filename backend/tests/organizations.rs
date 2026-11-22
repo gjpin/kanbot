@@ -357,12 +357,13 @@ async fn organization_admins_manage_their_organization(pool: PgPool) {
         json!([{ "id": carol_id, "display_name": "carol (display)", "disabled": false }])
     );
 
-    // Carol renames it and adds Dave; Dave removes Carol.
+    // Carol renames it (the slug she sends is the one it has) and adds
+    // Dave; Dave removes Carol.
     let (status, body) = api
         .patch(
             &format!("/organizations/{acme}"),
             &carol,
-            json!({ "name": "ACME" }),
+            json!({ "slug": "acme", "name": "ACME" }),
         )
         .await;
     assert_eq!(status, StatusCode::OK);

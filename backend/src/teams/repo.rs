@@ -158,8 +158,8 @@ pub(super) async fn insert(
     Ok(())
 }
 
-/// Applies `changes`, and says whether anything changed (changing a value
-/// to itself writes nothing). When the identity provider group changes,
+/// Applies `changes`, and returns the team with the names of the fields
+/// that changed (changing a value to itself writes nothing). When the identity provider group changes,
 /// the memberships it replaces go: all of them when a group is set (the
 /// sync adds the group's members back as they sign in), the synced ones
 /// when it is cleared. `None` if the team does not exist.
@@ -168,7 +168,7 @@ pub(super) async fn update(
     db: &mut PgConnection,
     id: TeamId,
     changes: &TeamChanges,
-) -> Result<Option<(Team, bool)>, sqlx::Error> {
+) -> Result<Option<(Team, Vec<&'static str>)>, sqlx::Error> {
     let new_group = changes
         .idp_group
         .as_ref()
@@ -182,24 +182,15 @@ pub(super) async fn update(
     let Some(current) = current else {
         return Ok(None);
     };
-    let previous = current.idp_group.clone();
-    let modified = changes
-        .slug
-        .as_ref()
-        .is_some_and(|slug| slug.as_str() != current.slug)
-        || changes
-            .name
-            .as_ref()
-            .is_some_and(|name| name.as_str() != current.name)
-        || new_group.is_some_and(|group| group != previous.as_deref());
-    if !modified {
-        let unchanged = team(
-            current.id,
-            &current.slug,
-            &current.name,
-            current.idp_group.as_deref(),
-        )?;
-        return Ok(Some((unchanged, false)));
+    let current = team(
+        current.id,
+        &current.slug,
+        &current.name,
+        current.idp_group.as_deref(),
+    )?;
+    let fields = changes.changed(&current);
+    if fields.is_empty() {
+        return Ok(Some((current, fields)));
     }
     let row = sqlx::query!(
         r#"
@@ -219,18 +210,16 @@ pub(super) async fn update(
     )
     .fetch_one(&mut *db)
     .await?;
-    if let Some(group) = new_group
-        && group != previous.as_deref()
-    {
+    if fields.contains(&"idp_group") {
         sqlx::query!(
             "DELETE FROM team_members WHERE team_id = $1 AND ($2 OR source = 'idp')",
             id.as_uuid(),
-            group.is_some(),
+            new_group.flatten().is_some(),
         )
         .execute(db)
         .await?;
     }
-    team(row.id, &row.slug, &row.name, row.idp_group.as_deref()).map(|team| Some((team, true)))
+    team(row.id, &row.slug, &row.name, row.idp_group.as_deref()).map(|team| Some((team, fields)))
 }
 
 /// Deletes the team, its memberships and its links. `false` if it did

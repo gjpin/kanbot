@@ -576,9 +576,15 @@ async fn synced_teams_take_their_members_from_the_identity_provider(pool: PgPool
         json!([{ "pointer": "/idp_group", "code": "required" }])
     );
 
-    // A rename leaves the group and its members alone; clearing the group
-    // removes the synced members.
-    let (status, body) = api.patch(&uri, &root, json!({ "name": "Renamed" })).await;
+    // A rename leaves the group and its members alone, even with the group
+    // it already has; clearing the group removes the synced members.
+    let (status, body) = api
+        .patch(
+            &uri,
+            &root,
+            json!({ "name": "Renamed", "idp_group": "platform-team" }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["idp_group"], "platform-team");
     assert_eq!(member_list(&api, team, &root).await.len(), 1);
@@ -739,6 +745,54 @@ async fn the_last_maintainer_stays(pool: PgPool) {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = api.delete(&member(bob_id), &bob).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+async fn concurrent_demotions_keep_a_maintainer(pool: PgPool) {
+    // root and bob, the two maintainers, step down at the same time: the
+    // second to commit must see the first's change and be refused.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let root_id = api.user_id(&root).await;
+    let bob_id = api.user_id(&user("bob", &[])).await;
+    api.put(
+        &format!("/teams/{team}/members/{bob_id}"),
+        &root,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+
+    // bob's demotion, in flight: it holds the team, as the API does.
+    let mut bob_steps_down = pool.begin().await.unwrap();
+    sqlx::query!("SELECT id FROM teams WHERE id = $1 FOR UPDATE", team)
+        .fetch_one(&mut *bob_steps_down)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE team_members SET role = 'member' WHERE team_id = $1 AND user_id = $2",
+        team,
+        bob_id
+    )
+    .execute(&mut *bob_steps_down)
+    .await
+    .unwrap();
+    let root_steps_down = tokio::spawn({
+        let api = api.clone();
+        async move {
+            api.put(
+                &format!("/teams/{team}/members/{root_id}"),
+                &root,
+                Some(json!({ "role": "member" })),
+            )
+            .await
+            .0
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!root_steps_down.is_finished(), "root's demotion waits");
+    bob_steps_down.commit().await.unwrap();
+    assert_eq!(root_steps_down.await.unwrap(), StatusCode::CONFLICT);
 }
 
 #[sqlx::test]

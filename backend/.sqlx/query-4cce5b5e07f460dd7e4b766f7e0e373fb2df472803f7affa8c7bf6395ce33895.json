@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE organizations SET openshell_workspace = $2, updated_at = now()\n        WHERE id = $1 AND openshell_workspace IS DISTINCT FROM $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4cce5b5e07f460dd7e4b766f7e0e373fb2df472803f7affa8c7bf6395ce33895"
+}

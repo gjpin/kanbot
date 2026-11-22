@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE organizations\n        SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()\n        WHERE id = $1 AND (slug <> COALESCE($2, slug) OR name <> COALESCE($3, name))\n        RETURNING id, slug, name, openshell_workspace\n        ",
+  "query": "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -50,9 +50,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -62,5 +60,5 @@
       true
     ]
   },
-  "hash": "8bb1d1031dde1afd7f5bc528b7556186e727f88b34df4fc524bb2c7389591583"
+  "hash": "c73ae472f79767d9ee6072ab550c7ecf1f9fe8b5666e322f1439f3641a352380"
 }

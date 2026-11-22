@@ -102,13 +102,23 @@ impl IdpGroupChange {
 }
 
 impl TeamChanges {
-    /// The names of the fields that change, for the audit log.
+    /// The names of the fields whose value differs from `current`'s, for
+    /// the audit log. Empty: nothing changes.
     #[must_use]
-    pub fn fields(&self) -> Vec<&'static str> {
+    pub fn changed(&self, current: &Team) -> Vec<&'static str> {
         [
-            self.slug.as_ref().map(|_| "slug"),
-            self.name.as_ref().map(|_| "name"),
-            self.idp_group.as_ref().map(|_| "idp_group"),
+            self.slug
+                .as_ref()
+                .filter(|slug| **slug != current.slug)
+                .map(|_| "slug"),
+            self.name
+                .as_ref()
+                .filter(|name| **name != current.name)
+                .map(|_| "name"),
+            self.idp_group
+                .as_ref()
+                .filter(|change| change.group() != current.idp_group.as_ref())
+                .map(|_| "idp_group"),
         ]
         .into_iter()
         .flatten()
@@ -226,7 +236,8 @@ impl MemberCursor {
             "--" => (false, false),
             _ => return None,
         };
-        if !named && !name.is_empty() {
+        // Postgres refuses NUL in text, and no stored display name has one.
+        if (!named && !name.is_empty()) || name.contains('\0') {
             return None;
         }
         Some(Self {
@@ -256,6 +267,19 @@ mod cursor_tests {
                 user: UserId::from_uuid(Uuid::from_u128(id)),
             };
             prop_assert_eq!(MemberCursor::decode(&cursor.encode()), Some(cursor));
+        }
+
+        #[test]
+        fn names_with_nul_are_no_cursor(
+            user: u128,
+            before in "\\PC{0,10}",
+            after in "\\PC{0,10}",
+        ) {
+            let raw = format!("-n:{}:{before}\0{after}", uuid::Uuid::from_u128(user));
+            prop_assert_eq!(
+                MemberCursor::decode(&crate::base64::encode_url(raw.as_bytes())),
+                None
+            );
         }
 
         #[test]

@@ -92,11 +92,13 @@ contains that group:
 
 ### The audit log
 
-Every change to organizations and teams is recorded in the same transaction as
-the change: who, what (`organization.team_linked`, `team.member_set`, ...),
-which organization or team, the IDs of the policies that allowed it, and
-details made of IDs and enumerated values only (never names). Platform admins
-read it with `GET /audit`, newest first.
+Every change made to organizations and teams through the API is recorded in
+the same transaction as the change: who, what (`organization.team_linked`,
+`team.member_set`, ...), which organization or team, the IDs of the policies
+that allowed it, and details made of IDs and enumerated values only (never
+names). Platform admins read it with `GET /audit`, newest first. Memberships
+that the identity provider group sync changes are not in it: they follow the
+groups claim, and each sync that changes one is logged.
 
 ## Deployer policies
 
@@ -143,9 +145,9 @@ Everything is in the `Kanbot` namespace. The schema is
 
 Write policies about the principal, the resource and the context. Only the
 entities a decision needs are loaded, so a policy that refers to some other
-entity by ID (`Kanbot::Team::"<id>".maintainers`) cannot read its attributes. A
-policy that fails to evaluate is skipped, as Cedar does, and for a `forbid` that
-means it does not deny: the failure is logged as a warning with the policy ID.
+entity by ID (`Kanbot::Team::"<id>".maintainers`) cannot read its attributes.
+Such a reference fails to evaluate, and a policy that fails to evaluate denies
+(see [Deployer policies](#deployer-policies)).
 
 IDs are the UUIDs the API returns.
 

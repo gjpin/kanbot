@@ -582,9 +582,25 @@ mod link_and_sync {
             .await;
         assert_eq!(status, StatusCode::CONFLICT);
 
+        // Linking again, or unlinking twice, changes and records nothing:
+        // the workspace is not even checked again.
+        setup
+            .fake
+            .state
+            .lock()
+            .unwrap()
+            .workspaces
+            .remove("research");
+        let (status, _) = setup
+            .api
+            .put(&uri, &root, Some(json!({ "workspace": "research" })))
+            .await;
+        assert_eq!(status, StatusCode::OK);
         let (status, body) = setup.api.delete(&uri, &root).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["openshell_workspace"], Value::Null);
+        let (status, _) = setup.api.delete(&uri, &root).await;
+        assert_eq!(status, StatusCode::OK);
 
         let actions = sqlx::query_scalar!(
             "SELECT action FROM audit_log WHERE action LIKE 'organization.openshell%' ORDER BY id"

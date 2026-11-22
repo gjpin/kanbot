@@ -168,11 +168,11 @@ pub async fn update(
         return Err(AppError::Conflict);
     }
     let mut tx = db.begin().await?;
-    let (updated, modified) = repo::update(&mut tx, id, changes)
+    let (updated, fields) = repo::update(&mut tx, id, changes)
         .await
         .map_err(AppError::from_write)?
         .ok_or(AppError::NotFound)?;
-    if !modified {
+    if fields.is_empty() {
         return Ok(updated);
     }
     audit::record(
@@ -182,7 +182,7 @@ pub async fn update(
             "organization.updated",
             id,
             &decision,
-            json!({ "fields": changes.fields() }),
+            json!({ "fields": fields }),
         ),
     )
     .await?;
@@ -451,6 +451,7 @@ pub async fn remove_team_link(
 /// Linking checks the workspace first
 /// ([`crate::openshell::service::check_link`]): `user_token` gives the
 /// user's own access token, asked for only when token exchange is on.
+/// Linking it to the workspace it already has changes and records nothing.
 ///
 /// # Errors
 ///
@@ -477,15 +478,21 @@ pub async fn set_openshell_workspace(
     )
     .await?;
     let openshell = openshell.ok_or(AppError::Conflict)?;
+    let current = repo::get(db, id).await?.ok_or(AppError::NotFound)?;
+    if current.openshell_workspace.as_ref() == workspace {
+        return Ok(());
+    }
     if let Some(workspace) = workspace {
         crate::openshell::service::check_link(openshell, workspace, user_token).await?;
     }
     let mut tx = db.begin().await?;
-    if !repo::set_openshell_workspace(&mut tx, id, workspace)
+    let changed = repo::set_openshell_workspace(&mut tx, id, workspace)
         .await
         .map_err(AppError::from_write)?
-    {
-        return Err(AppError::NotFound);
+        .ok_or(AppError::NotFound)?;
+    if !changed {
+        // Changed to this meanwhile.
+        return Ok(());
     }
     let (action, details) = match workspace {
         Some(workspace) => (

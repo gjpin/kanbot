@@ -82,54 +82,54 @@ pub(super) async fn insert(db: &mut PgConnection, new: &Organization) -> Result<
     Ok(())
 }
 
-/// Applies `changes`, and says whether anything changed (changing a value
-/// to itself writes nothing). `None` if the organization does not exist.
+/// Applies `changes`, and returns the organization with the names of the
+/// fields that changed (changing a value to itself writes nothing). `None`
+/// if the organization does not exist.
 #[tracing::instrument(skip_all, fields(organization.id = %id.as_uuid()))]
 pub(super) async fn update(
     db: &mut PgConnection,
     id: OrganizationId,
     changes: &OrganizationChanges,
-) -> Result<Option<(Organization, bool)>, sqlx::Error> {
-    let slug = changes.slug.as_ref().map(Slug::as_str);
-    let name = changes.name.as_ref().map(Name::as_str);
-    let updated = sqlx::query!(
-        r#"
-        UPDATE organizations
-        SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()
-        WHERE id = $1 AND (slug <> COALESCE($2, slug) OR name <> COALESCE($3, name))
-        RETURNING id, slug, name, openshell_workspace
-        "#,
-        id.as_uuid(),
-        slug,
-        name,
+) -> Result<Option<(Organization, Vec<&'static str>)>, sqlx::Error> {
+    let current = sqlx::query!(
+        "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = $1 FOR UPDATE",
+        id.as_uuid()
     )
     .fetch_optional(&mut *db)
     .await?;
-    if let Some(row) = updated {
-        let organization = organization(
-            row.id,
-            &row.slug,
-            &row.name,
-            row.openshell_workspace.as_deref(),
-        )?;
-        return Ok(Some((organization, true)));
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let current = organization(
+        current.id,
+        &current.slug,
+        &current.name,
+        current.openshell_workspace.as_deref(),
+    )?;
+    let fields = changes.changed(&current);
+    if fields.is_empty() {
+        return Ok(Some((current, fields)));
     }
-    sqlx::query!(
-        "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = $1",
-        id.as_uuid()
+    let row = sqlx::query!(
+        r#"
+        UPDATE organizations
+        SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()
+        WHERE id = $1
+        RETURNING id, slug, name, openshell_workspace
+        "#,
+        id.as_uuid(),
+        changes.slug.as_ref().map(Slug::as_str),
+        changes.name.as_ref().map(Name::as_str),
     )
-    .fetch_optional(db)
-    .await?
-    .map(|row| {
-        organization(
-            row.id,
-            &row.slug,
-            &row.name,
-            row.openshell_workspace.as_deref(),
-        )
-        .map(|organization| (organization, false))
-    })
-    .transpose()
+    .fetch_one(db)
+    .await?;
+    let updated = organization(
+        row.id,
+        &row.slug,
+        &row.name,
+        row.openshell_workspace.as_deref(),
+    )?;
+    Ok(Some((updated, fields)))
 }
 
 /// Deletes the organization, its admins and its team links. `false` if it
@@ -250,7 +250,7 @@ pub(super) async fn team_links(
 }
 
 /// Links `team` with `access`, or changes the access of its link.
-/// Returns the previous access, if it was linked.
+/// `true` if this added the link or changed its access.
 #[tracing::instrument(skip_all, fields(organization.id = %id.as_uuid(), team.id = %team.as_uuid()))]
 pub(super) async fn set_team_link(
     db: &mut PgConnection,
@@ -294,21 +294,38 @@ pub(super) async fn remove_team_link(
         == 1)
 }
 
-/// Links the organization to `workspace`, or unlinks it (`None`). `false`
-/// if the organization does not exist.
+/// Links the organization to `workspace`, or unlinks it (`None`), and says
+/// whether that changed anything. `None` if the organization does not
+/// exist.
 #[tracing::instrument(skip_all, fields(organization.id = %id.as_uuid()))]
 pub(super) async fn set_openshell_workspace(
     db: &mut PgConnection,
     id: OrganizationId,
     workspace: Option<&WorkspaceName>,
-) -> Result<bool, sqlx::Error> {
-    Ok(sqlx::query!(
-        "UPDATE organizations SET openshell_workspace = $2, updated_at = now() WHERE id = $1",
+) -> Result<Option<bool>, sqlx::Error> {
+    let workspace = workspace.map(WorkspaceName::as_str);
+    // Only a change writes: an UPDATE wakes the membership sync, whatever
+    // the value.
+    let changed = sqlx::query!(
+        r#"
+        UPDATE organizations SET openshell_workspace = $2, updated_at = now()
+        WHERE id = $1 AND openshell_workspace IS DISTINCT FROM $2
+        "#,
         id.as_uuid(),
-        workspace.map(WorkspaceName::as_str),
+        workspace,
     )
-    .execute(db)
+    .execute(&mut *db)
     .await?
     .rows_affected()
-        == 1)
+        == 1;
+    if changed {
+        return Ok(Some(true));
+    }
+    Ok(sqlx::query_scalar!(
+        "SELECT EXISTS (SELECT 1 FROM organizations WHERE id = $1)",
+        id.as_uuid()
+    )
+    .fetch_one(db)
+    .await?
+    .and_then(|exists| exists.then_some(false)))
 }

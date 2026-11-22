@@ -1,7 +1,7 @@
 //! Authorization decisions for the other features. Every feature that
 //! touches organization data asks here; none checks roles itself.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     auth::token::PlatformRole,
     authz::{
-        model::{Action, Actor, Decision, Facts, Resource, SYNC_IP, Via},
+        model::{Action, Actor, Decision, Facts, Resource, SYNC_IP, TeamFacts, Via},
         policies::Policies,
         repo,
     },
@@ -235,8 +235,7 @@ pub async fn decide_for_users(
     resource: Resource,
 ) -> Result<Vec<Vec<Decision>>, AppError> {
     let ids: Vec<Uuid> = users.iter().map(|user| user.id.as_uuid()).collect();
-    let user_facts: std::collections::HashMap<_, _> =
-        repo::user_facts_many(db, &ids).await?.into_iter().collect();
+    let user_facts: HashMap<_, _> = repo::user_facts_many(db, &ids).await?.into_iter().collect();
     let mut team_ids: BTreeSet<Uuid> = user_facts
         .values()
         .flat_map(|facts| facts.teams.iter().map(TeamId::as_uuid))
@@ -271,21 +270,30 @@ pub async fn decide_for_users(
             })
             .collect::<Vec<_>>()
     };
+    let teams: HashMap<TeamId, &TeamFacts> = teams.iter().map(|team| (team.id, team)).collect();
+    let resource_team = match resource {
+        Resource::Team(id) => teams.get(&id).copied(),
+        Resource::Platform | Resource::Organization(_) => None,
+    };
     let mut all = Vec::with_capacity(users.len());
     for user in users {
         let Some(facts) = user_facts.get(&user.id) else {
             all.push(denied());
             continue;
         };
+        let mut user_teams: Vec<TeamFacts> = facts
+            .teams
+            .iter()
+            .filter_map(|id| teams.get(id).map(|team| (*team).clone()))
+            .collect();
+        if let Some(team) = resource_team
+            && !facts.teams.contains(&team.id)
+        {
+            user_teams.push(team.clone());
+        }
         let facts = Facts {
             user: facts.clone(),
-            teams: teams
-                .iter()
-                .filter(|team| {
-                    facts.teams.contains(&team.id) || Resource::Team(team.id) == resource
-                })
-                .cloned()
-                .collect(),
+            teams: user_teams,
             organizations: organizations.clone(),
         };
         if !exists(&facts, resource) {

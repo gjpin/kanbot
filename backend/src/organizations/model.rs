@@ -86,12 +86,19 @@ pub struct OrganizationChanges {
 }
 
 impl OrganizationChanges {
-    /// The names of the fields that change, for the audit log.
+    /// The names of the fields whose value differs from `current`'s, for
+    /// the audit log. Empty: nothing changes.
     #[must_use]
-    pub fn fields(&self) -> Vec<&'static str> {
+    pub fn changed(&self, current: &Organization) -> Vec<&'static str> {
         [
-            self.slug.as_ref().map(|_| "slug"),
-            self.name.as_ref().map(|_| "name"),
+            self.slug
+                .as_ref()
+                .filter(|slug| **slug != current.slug)
+                .map(|_| "slug"),
+            self.name
+                .as_ref()
+                .filter(|name| **name != current.name)
+                .map(|_| "name"),
         ]
         .into_iter()
         .flatten()

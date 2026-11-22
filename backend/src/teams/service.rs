@@ -149,11 +149,11 @@ pub async fn update(
     }
     let decision = authz::require_all(db, policies, actor, &needed, resource).await?;
     let mut tx = db.begin().await?;
-    let (updated, modified) = repo::update(&mut tx, id, changes)
+    let (updated, fields) = repo::update(&mut tx, id, changes)
         .await
         .map_err(AppError::from_write)?
         .ok_or(AppError::NotFound)?;
-    if !modified {
+    if fields.is_empty() {
         return Ok(updated);
     }
     audit::record(
@@ -163,7 +163,7 @@ pub async fn update(
             "team.updated",
             id,
             &decision,
-            json!({ "fields": changes.fields() }),
+            json!({ "fields": fields }),
         ),
     )
     .await?;
