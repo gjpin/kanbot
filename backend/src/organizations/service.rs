@@ -27,6 +27,41 @@ use crate::{
     },
 };
 
+/// Admins or linked teams shown when the caller does not say.
+pub const DEFAULT_PAGE: i64 = 100;
+/// Most admins or linked teams one page holds: an enterprise's
+/// organization can have hundreds of each.
+pub const MAX_PAGE: i64 = 500;
+
+/// `limit`, or [`DEFAULT_PAGE`], within 1 to [`MAX_PAGE`].
+fn page_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
+}
+
+/// The first `limit` of `items` (fetched with one more than `limit`), and
+/// whether more follow.
+fn one_page<T>(mut items: Vec<T>, limit: i64) -> (Vec<T>, bool) {
+    let more = usize::try_from(limit).is_ok_and(|limit| items.len() > limit);
+    if more {
+        items.pop();
+    }
+    (items, more)
+}
+
+/// A page of an organization's admins, and the admin the next one starts
+/// after.
+pub struct AdminPage {
+    pub admins: Vec<UserSummary>,
+    pub next: Option<UserId>,
+}
+
+/// A page of the teams linked to an organization, and the slug the next
+/// one starts after.
+pub struct TeamLinkPage {
+    pub links: Vec<TeamLink>,
+    pub next: Option<Slug>,
+}
+
 fn entry(
     actor: &Actor,
     action: &'static str,
@@ -232,7 +267,8 @@ pub async fn delete(
     Ok(())
 }
 
-/// The organization's admins.
+/// Up to `limit` (default [`DEFAULT_PAGE`], at most [`MAX_PAGE`]) of the
+/// organization's admins after the admin `after`, by display name.
 ///
 /// # Errors
 ///
@@ -243,7 +279,9 @@ pub async fn admins(
     policies: &Policies,
     actor: &Actor,
     id: OrganizationId,
-) -> Result<Vec<UserSummary>, AppError> {
+    after: Option<UserId>,
+    limit: Option<i64>,
+) -> Result<AdminPage, AppError> {
     authz::require(
         db,
         policies,
@@ -252,7 +290,13 @@ pub async fn admins(
         Resource::Organization(id),
     )
     .await?;
-    Ok(repo::admins(db, id).await?)
+    let limit = page_limit(limit);
+    let (admins, more) = one_page(
+        repo::admins(db, id, after, limit.saturating_add(1)).await?,
+        limit,
+    );
+    let next = admins.last().filter(|_| more).map(|admin| admin.id);
+    Ok(AdminPage { admins, next })
 }
 
 /// Makes `user` an admin of the organization (no change if they are).
@@ -340,7 +384,8 @@ pub async fn remove_admin(
     Ok(())
 }
 
-/// The teams linked to the organization.
+/// Up to `limit` (default [`DEFAULT_PAGE`], at most [`MAX_PAGE`]) of the
+/// teams linked to the organization after the slug `after`, by slug.
 ///
 /// # Errors
 ///
@@ -351,7 +396,9 @@ pub async fn team_links(
     policies: &Policies,
     actor: &Actor,
     id: OrganizationId,
-) -> Result<Vec<TeamLink>, AppError> {
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<TeamLinkPage, AppError> {
     authz::require(
         db,
         policies,
@@ -360,7 +407,16 @@ pub async fn team_links(
         Resource::Organization(id),
     )
     .await?;
-    Ok(repo::team_links(db, id).await?)
+    let limit = page_limit(limit);
+    let (links, more) = one_page(
+        repo::team_links(db, id, after, limit.saturating_add(1)).await?,
+        limit,
+    );
+    let next = links
+        .last()
+        .filter(|_| more)
+        .map(|link| link.team.slug.clone());
+    Ok(TeamLinkPage { links, next })
 }
 
 /// Links `team` to the organization with `access`, or changes its access.

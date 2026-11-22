@@ -203,6 +203,124 @@ async fn organizations_come_a_page_at_a_time(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn admins_come_a_page_at_a_time(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    // Unnamed users sort last; ties by ID.
+    let mut ids = Vec::new();
+    for name in [Some("carol"), None, Some("alice"), None, Some("bob")] {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, issuer, subject, platform_role, display_name)
+             VALUES ($1, 'x', $2, 'user', $3)",
+            id,
+            id.to_string(),
+            name
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO organization_admins (organization_id, user_id) VALUES ($1, $2)",
+            DEFAULT_ORGANIZATION,
+            id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let admins = format!("/organizations/{DEFAULT_ORGANIZATION}/admins");
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let uri = match &after {
+            Some(after) => format!("{admins}?limit=2&after={after}"),
+            None => format!("{admins}?limit=2"),
+        };
+        let (status, page) = api.get(&uri, &root).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let items = page["admins"].as_array().unwrap();
+        assert!(items.len() <= 2, "{page}");
+        seen.extend(items.iter().map(|admin| admin["display_name"].clone()));
+        match page["next"].as_str() {
+            // The next page starts after an admin's ID: no name in the URL.
+            Some(next) => {
+                let last = items.last().unwrap()["id"].as_str().unwrap();
+                assert_eq!(next, last);
+                after = Some(next.to_owned());
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            json!("alice"),
+            json!("bob"),
+            json!("carol"),
+            Value::Null,
+            Value::Null,
+        ]
+    );
+    let (_, all) = api.get(&format!("{admins}?limit=1000"), &root).await;
+    assert_eq!(all["admins"].as_array().unwrap().len(), 5);
+    assert_eq!(all["next"], Value::Null);
+
+    for after in ["not-a-cursor", "alice"] {
+        let (status, body) = api.get(&format!("{admins}?after={after}"), &root).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{after}");
+        assert_eq!(
+            body["errors"],
+            json!([{ "pointer": "/after", "code": "invalid" }])
+        );
+    }
+}
+
+#[sqlx::test]
+async fn team_links_come_a_page_at_a_time(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    let links = format!("/organizations/{DEFAULT_ORGANIZATION}/teams");
+    for slug in ["zeta", "alpha", "mid"] {
+        let team = api.team(&root, slug).await;
+        api.put(
+            &format!("{links}/{team}"),
+            &root,
+            Some(json!({ "access": "read" })),
+        )
+        .await;
+    }
+    let link_slugs = |page: &Value| -> Vec<String> {
+        page["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| link["team"]["slug"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (status, page) = api.get(&format!("{links}?limit=2"), &root).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(link_slugs(&page), ["alpha", "mid"]);
+    assert_eq!(page["next"], "mid");
+    let (_, page) = api.get(&format!("{links}?limit=2&after=mid"), &root).await;
+    assert_eq!(link_slugs(&page), ["zeta"]);
+    assert_eq!(page["next"], Value::Null);
+    let (_, page) = api.get(&format!("{links}?limit=3"), &root).await;
+    assert_eq!(link_slugs(&page), ["alpha", "mid", "zeta"]);
+    assert_eq!(page["next"], Value::Null);
+
+    let (status, body) = api
+        .get(&format!("{links}?after=Not%20a%20slug"), &root)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/after", "code": "invalid" }])
+    );
+}
+
+#[sqlx::test]
 async fn plain_users_cannot_create_or_see_organizations(pool: PgPool) {
     let api = Api::new(pool.clone());
     let bob = user("bob", &[]);
@@ -300,8 +418,9 @@ async fn team_links_give_read_or_write(pool: PgPool) {
         api.get(&organization, &bob).await.1["permissions"],
         json!(["write"])
     );
-    let (status, links) = api.get(&format!("{organization}/teams"), &bob).await;
+    let (status, page) = api.get(&format!("{organization}/teams"), &bob).await;
     assert_eq!(status, StatusCode::OK);
+    let links = &page["links"];
     assert_eq!(links[0]["team"]["slug"], "engineering");
     assert_eq!(links[0]["access"], "write");
 
@@ -379,7 +498,10 @@ async fn organization_admins_manage_their_organization(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         list,
-        json!([{ "id": carol_id, "display_name": "carol (display)", "disabled": false }])
+        json!({
+            "admins": [{ "id": carol_id, "display_name": "carol (display)", "disabled": false }],
+            "next": null,
+        })
     );
 
     // Carol renames it (the slug she sends is the one it has) and adds
@@ -570,7 +692,7 @@ async fn disabled_admins_are_listed_as_disabled(pool: PgPool) {
         .await
         .unwrap();
     let (_, list) = api.get(&admins, &root).await;
-    assert_eq!(list[0]["disabled"], true, "{list}");
+    assert_eq!(list["admins"][0]["disabled"], true, "{list}");
     // Linked teams show no identity provider group to the organization's
     // readers.
     let team = api.team(&root, "platform").await;
@@ -586,9 +708,10 @@ async fn disabled_admins_are_listed_as_disabled(pool: PgPool) {
         Some(json!({ "access": "read" })),
     )
     .await;
-    let (_, links) = api
+    let (_, page) = api
         .get(&format!("/organizations/{acme}/teams"), &root)
         .await;
+    let links = &page["links"];
     assert_eq!(
         links[0]["team"],
         json!({ "id": team, "slug": "platform", "name": links[0]["team"]["name"] })
@@ -653,7 +776,7 @@ async fn the_last_admin_may_leave(pool: PgPool) {
         api.delete(&format!("{admins}/{carol_id}"), &carol).await.0,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(api.get(&admins, &root).await.1, json!([]));
+    assert_eq!(api.get(&admins, &root).await.1["admins"], json!([]));
     assert_eq!(
         api.patch(
             &format!("/organizations/{acme}"),

@@ -793,10 +793,12 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     - `GET /organizations` (visible ones, by slug, in pages: `after`/`next`), `POST /organizations`;
     - `GET`, `PATCH` and `DELETE /organizations/{id}` (delete removes links and
       admins; the Default organization cannot be deleted);
-    - `GET /organizations/{id}/admins`, and `PUT` or `DELETE
+    - `GET /organizations/{id}/admins` (by display name, in pages; `next` is
+      the last admin's ID, so no name travels in a URL), and `PUT` or `DELETE
       /organizations/{id}/admins/{user_id}`;
-    - `GET /organizations/{id}/teams`, `PUT /organizations/{id}/teams/{team_id}`
-      (`{ access }`), `DELETE /organizations/{id}/teams/{team_id}`.
+    - `GET /organizations/{id}/teams` (by slug, in pages),
+      `PUT /organizations/{id}/teams/{team_id}` (`{ access }`),
+      `DELETE /organizations/{id}/teams/{team_id}`.
   - **Teams:**
     - `GET /teams` (in pages, as organizations), `POST /teams`;
     - `GET`, `PATCH` and `DELETE /teams/{id}` (`PATCH` of `idp_group` is platform

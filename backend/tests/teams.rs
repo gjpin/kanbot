@@ -497,7 +497,7 @@ async fn maintainers_rename_and_delete_their_team(pool: PgPool) {
     assert_eq!(
         api.get(&format!("/organizations/{acme}/teams"), &root)
             .await
-            .1,
+            .1["links"],
         json!([])
     );
 }

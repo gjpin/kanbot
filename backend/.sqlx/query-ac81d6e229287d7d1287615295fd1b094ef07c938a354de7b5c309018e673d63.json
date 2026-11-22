@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS \"disabled!\"\n        FROM organization_admins a\n        JOIN users u ON u.id = a.user_id\n        WHERE a.organization_id = $1\n        ORDER BY u.display_name NULLS LAST, u.id\n        ",
+  "query": "\n        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS \"disabled!\"\n        FROM organization_admins a\n        JOIN users u ON u.id = a.user_id\n        WHERE a.organization_id = $1\n          AND ($2::uuid IS NULL\n               OR (u.display_name IS NULL, COALESCE(u.display_name, ''), u.id)\n                  > (SELECT c.display_name IS NULL, COALESCE(c.display_name, ''), c.id\n                     FROM users c WHERE c.id = $2))\n        ORDER BY u.display_name IS NULL, COALESCE(u.display_name, ''), u.id\n        LIMIT $3\n        ",
   "describe": {
     "columns": [
       {
@@ -34,7 +34,9 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
@@ -43,5 +45,5 @@
       null
     ]
   },
-  "hash": "6c1657f43e85eaa1772665db177dfb8ce2ce20397df7452b8e9246a333affdc5"
+  "hash": "ac81d6e229287d7d1287615295fd1b094ef07c938a354de7b5c309018e673d63"
 }

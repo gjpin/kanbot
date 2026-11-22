@@ -150,16 +150,28 @@ pub(super) async fn delete(db: &mut PgConnection, id: OrganizationId) -> Result<
 pub(super) async fn admins(
     db: &PgPool,
     id: OrganizationId,
+    after: Option<UserId>,
+    limit: i64,
 ) -> Result<Vec<UserSummary>, sqlx::Error> {
+    // The cursor is the last admin's ID; their sort key is looked up here,
+    // so display names never travel in URLs (and proxy logs). An ID that
+    // is no user's makes the comparison NULL: an empty page.
     Ok(sqlx::query!(
         r#"
         SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS "disabled!"
         FROM organization_admins a
         JOIN users u ON u.id = a.user_id
         WHERE a.organization_id = $1
-        ORDER BY u.display_name NULLS LAST, u.id
+          AND ($2::uuid IS NULL
+               OR (u.display_name IS NULL, COALESCE(u.display_name, ''), u.id)
+                  > (SELECT c.display_name IS NULL, COALESCE(c.display_name, ''), c.id
+                     FROM users c WHERE c.id = $2))
+        ORDER BY u.display_name IS NULL, COALESCE(u.display_name, ''), u.id
+        LIMIT $3
         "#,
-        id.as_uuid()
+        id.as_uuid(),
+        after.map(|after| after.as_uuid()),
+        limit,
     )
     .fetch_all(db)
     .await?
@@ -216,16 +228,22 @@ pub(super) async fn remove_admin(
 pub(super) async fn team_links(
     db: &PgPool,
     id: OrganizationId,
+    after: Option<&Slug>,
+    limit: i64,
 ) -> Result<Vec<TeamLink>, sqlx::Error> {
+    // Slugs are never empty: '' is before every one.
     sqlx::query!(
         r#"
         SELECT t.id, t.slug, t.name, t.idp_group, l.access
         FROM organization_teams l
         JOIN teams t ON t.id = l.team_id
-        WHERE l.organization_id = $1
+        WHERE l.organization_id = $1 AND t.slug > COALESCE($2::text, '')
         ORDER BY t.slug
+        LIMIT $3
         "#,
-        id.as_uuid()
+        id.as_uuid(),
+        after.map(Slug::as_str),
+        limit,
     )
     .fetch_all(db)
     .await?

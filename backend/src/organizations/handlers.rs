@@ -18,9 +18,9 @@ use crate::{
     openshell::model::WorkspaceName,
     organizations::{
         dto::{
-            NewOrganizationDto, OpenShellLinkDto, OrganizationChangesDto, OrganizationDto,
-            OrganizationPageDto, OrganizationQuery, OrganizationSummaryDto, TeamLinkChangeDto,
-            TeamLinkDto,
+            NewOrganizationDto, OpenShellLinkDto, OrganizationAdminPageDto, OrganizationAdminQuery,
+            OrganizationChangesDto, OrganizationDto, OrganizationPageDto, OrganizationQuery,
+            OrganizationSummaryDto, TeamLinkChangeDto, TeamLinkDto, TeamLinkPageDto, TeamLinkQuery,
         },
         model::{Organization, OrganizationChanges, OrganizationId},
         service,
@@ -223,16 +223,18 @@ pub(super) async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The organization's admins, by display name.
+/// The organization's admins, a page at a time, by display name.
 #[utoipa::path(
     get,
     path = "/organizations/{id}/admins",
     operation_id = "list_organization_admins",
     tag = "organizations",
-    params(("id" = String, Path, description = "The organization's ID (a UUID).")),
+    params(("id" = String, Path, description = "The organization's ID (a UUID)."), OrganizationAdminQuery),
     security(("bearer" = []), ("session" = [])),
     responses(
-        (status = OK, description = "The admins.", body = Vec<UserSummaryDto>),
+        (status = OK, description = "A page of the admins.", body = OrganizationAdminPageDto),
+        (status = UNPROCESSABLE_ENTITY, description = "`after` is not a page's `next` (`/after`: `invalid`).",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
@@ -245,15 +247,30 @@ pub(super) async fn admins(
     State(state): State<AppState>,
     Caller(actor): Caller,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<UserSummaryDto>>, AppError> {
-    let admins = service::admins(
+    Query(query): Query<OrganizationAdminQuery>,
+) -> Result<Json<OrganizationAdminPageDto>, AppError> {
+    let after = query
+        .after
+        .as_deref()
+        .map(|raw| {
+            Uuid::parse_str(raw)
+                .map(UserId::from_uuid)
+                .map_err(|_| AppError::Validation(vec![FieldError::new("/after", "invalid")]))
+        })
+        .transpose()?;
+    let page = service::admins(
         &state.db,
         &state.authz,
         &actor,
         OrganizationId::from_uuid(id),
+        after,
+        query.limit,
     )
     .await?;
-    Ok(Json(admins.into_iter().map(UserSummaryDto::from).collect()))
+    Ok(Json(OrganizationAdminPageDto {
+        admins: page.admins.into_iter().map(UserSummaryDto::from).collect(),
+        next: page.next.map(|id| id.as_uuid().to_string()),
+    }))
 }
 
 /// Makes a user an admin of the organization.
@@ -330,16 +347,18 @@ pub(super) async fn remove_admin(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The teams linked to the organization, by slug.
+/// The teams linked to the organization, a page at a time, by slug.
 #[utoipa::path(
     get,
     path = "/organizations/{id}/teams",
     operation_id = "list_organization_teams",
     tag = "organizations",
-    params(("id" = String, Path, description = "The organization's ID (a UUID).")),
+    params(("id" = String, Path, description = "The organization's ID (a UUID)."), TeamLinkQuery),
     security(("bearer" = []), ("session" = [])),
     responses(
-        (status = OK, description = "The linked teams.", body = Vec<TeamLinkDto>),
+        (status = OK, description = "A page of the linked teams.", body = TeamLinkPageDto),
+        (status = UNPROCESSABLE_ENTITY, description = "`after` is not a page's `next` (`/after`: `invalid`).",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
@@ -352,15 +371,22 @@ pub(super) async fn team_links(
     State(state): State<AppState>,
     Caller(actor): Caller,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TeamLinkDto>>, AppError> {
-    let links = service::team_links(
+    Query(query): Query<TeamLinkQuery>,
+) -> Result<Json<TeamLinkPageDto>, AppError> {
+    let after = names::after(query.after.as_deref())?;
+    let page = service::team_links(
         &state.db,
         &state.authz,
         &actor,
         OrganizationId::from_uuid(id),
+        after.as_ref(),
+        query.limit,
     )
     .await?;
-    Ok(Json(links.into_iter().map(TeamLinkDto::from).collect()))
+    Ok(Json(TeamLinkPageDto {
+        links: page.links.into_iter().map(TeamLinkDto::from).collect(),
+        next: page.next.map(|slug| slug.as_str().to_owned()),
+    }))
 }
 
 /// Links a team to the organization, or changes its access.

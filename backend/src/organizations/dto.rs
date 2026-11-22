@@ -9,6 +9,7 @@ use crate::{
     error::AppError,
     names::{Name, Slug, checked},
     organizations::model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
+    users::dto::UserSummaryDto,
 };
 
 /// An organization in a list.
@@ -108,6 +109,44 @@ pub struct OrganizationChangesDto {
 pub enum AccessDto {
     Read,
     Write,
+}
+
+/// A page of an organization's admins.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrganizationAdminPageDto {
+    pub admins: Vec<UserSummaryDto>,
+    /// Pass as `after` for the next page; `null` on the last one.
+    pub next: Option<String>,
+}
+
+/// `GET /organizations/{id}/admins` parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationAdminQuery {
+    /// The previous page's `next`.
+    pub after: Option<String>,
+    /// Admins per page: 1 to 500, default 100.
+    pub limit: Option<i64>,
+}
+
+/// A page of the teams linked to an organization.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TeamLinkPageDto {
+    pub links: Vec<TeamLinkDto>,
+    /// Pass as `after` for the next page; `null` on the last one.
+    pub next: Option<String>,
+}
+
+/// `GET /organizations/{id}/teams` parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct TeamLinkQuery {
+    /// The previous page's `next`.
+    pub after: Option<String>,
+    /// Linked teams per page: 1 to 500, default 100.
+    pub limit: Option<i64>,
 }
 
 /// A team linked to an organization.

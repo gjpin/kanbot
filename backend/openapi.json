@@ -926,7 +926,7 @@
         "tags": [
           "organizations"
         ],
-        "summary": "The organization's admins, by display name.",
+        "summary": "The organization's admins, a page at a time, by display name.",
         "operationId": "list_organization_admins",
         "parameters": [
           {
@@ -937,18 +937,34 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The previous page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Admins per page: 1 to 500, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The admins.",
+            "description": "A page of the admins.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/UserSummaryDto"
-                  }
+                  "$ref": "#/components/schemas/OrganizationAdminPageDto"
                 }
               }
             }
@@ -975,6 +991,16 @@
           },
           "404": {
             "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`after` is not a page's `next` (`/after`: `invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1329,7 +1355,7 @@
         "tags": [
           "organizations"
         ],
-        "summary": "The teams linked to the organization, by slug.",
+        "summary": "The teams linked to the organization, a page at a time, by slug.",
         "operationId": "list_organization_teams",
         "parameters": [
           {
@@ -1340,18 +1366,34 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The previous page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Linked teams per page: 1 to 500, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The linked teams.",
+            "description": "A page of the linked teams.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TeamLinkDto"
-                  }
+                  "$ref": "#/components/schemas/TeamLinkPageDto"
                 }
               }
             }
@@ -1378,6 +1420,16 @@
           },
           "404": {
             "description": "No such organization, or not allowed to read it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`after` is not a page's `next` (`/after`: `invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2746,6 +2798,28 @@
         },
         "additionalProperties": false
       },
+      "OrganizationAdminPageDto": {
+        "type": "object",
+        "description": "A page of an organization's admins.",
+        "required": [
+          "admins"
+        ],
+        "properties": {
+          "admins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserSummaryDto"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` for the next page; `null` on the last one."
+          }
+        }
+      },
       "OrganizationChangesDto": {
         "type": "object",
         "description": "The fields to change; absent fields stay as they are.",
@@ -3018,6 +3092,28 @@
           },
           "team": {
             "$ref": "#/components/schemas/LinkedTeamDto"
+          }
+        }
+      },
+      "TeamLinkPageDto": {
+        "type": "object",
+        "description": "A page of the teams linked to an organization.",
+        "required": [
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamLinkDto"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` for the next page; `null` on the last one."
           }
         }
       },
