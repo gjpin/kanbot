@@ -2,7 +2,10 @@
 
 pub mod common;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::{Arc, Mutex},
+};
 
 use kanbot_backend::{
     auth::token::PlatformRole,
@@ -502,6 +505,114 @@ async fn visible_lists_match_cedar_for_random_data(pool: PgPool) {
     })
     .await
     .unwrap();
+}
+
+/// The names of the spans opened (the `#[tracing::instrument]`ed repo
+/// functions: one per query).
+#[derive(Clone, Default)]
+struct SpanCounts(Arc<Mutex<Vec<&'static str>>>);
+
+impl SpanCounts {
+    /// How many spans named `name` were opened since the last call.
+    fn take(&self, name: &str) -> usize {
+        let mut names = self.0.lock().unwrap();
+        let count = names.iter().filter(|opened| **opened == name).count();
+        names.retain(|opened| *opened != name);
+        count
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanCounts {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        self.0.lock().unwrap().push(attrs.metadata().name());
+    }
+}
+
+#[sqlx::test]
+async fn a_forbid_that_hides_most_candidates_costs_a_few_batches(pool: PgPool) {
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let admin = actor(
+        insert_user(&pool, PlatformRole::Admin).await,
+        PlatformRole::Admin,
+        &[],
+    );
+    let mut teams = Vec::new();
+    for index in 0..60 {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO teams (id, slug, name) VALUES ($1, $2, 'Team')",
+            id,
+            format!("t{index:02}")
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        teams.push(id);
+    }
+    let shown = [teams[10], teams[30], teams[59]];
+    let policies = Policies::with_deployer(&format!(
+        r#"
+        @id("three-teams-only")
+        forbid (principal, action == Kanbot::Action::"viewTeam", resource)
+        unless {{ resource in [{}] }};
+        "#,
+        shown
+            .iter()
+            .map(|id| format!(r#"Kanbot::Team::"{id}""#))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+    .unwrap();
+
+    let counts = SpanCounts::default();
+    let _guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(counts.clone()));
+    let first = service::visible_teams(&pool, &policies, &admin, None, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        first.items,
+        [TeamId::from_uuid(shown[0]), TeamId::from_uuid(shown[1])]
+    );
+    assert_eq!(first.next, Some(Slug::parse("t30").unwrap()));
+    // The actor's facts once; candidates in growing batches (2, 4, 8, 16,
+    // 32), not two at a time.
+    assert_eq!(counts.take("user_facts"), 1);
+    assert_eq!(counts.take("candidate_teams"), 5);
+
+    let second = service::visible_teams(&pool, &policies, &admin, first.next.as_ref(), Some(2))
+        .await
+        .unwrap();
+    assert_eq!(second.items, [TeamId::from_uuid(shown[2])]);
+    assert_eq!(second.next, None);
+    assert_eq!(counts.take("user_facts"), 1);
+    assert_eq!(counts.take("candidate_teams"), 4);
+
+    // A page filled by the last candidate is the last page.
+    let last = service::visible_teams(&pool, &policies, &admin, first.next.as_ref(), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        (last.items, last.next),
+        (vec![TeamId::from_uuid(shown[2])], None)
+    );
+    let all = service::visible_teams(&pool, &Policies::builtin().unwrap(), &admin, None, Some(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        all.items,
+        teams
+            .iter()
+            .map(|id| TeamId::from_uuid(*id))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(all.next, None);
 }
 
 #[sqlx::test]

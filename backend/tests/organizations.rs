@@ -612,6 +612,119 @@ async fn disabled_users_cannot_become_admins(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_user_disabled_meanwhile_does_not_become_an_admin(pool: PgPool) {
+    // Bob is being disabled while root makes him an admin: the addition
+    // waits for the disabling and sees it.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let bob = api.user_id(&user("bob", &[])).await;
+    let mut disabling = pool.begin().await.unwrap();
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE id = $1", bob)
+        .execute(&mut *disabling)
+        .await
+        .unwrap();
+    let admin_uri = format!("/organizations/{acme}/admins/{bob}");
+    let (status, _) =
+        common::commit_when_blocked(&pool, disabling, api.put(&admin_uri, &root, None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let admins = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM organization_admins WHERE user_id = $1"#,
+        bob
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(admins, 0);
+}
+
+#[sqlx::test]
+async fn the_last_admin_may_leave(pool: PgPool) {
+    // Unlike a team's last maintainer: the organization is then managed by
+    // platform admins only.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    let admins = format!("/organizations/{acme}/admins");
+    api.put(&format!("{admins}/{carol_id}"), &root, None).await;
+    assert_eq!(
+        api.delete(&format!("{admins}/{carol_id}"), &carol).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(api.get(&admins, &root).await.1, json!([]));
+    assert_eq!(
+        api.patch(
+            &format!("/organizations/{acme}"),
+            &carol,
+            json!({ "name": "Carol's" })
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        api.patch(
+            &format!("/organizations/{acme}"),
+            &root,
+            json!({ "name": "Root's" })
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn linking_a_team_records_the_policies_of_both_decisions(pool: PgPool) {
+    // manageTeamLinks on the organization and viewTeam on the team both
+    // allowed it: the audit entry lists the policies of both.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let platform = api.team(&root, "platform").await;
+    let web = api.team(&root, "web").await;
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    api.put(
+        &format!("/organizations/{acme}/admins/{carol_id}"),
+        &root,
+        None,
+    )
+    .await;
+    // Another platform admin, in neither team (root maintains both).
+    let ops = admin("ops");
+    for (team, token) in [(platform, &carol), (web, &ops)] {
+        let (status, _) = api
+            .put(
+                &format!("/organizations/{acme}/teams/{team}"),
+                token,
+                Some(json!({ "access": "read" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let links: Vec<Vec<String>> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .filter(|(action, _, _)| action == "organization.team_linked")
+        .map(|(_, policy_ids, _)| policy_ids)
+        .collect();
+    assert_eq!(
+        links,
+        [
+            vec![
+                "builtin.organization-admins".to_owned(),
+                "builtin.team-viewers".to_owned()
+            ],
+            // The same policy allowed both: listed once.
+            vec!["builtin.platform-admins".to_owned()],
+        ]
+    );
+}
+
+#[sqlx::test]
 async fn linking_a_team_needs_to_see_it(pool: PgPool) {
     use kanbot_backend::authz::policies::Policies;
     // Organization admins may see every team, unless a deployer says no:

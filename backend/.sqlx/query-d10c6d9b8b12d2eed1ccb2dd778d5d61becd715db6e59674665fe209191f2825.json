@@ -1,12 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT disabled_at IS NULL AS \"active!\" FROM users WHERE id = $1",
+  "query": "SELECT count(*) AS \"count!\" FROM team_members WHERE user_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "active!",
-        "type_info": "Bool",
+        "name": "count!",
+        "type_info": "Int8",
         "origin": "Expression"
       }
     ],
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "d87510f3c93ecc2bb6f0f4c5ffec83e49ad73ca87a11ca0b843a03d365067ca3"
+  "hash": "d10c6d9b8b12d2eed1ccb2dd778d5d61becd715db6e59674665fe209191f2825"
 }

@@ -339,9 +339,11 @@ pub(super) async fn lock_membership(
     }))
 }
 
-/// Adds `user` as a manual member with `role`, or changes their role (a
-/// membership the sync left behind becomes manual). Returns the previous
-/// role, if they were a member.
+/// Adds `user` as a manual member with `role`, or changes their role (the
+/// membership is manual from then on). Returns the previous role, if they
+/// were a member. Callers refuse synced teams, and a team that is not
+/// synced has no synced memberships: [`update`] removes them when it
+/// clears the group, under the team's lock.
 #[tracing::instrument(skip_all, fields(team.id = %id.as_uuid(), user.id = %user.as_uuid()))]
 pub(super) async fn set_member(
     db: &mut PgConnection,

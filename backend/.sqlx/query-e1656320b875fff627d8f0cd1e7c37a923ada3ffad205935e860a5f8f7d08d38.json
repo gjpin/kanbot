@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.id, t.slug\n        FROM teams t\n        WHERE ($2\n               OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)\n               OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1))\n          AND ($3::text IS NULL OR t.slug > $3)\n        ORDER BY t.slug\n        LIMIT $4\n        ",
+  "query": "\n        SELECT t.id, t.slug\n        FROM teams t\n        WHERE ($2\n               OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)\n               OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1))\n          -- Not `$3 IS NULL OR ...`: a generic plan could not seek the\n          -- slug index. Slugs are never empty (a CHECK constraint).\n          AND t.slug > COALESCE($3::text, '')\n        ORDER BY t.slug\n        LIMIT $4\n        ",
   "describe": {
     "columns": [
       {
@@ -39,5 +39,5 @@
       false
     ]
   },
-  "hash": "3bbbc42ae17f25f8f8338b7f7fe1a869713ce04b6949a6cf4ebe53adbe9e8984"
+  "hash": "e1656320b875fff627d8f0cd1e7c37a923ada3ffad205935e860a5f8f7d08d38"
 }

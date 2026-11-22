@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT o.id, o.slug\n        FROM organizations o\n        WHERE ($2\n               OR o.id IN (SELECT organization_id FROM organization_admins WHERE user_id = $1)\n               OR o.id IN (\n                   SELECT l.organization_id\n                   FROM organization_teams l\n                   JOIN team_members m ON m.team_id = l.team_id\n                   WHERE m.user_id = $1\n               ))\n          -- Not `$3 IS NULL OR ...`: a generic plan could not seek the\n          -- slug index. Slugs are never empty (a CHECK constraint).\n          AND o.slug > COALESCE($3::text, '')\n        ORDER BY o.slug\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "organizations",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "organizations",
+            "name": "slug"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "96472e2f9e2cb234464a0def2a0c9d983104331305ac1d3f79b5549ff22a9b37"
+}

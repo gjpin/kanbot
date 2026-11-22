@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     auth::token::PlatformRole,
     authz::{
-        model::{Action, Actor, Decision, Facts, Resource, SYNC_IP, TeamFacts, Via},
+        model::{Action, Actor, Decision, Facts, Resource, SYNC_IP, TeamFacts, UserFacts, Via},
         policies::Policies,
         repo,
     },
@@ -310,24 +310,73 @@ pub async fn decide_for_users(
     Ok(all)
 }
 
+/// The actor's own facts, for a list: loaded once per request, not once
+/// per batch of candidates.
+struct OwnFacts {
+    user: UserFacts,
+    /// The actor's teams.
+    teams: Vec<TeamFacts>,
+}
+
+async fn own_facts(db: &PgPool, actor: &Actor) -> Result<OwnFacts, AppError> {
+    let user = repo::user_facts(db, actor.user.id).await?;
+    let ids: Vec<Uuid> = user.teams.iter().map(TeamId::as_uuid).collect();
+    let teams = if ids.is_empty() {
+        Vec::new()
+    } else {
+        repo::team_facts(db, &ids).await?
+    };
+    Ok(OwnFacts { user, teams })
+}
+
 /// The candidates that `actor` may see, among `candidates` (all of one
-/// kind), in order.
+/// kind). Loads the candidates' facts; the actor's are `own`.
 async fn filter_visible(
     db: &PgPool,
     policies: &Policies,
     actor: &Actor,
-    candidates: Vec<Resource>,
-) -> Result<Vec<Resource>, AppError> {
-    let facts = load(db, actor, &candidates).await?;
-    // Deleted since the candidates were listed: not visible.
-    let candidates: Vec<Resource> = candidates
-        .into_iter()
-        .filter(|resource| exists(&facts, *resource))
-        .collect();
+    own: &OwnFacts,
+    candidates: &[Resource],
+) -> Result<HashSet<Resource>, AppError> {
+    let mut team_ids = Vec::new();
+    let mut organization_ids = Vec::new();
+    for resource in candidates {
+        match resource {
+            Resource::Platform => {}
+            Resource::Organization(id) => organization_ids.push(id.as_uuid()),
+            Resource::Team(id) => team_ids.push(id.as_uuid()),
+        }
+    }
+    let mut facts = Facts {
+        user: own.user.clone(),
+        teams: if team_ids.is_empty() {
+            Vec::new()
+        } else {
+            repo::team_facts(db, &team_ids).await?
+        },
+        organizations: if organization_ids.is_empty() {
+            Vec::new()
+        } else {
+            repo::organization_facts(db, &organization_ids).await?
+        },
+    };
+    // Deleted since the candidates were listed: not visible. Checked
+    // before the actor's own teams join the facts: only the candidates'
+    // facts, just loaded, say what still exists.
     let requests: Vec<(Action, Resource)> = candidates
         .iter()
+        .filter(|resource| exists(&facts, **resource))
         .filter_map(|resource| visibility(*resource).map(|action| (action, *resource)))
         .collect();
+    // The actor's teams, except those the candidates' facts hold already
+    // (the fresher copy).
+    let loaded: HashSet<TeamId> = facts.teams.iter().map(|team| team.id).collect();
+    facts.teams.extend(
+        own.teams
+            .iter()
+            .filter(|team| !loaded.contains(&team.id))
+            .cloned(),
+    );
     let decisions = decide_all(policies, actor, &facts, &requests)?;
     Ok(requests
         .into_iter()
@@ -367,10 +416,50 @@ enum Listed {
     Teams,
 }
 
+/// The candidates of a list after `after`, by slug: up to `limit`.
+async fn candidates(
+    db: &PgPool,
+    actor: &Actor,
+    listed: Listed,
+    after: Option<&Slug>,
+    limit: i64,
+) -> Result<Vec<(Resource, Slug)>, AppError> {
+    let platform_admin = actor.user.role == PlatformRole::Admin;
+    let after = after.map(Slug::as_str);
+    Ok(match listed {
+        Listed::Organizations => {
+            repo::candidate_organizations(db, actor.user.id, platform_admin, after, limit)
+                .await?
+                .into_iter()
+                .map(|(id, slug)| (Resource::Organization(OrganizationId::from_uuid(id)), slug))
+                .collect()
+        }
+        Listed::Teams => repo::candidate_teams(db, actor.user.id, platform_admin, after, limit)
+            .await?
+            .into_iter()
+            .map(|(id, slug)| (Resource::Team(TeamId::from_uuid(id)), slug))
+            .collect(),
+    })
+}
+
+/// The page, with `next` when candidates follow its last item.
+fn finish(page: Vec<(Resource, Slug)>, more: bool) -> VisiblePage<Resource> {
+    let next = page.last().filter(|_| more).map(|(_, slug)| slug.clone());
+    VisiblePage {
+        items: page.into_iter().map(|(resource, _)| resource).collect(),
+        next,
+    }
+}
+
 /// Up to `limit` (default [`DEFAULT_PAGE`], at most [`MAX_PAGE`]) of the
 /// organizations or teams after `after` that `actor` may see. A forbid can
 /// remove candidates, so this asks for more until the page is full: `next`
 /// is always a slug the actor may see.
+///
+/// Candidates come in batches of `limit` (the page, when no forbid
+/// removes any), twice as many each time a forbid left the page short, up
+/// to [`MAX_PAGE`]: a forbid that hides most candidates costs a few
+/// batches, not one per item. The actor's facts are loaded once.
 async fn visible_page(
     db: &PgPool,
     policies: &Policies,
@@ -380,64 +469,42 @@ async fn visible_page(
     limit: Option<i64>,
 ) -> Result<VisiblePage<Resource>, AppError> {
     let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
-    let platform_admin = actor.user.role == PlatformRole::Admin;
+    let page_len = usize::try_from(limit).map_err(|_| AppError::Internal("authz"))?;
+    let own = own_facts(db, actor).await?;
     let mut after = after.cloned();
-    let mut page: Vec<(Resource, Slug)> = Vec::new();
+    let mut batch_size = limit;
+    let mut page: Vec<(Resource, Slug)> = Vec::with_capacity(page_len);
     loop {
-        // One more than needed tells whether there are more.
-        let wanted = limit.saturating_sub(i64::try_from(page.len()).unwrap_or(limit));
-        let after_slug = after.as_ref().map(Slug::as_str);
-        let mut batch: Vec<(Resource, Slug)> = match listed {
-            Listed::Organizations => repo::candidate_organizations(
-                db,
-                actor.user.id,
-                platform_admin,
-                after_slug,
-                wanted.saturating_add(1),
-            )
-            .await?
-            .into_iter()
-            .map(|(id, slug)| (Resource::Organization(OrganizationId::from_uuid(id)), slug))
-            .collect(),
-            Listed::Teams => repo::candidate_teams(
-                db,
-                actor.user.id,
-                platform_admin,
-                after_slug,
-                wanted.saturating_add(1),
-            )
-            .await?
-            .into_iter()
-            .map(|(id, slug)| (Resource::Team(TeamId::from_uuid(id)), slug))
-            .collect(),
-        };
-        let more = usize::try_from(wanted).is_ok_and(|wanted| batch.len() > wanted);
-        if more {
-            batch.pop();
-        }
-        after = batch.last().map(|(_, slug)| slug.clone());
-        let visible: HashSet<Resource> = filter_visible(
+        let batch_len = usize::try_from(batch_size).map_err(|_| AppError::Internal("authz"))?;
+        // One more than the batch tells whether there are more.
+        let mut batch = candidates(
             db,
-            policies,
             actor,
-            batch.iter().map(|(resource, _)| *resource).collect(),
+            listed,
+            after.as_ref(),
+            batch_size.saturating_add(1),
         )
-        .await?
-        .into_iter()
-        .collect();
-        page.extend(
-            batch
-                .into_iter()
-                .filter(|(resource, _)| visible.contains(resource)),
-        );
-        let full = usize::try_from(limit).is_ok_and(|limit| page.len() >= limit);
-        if !more || full {
-            let next = page.last().filter(|_| more).map(|(_, slug)| slug.clone());
-            return Ok(VisiblePage {
-                items: page.into_iter().map(|(resource, _)| resource).collect(),
-                next,
-            });
+        .await?;
+        let more_after_batch = batch.len() > batch_len;
+        batch.truncate(batch_len);
+        after = batch.last().map(|(_, slug)| slug.clone());
+        let resources: Vec<Resource> = batch.iter().map(|(resource, _)| *resource).collect();
+        let visible = filter_visible(db, policies, actor, &own, &resources).await?;
+        let count = batch.len();
+        for (index, (resource, slug)) in batch.into_iter().enumerate() {
+            if !visible.contains(&resource) {
+                continue;
+            }
+            page.push((resource, slug));
+            if page.len() >= page_len {
+                let more = more_after_batch || index.saturating_add(1) < count;
+                return Ok(finish(page, more));
+            }
         }
+        if !more_after_batch {
+            return Ok(finish(page, false));
+        }
+        batch_size = batch_size.saturating_mul(2).min(MAX_PAGE);
     }
 }
 

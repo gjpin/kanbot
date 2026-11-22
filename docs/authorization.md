@@ -66,6 +66,9 @@ Some rules hold whatever the policies say:
   mark them `disabled` so they can be removed.
 - A team keeps at least one maintainer: removing or demoting the last one is
   `409 conflict`. Add another maintainer first, or delete the team.
+- An organization, unlike a team, may lose its last admin: removing them is
+  allowed. Only platform admins can then manage it (rename it, add admins,
+  link teams) until they make someone its admin again.
 - Linking a team to an organization also needs `viewTeam` on the team: a team
   someone may not see cannot be probed or linked.
 - The Default organization's slug stays `default`; its name can change.
@@ -128,9 +131,9 @@ policy IDs.
   where the app shows them.
 - Lists stay correct. `GET /organizations` and `GET /teams` first select, with
   SQL, a page of the candidates the built-in permits could allow, then ask
-  Cedar about each (and select more while a `forbid` leaves the page short). A
-  `forbid` can only remove candidates; a custom `permit` could allow one the SQL
-  never selected.
+  Cedar about each (and select more, in growing batches, while a `forbid`
+  leaves the page short). A `forbid` can only remove candidates; a custom
+  `permit` could allow one the SQL never selected.
 
 ### What a policy can use
 

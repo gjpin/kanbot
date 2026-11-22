@@ -1,6 +1,6 @@
 //! Business rules for users.
 
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::{
     auth::token::Principal,
@@ -79,13 +79,15 @@ pub async fn disable(db: &PgPool, id: UserId) -> Result<(), AppError> {
 
 /// Refuses a user who does not exist or is disabled, as someone to add to
 /// an organization or a team: [`AppError::NotFound`], as `GET /users`
-/// does not list them either.
+/// does not list them either. Call it in the transaction that adds them:
+/// it locks the user until the transaction ends, so a concurrent
+/// [`disable`] either waits for the addition or is seen by this check.
 ///
 /// # Errors
 ///
 /// [`AppError::NotFound`], or a database error.
-pub async fn require_active(db: &PgPool, id: UserId) -> Result<(), AppError> {
-    if repo::is_active(db, id).await? {
+pub async fn require_active(tx: &mut PgConnection, id: UserId) -> Result<(), AppError> {
+    if repo::lock_active(tx, id).await? {
         Ok(())
     } else {
         Err(AppError::NotFound)

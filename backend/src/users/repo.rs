@@ -133,11 +133,13 @@ pub(super) async fn disable(db: &mut PgConnection, id: UserId) -> Result<bool, s
         == 1)
 }
 
-/// Whether the user exists and is not disabled.
+/// Whether the user exists and is not disabled. Locks the user `FOR
+/// SHARE` until the transaction ends: [`disable`] waits for it, or is
+/// waited for and seen.
 #[tracing::instrument(skip_all, fields(user.id = %id.as_uuid()))]
-pub(super) async fn is_active(db: &PgPool, id: UserId) -> Result<bool, sqlx::Error> {
+pub(super) async fn lock_active(db: &mut PgConnection, id: UserId) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query_scalar!(
-        r#"SELECT disabled_at IS NULL AS "active!" FROM users WHERE id = $1"#,
+        r#"SELECT disabled_at IS NULL AS "active!" FROM users WHERE id = $1 FOR SHARE"#,
         id.as_uuid()
     )
     .fetch_optional(db)

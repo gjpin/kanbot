@@ -209,3 +209,50 @@ pub fn app_with_keys(pool: PgPool, migrator: &'static Migrator, keys: Arc<KeyCac
         None,
     )
 }
+
+/// Runs `request` while `tx`, another transaction, holds an uncommitted
+/// change: commits `tx` once some query of the test database waits for a
+/// lock (the request, blocked by `tx`), or once the request has finished
+/// without waiting. Returns the request's result.
+///
+/// # Panics
+///
+/// If nothing waits and the request does not finish within 10 seconds, or
+/// on a database error.
+pub async fn commit_when_blocked<T>(
+    pool: &PgPool,
+    tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    request: impl Future<Output = T>,
+) -> T {
+    let mut request = std::pin::pin!(request);
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                result = &mut request => break Some(result),
+                () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                    let waiting = sqlx::query_scalar!(
+                        r#"
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_stat_activity
+                            WHERE datname = current_database() AND wait_event_type = 'Lock'
+                        ) AS "waiting!"
+                        "#
+                    )
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+                    if waiting {
+                        break None;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("the request neither waited for a lock nor finished");
+    tx.commit().await.unwrap();
+    match finished {
+        Some(result) => result,
+        None => request.await,
+    }
+}

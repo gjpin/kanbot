@@ -190,7 +190,9 @@ pub(super) async fn candidate_organizations(
                    JOIN team_members m ON m.team_id = l.team_id
                    WHERE m.user_id = $1
                ))
-          AND ($3::text IS NULL OR o.slug > $3)
+          -- Not `$3 IS NULL OR ...`: a generic plan could not seek the
+          -- slug index. Slugs are never empty (a CHECK constraint).
+          AND o.slug > COALESCE($3::text, '')
         ORDER BY o.slug
         LIMIT $4
         "#,
@@ -224,7 +226,9 @@ pub(super) async fn candidate_teams(
         WHERE ($2
                OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)
                OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1))
-          AND ($3::text IS NULL OR t.slug > $3)
+          -- Not `$3 IS NULL OR ...`: a generic plan could not seek the
+          -- slug index. Slugs are never empty (a CHECK constraint).
+          AND t.slug > COALESCE($3::text, '')
         ORDER BY t.slug
         LIMIT $4
         "#,

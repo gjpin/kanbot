@@ -843,9 +843,41 @@ async fn disabled_users_cannot_be_added(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_user_disabled_meanwhile_is_not_added(pool: PgPool) {
+    // Bob is being disabled while root adds him: the addition waits for
+    // the disabling and sees it.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let bob_id = api.user_id(&user("bob", &[])).await;
+    let mut disabling = pool.begin().await.unwrap();
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE id = $1", bob_id)
+        .execute(&mut *disabling)
+        .await
+        .unwrap();
+    let member = format!("/teams/{team}/members/{bob_id}");
+    let (status, _) = common::commit_when_blocked(
+        &pool,
+        disabling,
+        api.put(&member, &root, Some(json!({ "role": "member" }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let members = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM team_members WHERE user_id = $1"#,
+        bob_id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(members, 0);
+}
+
+#[sqlx::test]
 async fn a_membership_the_sync_left_behind_can_be_removed(pool: PgPool) {
-    // A race with a group change can leave a synced membership in a team
-    // that is no longer synced: it must not be stuck there.
+    // The sync cannot leave a synced membership in a team that is no
+    // longer synced (`a_sync_waits_for_a_group_change_and_sees_it`), but
+    // should one be there, it must not be stuck.
     let api = Api::new(pool.clone());
     let root = admin("root");
     let team = api.team(&root, "platform").await;

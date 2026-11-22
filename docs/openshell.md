@@ -72,8 +72,18 @@ OpenShell versions are listed in
 - **Kanbot learns about groups and roles when users use kanbot.** Someone
   removed from an identity provider group, or who lost their kanbot role,
   stays in the workspace until they next sign in or call the API, since kanbot
-  only sees their groups in their tokens. To remove someone at once, remove
-  them from the team or organization in kanbot, or disable them.
+  only sees their groups in their tokens. To remove someone at once, in
+  kanbot:
+  - disable them: they leave every workspace;
+  - remove them as an admin of the organization, or from a team that is not
+    synced with an identity provider group. Kanbot refuses to remove a synced
+    membership (`409`), since the groups claim decides it;
+  - for a synced team: unlink the team from the organization, which removes
+    what the link gave all of its members (they stay only where another team
+    or being an admin still puts them); or clear the team's `idp_group`, which
+    removes all of its synced members (manage the team by hand from then on);
+    or change it, which removes all of its members until they sign in or call
+    the API with the new group in their claim.
 
 The workspace must exist: kanbot does not create workspaces. Workspace names
 are Kubernetes-style names (lowercase letters, digits, `-` and `.`, at most 253

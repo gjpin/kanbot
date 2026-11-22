@@ -248,10 +248,10 @@ pub async fn members(
 }
 
 /// Locks the membership for a change. The members of a synced team come
-/// from the identity provider: [`AppError::Conflict`]. A membership the
-/// sync left in a team that is no longer synced is editable like any
-/// other. The last maintainer of a team cannot be removed or made a
-/// member (`demoted`): the team would be left without one
+/// from the identity provider: [`AppError::Conflict`]. (A team that is not
+/// synced has no synced memberships: clearing its group removed them,
+/// under the same lock.) The last maintainer of a team cannot be removed
+/// or made a member (`demoted`): the team would be left without one
 /// ([`AppError::Conflict`]); add another maintainer first.
 async fn editable(
     tx: &mut sqlx::PgConnection,
@@ -298,8 +298,10 @@ pub async fn set_member(
         Resource::Team(id),
     )
     .await?;
-    users::require_active(db, user).await?;
     let mut tx = db.begin().await?;
+    // The user before the team, in the order the identity provider group
+    // sync locks them.
+    users::require_active(&mut tx, user).await?;
     editable(&mut tx, id, user, role != TeamRole::Maintainer).await?;
     let previous = repo::set_member(&mut tx, id, user, role)
         .await

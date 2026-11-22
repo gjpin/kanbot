@@ -277,8 +277,8 @@ pub async fn add_admin(
         Resource::Organization(id),
     )
     .await?;
-    users::require_active(db, user).await?;
     let mut tx = db.begin().await?;
+    users::require_active(&mut tx, user).await?;
     if repo::add_admin(&mut tx, id, user)
         .await
         .map_err(AppError::from_write)?
@@ -378,7 +378,7 @@ pub async fn set_team_link(
     team: TeamId,
     access: Access,
 ) -> Result<(), AppError> {
-    let decision = authz::require(
+    let mut decision = authz::require(
         db,
         policies,
         actor,
@@ -387,7 +387,11 @@ pub async fn set_team_link(
     )
     .await?;
     // A team the actor may not see cannot be probed or linked.
-    authz::require(db, policies, actor, Action::ViewTeam, Resource::Team(team)).await?;
+    let view = authz::require(db, policies, actor, Action::ViewTeam, Resource::Team(team)).await?;
+    // Both decisions allowed it: the audit entry lists the policies of both.
+    decision.policy_ids.extend(view.policy_ids);
+    decision.policy_ids.sort();
+    decision.policy_ids.dedup();
     let mut tx = db.begin().await?;
     let changed = repo::set_team_link(&mut tx, id, team, access)
         .await
