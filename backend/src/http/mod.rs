@@ -175,7 +175,7 @@ impl HttpSettings {
             Vec::new(),
             TrustedProxies::default(),
             RateLimits::DEFAULT,
-            NonZeroUsize::new(512).unwrap_or(NonZeroUsize::MIN),
+            crate::config::DEFAULT_MAX_IN_FLIGHT_REQUESTS,
             None,
         )
     }
@@ -264,9 +264,11 @@ pub fn router(
         crate::auth::middleware::authenticate,
     ));
     let routes = protected.merge(public);
+    // An explicit fallback, so that the per-IP limit below covers unknown
+    // paths too: axum's default one is outside every layer.
     let routes = match &settings.web_dir {
         Some(dir) => web::with_web_app(routes, dir),
-        None => routes,
+        None => routes.fallback(|| async { StatusCode::NOT_FOUND }),
     };
     let routes =
         rate_limit::limit_per_client(routes, settings.trusted_proxies, settings.rate_limits.ip)?;

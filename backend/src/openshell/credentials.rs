@@ -131,7 +131,7 @@ impl Credentials {
         match self.keys.key(unverified.kid()).await {
             KeyLookup::Found(key) => Ok((unverified, key)),
             KeyLookup::Unknown => Err(CredentialError::Invalid(Rejection::UnknownKey)),
-            KeyLookup::NotLoaded => Err(CredentialError::KeysNotLoaded),
+            KeyLookup::NotLoaded | KeyLookup::Busy => Err(CredentialError::KeysNotLoaded),
         }
     }
 

@@ -112,9 +112,10 @@ access tokens.
 
 - At most 16 KiB, three base64url segments (so opaque tokens are refused),
   and a header with `kid` and `alg` and without `crit`.
-- Signature against the issuer's JWKS. The algorithm is taken from the JWK, and
-  a token whose header `alg` does not match it is rejected. `none` and `HS*` are
-  always rejected.
+- Signature against the issuer's JWKS. The algorithm is taken from the JWK's
+  `alg`, and a token whose header `alg` does not match it is rejected; a JWK
+  without `alg` allows those of its key type (any RS or PS algorithm for an RSA
+  key). `none` and `HS*` are always rejected.
 - `iss` equals the configured issuer exactly.
 - `aud` contains the configured audience.
 - `exp`, `iss`, `aud` and `sub` are present.
@@ -162,7 +163,7 @@ equals `OIDC_CLIENT_ID` or is listed in `OIDC_ALLOWED_CLIENTS`.
 | `OIDC_SCOPES` | no | Scopes kanbot requests. Default `openid profile email offline_access`, plus whatever scope your IdP needs for the roles claim (for example `groups`). |
 | `OIDC_SUBJECT_CLAIM` | no | Claim that identifies the user. Default `sub`. Use `oid` for Entra ID. |
 | `OIDC_GROUPS_CLAIM` | no | Dot-separated path to the groups array, used to sync teams with identity provider groups and as `principal.groups` in authorization policies. Default: the value of `OIDC_ROLES_CLAIM`. Without it in a token, the user is in no synced team. |
-| `OIDC_ALLOWED_CLIENTS` | no | Comma-separated client IDs whose bearer tokens may call the API. Default: any client. |
+| `OIDC_ALLOWED_CLIENTS` | no | Comma-separated client IDs whose tokens kanbot accepts, as bearer tokens and from sign-ins. It must include `OIDC_CLIENT_ID`. Default: any client. |
 | `OIDC_JWKS_TTL` | no | Seconds between JWKS refreshes. Default `3600`. |
 | `OIDC_JWKS_ALLOWED_ORIGINS` | no | Extra HTTPS origins allowed to serve the JWKS. |
 | `OIDC_CA_FILE` | no | PEM bundle for an IdP with a private certificate authority. |
@@ -416,8 +417,8 @@ Checked against Microsoft Learn.
 - **Subject:** `sub` is pairwise, different for the same user in each
   application. Set `OIDC_SUBJECT_CLAIM=oid`, which is stable across applications
   within a tenant.
-- **Signing:** RS256. The JWKS entries have no `alg`, so kanbot infers RS256 from
-  the RSA key type.
+- **Signing:** RS256. The JWKS entries have no `alg`, so kanbot accepts the RSA
+  algorithms for those keys.
 - **One resource per token:** a token covers a single API. Scopes for several
   resources in one token request are an error.
 - **Client credentials:** request `<api-app-id-uri>/.default`. Roles come from

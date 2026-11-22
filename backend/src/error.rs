@@ -165,17 +165,12 @@ impl AppError {
 }
 
 impl AppError {
-    /// What may be logged about the error: its kind, and for a database
-    /// error its SQLSTATE and constraint name. Never the error's message
-    /// or `Debug` form: Postgres puts row values in them (`Key
+    /// The error's kind: what may be logged about it, with a database
+    /// error's SQLSTATE and constraint name. Never the error's message or
+    /// `Debug` form: Postgres puts row values in them (`Key
     /// (subject)=(...) already exists`).
-    /// The error's kind, safe to log (see [`AppError::log_kind`]).
     #[must_use]
     pub fn kind(&self) -> &'static str {
-        self.log_kind()
-    }
-
-    fn log_kind(&self) -> &'static str {
         match self {
             Self::Database(error) => database_kind(error),
             Self::BadRequest => "bad_request",
@@ -210,7 +205,7 @@ impl IntoResponse for AppError {
         if code.status().is_server_error() {
             let (sqlstate, constraint) = self.database_details();
             tracing::error!(
-                error.type = self.log_kind(),
+                error.type = self.kind(),
                 db.response.status_code = sqlstate,
                 db.constraint = constraint,
                 ?code,
@@ -531,7 +526,7 @@ mod tests {
                 "database.other",
             ),
         ] {
-            assert_eq!(error.log_kind(), kind);
+            assert_eq!(error.kind(), kind);
         }
     }
 

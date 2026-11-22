@@ -22,7 +22,7 @@ use crate::{
 };
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:3000";
-const DEFAULT_MAX_IN_FLIGHT_REQUESTS: NonZeroUsize = match NonZeroUsize::new(512) {
+pub(crate) const DEFAULT_MAX_IN_FLIGHT_REQUESTS: NonZeroUsize = match NonZeroUsize::new(512) {
     Some(value) => value,
     None => NonZeroUsize::MIN,
 };
@@ -75,11 +75,12 @@ pub struct Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("environment variable {name} is missing or not valid UTF-8")]
+    /// Missing, or present but not Unicode. Never the value: a variable
+    /// may hold a secret, and `VarError::NotUnicode` holds it.
+    #[error("environment variable {name} is {}", if *.not_unicode { "not valid UTF-8" } else { "missing" })]
     Var {
         name: &'static str,
-        #[source]
-        source: VarError,
+        not_unicode: bool,
     },
     #[error("LISTEN_ADDR is not a valid socket address")]
     ListenAddr(#[source] std::net::AddrParseError),
@@ -128,10 +129,7 @@ fn database_url(
 ) -> Result<SecretString, ConfigError> {
     lookup("DATABASE_URL")
         .map(SecretString::from)
-        .map_err(|source| ConfigError::Var {
-            name: "DATABASE_URL",
-            source,
-        })
+        .map_err(|error| var_error("DATABASE_URL", &error))
 }
 
 impl Config {
@@ -183,6 +181,13 @@ impl Config {
         let sessions = SessionConfig::from_lookup(&lookup)?;
         if sessions.client_id == oidc.audience.as_str() {
             return Err(OidcConfigError::AudienceIsClient.into());
+        }
+        if oidc.allowed_clients.as_ref().is_some_and(|allowed| {
+            !allowed
+                .iter()
+                .any(|client| client.as_str() == sessions.client_id)
+        }) {
+            return Err(OidcConfigError::SignInClientNotAllowed.into());
         }
         let web_dir = match optional(&lookup, "WEB_DIR")? {
             Some(raw) if !raw.trim().is_empty() => {
@@ -270,7 +275,14 @@ pub(crate) fn required(
     lookup: &impl Fn(&'static str) -> Result<String, VarError>,
     name: &'static str,
 ) -> Result<String, ConfigError> {
-    lookup(name).map_err(|source| ConfigError::Var { name, source })
+    lookup(name).map_err(|error| var_error(name, &error))
+}
+
+fn var_error(name: &'static str, error: &VarError) -> ConfigError {
+    ConfigError::Var {
+        name,
+        not_unicode: matches!(error, VarError::NotUnicode(_)),
+    }
 }
 
 /// Reads a variable that may be absent. Present but not UTF-8 is an error.
@@ -281,7 +293,7 @@ pub(crate) fn optional(
     match lookup(name) {
         Ok(value) => Ok(Some(value)),
         Err(VarError::NotPresent) => Ok(None),
-        Err(source) => Err(ConfigError::Var { name, source }),
+        Err(error) => Err(var_error(name, &error)),
     }
 }
 
@@ -464,7 +476,7 @@ mod tests {
             database_url(&lookup(&[])),
             Err(ConfigError::Var {
                 name: "DATABASE_URL",
-                source: VarError::NotPresent
+                not_unicode: false
             })
         ));
     }
@@ -476,7 +488,7 @@ mod tests {
             err,
             ConfigError::Var {
                 name: "DATABASE_URL",
-                source: VarError::NotPresent
+                not_unicode: false
             }
         ));
     }
@@ -490,7 +502,7 @@ mod tests {
             err,
             ConfigError::Var {
                 name: "LISTEN_ADDR",
-                source: VarError::NotUnicode(_)
+                not_unicode: true
             }
         ));
     }
@@ -572,9 +584,32 @@ mod tests {
             err,
             ConfigError::Var {
                 name: "CORS_ALLOWED_ORIGINS",
-                source: VarError::NotUnicode(_)
+                not_unicode: true
             }
         ));
+    }
+
+    #[test]
+    fn a_value_that_is_not_unicode_is_never_shown() {
+        let err = database_url(&|_| {
+            Err(VarError::NotUnicode(std::ffi::OsString::from(
+                "postgres://kanbot:s3cret@db",
+            )))
+        })
+        .err()
+        .unwrap();
+        for shown in [err.to_string(), format!("{err:?}")] {
+            assert!(!shown.contains("s3cret"), "{shown}");
+            assert!(shown.contains("DATABASE_URL"), "{shown}");
+        }
+        assert!(std::error::Error::source(&err).is_none());
+        assert_eq!(
+            database_url(&|_| Err(VarError::NotPresent))
+                .err()
+                .unwrap()
+                .to_string(),
+            "environment variable DATABASE_URL is missing"
+        );
     }
 
     #[test]
@@ -746,6 +781,22 @@ mod tests {
     }
 
     #[test]
+    fn the_allowed_clients_include_the_sign_in_client() {
+        let allowed = |clients: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://db"),
+                ("OIDC_ALLOWED_CLIENTS", clients),
+            ]))
+            .map(|config| config.oidc.allowed_clients.map(|clients| clients.len()))
+        };
+        assert!(matches!(
+            allowed("kanbot-cli"),
+            Err(ConfigError::Oidc(OidcConfigError::SignInClientNotAllowed))
+        ));
+        assert!(matches!(allowed("kanbot-cli,kanbot"), Ok(Some(2))));
+    }
+
+    #[test]
     fn reads_the_web_dir() {
         let dir = std::env::temp_dir().join(format!("kanbot-web-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -823,7 +874,7 @@ mod tests {
             err,
             ConfigError::Var {
                 name: "OIDC_ISSUER",
-                source: VarError::NotPresent
+                not_unicode: false
             }
         ));
     }

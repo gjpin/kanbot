@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use common::idp::{Reply, TestIdp};
 use kanbot_backend::auth::{
     discovery::{DiscoveryError, FetchError, IdpClient, MAX_DISCOVERY_BYTES, discover},
-    keys::{KeyLookup, MAX_JWKS_BYTES, RefreshError},
+    keys::{KeyLookup, MAX_JWKS_BYTES, MAX_UNKNOWN_KEY_WAITERS, RefreshError},
 };
 use serde_json::{Value, json};
 
@@ -402,6 +402,47 @@ async fn unknown_kid_refreshes_are_shared_and_throttled() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(found(&cache.key("rsa-b").await));
     assert_eq!(idp.jwks_requests(), 3);
+}
+
+#[tokio::test]
+async fn throttled_lookups_do_not_wait_for_a_refresh() {
+    let idp = TestIdp::start().await;
+    let cache = idp.loaded_key_cache(&[]).await;
+    assert!(matches!(cache.key("nope").await, KeyLookup::Unknown));
+
+    // The periodic refresh is slow: an unknown kid within the second
+    // after the last one has nothing to wait for.
+    idp.set_jwks(Reply::Slow(Duration::from_secs(5), json!({ "keys": [] })));
+    let refresh = tokio::spawn({
+        let cache = Arc::clone(&cache);
+        async move { cache.refresh().await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let lookup = tokio::time::timeout(Duration::from_millis(500), cache.key("other")).await;
+    assert!(matches!(lookup, Ok(KeyLookup::Unknown)));
+    refresh.abort();
+}
+
+#[tokio::test]
+async fn only_so_many_lookups_wait_for_a_refresh() {
+    let idp = TestIdp::start().await;
+    let cache = idp.loaded_key_cache(&[]).await;
+    idp.set_jwks(Reply::Slow(Duration::from_secs(1), json!({ "keys": [] })));
+
+    let mut waiting = tokio::task::JoinSet::new();
+    for _ in 0..MAX_UNKNOWN_KEY_WAITERS {
+        let cache = Arc::clone(&cache);
+        waiting.spawn(async move { cache.key("nope").await });
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // One more is told to come back, without waiting.
+    let lookup = tokio::time::timeout(Duration::from_millis(200), cache.key("nope")).await;
+    assert!(matches!(lookup, Ok(KeyLookup::Busy)));
+    for lookup in waiting.join_all().await {
+        assert!(matches!(lookup, KeyLookup::Unknown));
+    }
+    // The waiters are gone: a lookup may wait again (throttled here).
+    assert!(matches!(cache.key("nope").await, KeyLookup::Unknown));
 }
 
 #[tokio::test]

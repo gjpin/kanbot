@@ -144,6 +144,29 @@ async fn rate_limits_each_client_ip() {
 }
 
 #[tokio::test]
+async fn one_budget_covers_every_route() {
+    let app = app_from(
+        "203.0.113.9:1000",
+        unreachable_pool(),
+        settings(ip_limited(1, 3)),
+    );
+    // (Not `/ready`: with no database it takes long enough to refill.)
+    for uri in ["/auth/config", "/me", "/no-such-route"] {
+        let response = app
+            .clone()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+    assert_eq!(
+        status(&app, health()).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the other routes spent the budget"
+    );
+}
+
+#[tokio::test]
 async fn ipv6_clients_share_a_limit_per_slash_64() {
     let app = http::router(state(unreachable_pool()), settings(ip_limited(1, 2)), None).unwrap();
     let from = |peer: &str| {

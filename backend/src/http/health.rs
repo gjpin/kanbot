@@ -70,20 +70,25 @@ async fn ready(
     State(state): State<AppState>,
     Extension(readiness): Extension<Readiness>,
 ) -> Result<StatusCode, AppError> {
-    if !state.keys.is_loaded() {
-        tracing::warn!("not ready: the identity provider's signing keys have not loaded");
-        return Err(AppError::Unavailable);
-    }
     let now = Instant::now();
     let ready = if let Some(ready) = readiness.cached(now) {
         ready
     } else {
-        let mut conn = state.db.acquire().await?;
-        let ready = db::migrations_are_current(&mut conn, state.migrator).await?;
+        // Keys first: without them nothing is served, whatever the
+        // database says. Either warning is then logged once per answer,
+        // not once per call.
+        let ready = if state.keys.is_loaded() {
+            let mut conn = state.db.acquire().await?;
+            let ready = db::migrations_are_current(&mut conn, state.migrator).await?;
+            if !ready {
+                tracing::warn!("not ready: migrations are pending");
+            }
+            ready
+        } else {
+            tracing::warn!("not ready: the identity provider's signing keys have not loaded");
+            false
+        };
         readiness.store(now, ready);
-        if !ready {
-            tracing::warn!("not ready: migrations are pending");
-        }
         ready
     };
     if ready {

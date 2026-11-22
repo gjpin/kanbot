@@ -230,7 +230,7 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `OIDC_ADMIN_ROLE` | 2 | required | Role that grants platform admin, for example `kanbot-admin`. Must not be empty, nor equal `OIDC_USER_ROLE` |
 | `OIDC_USER_ROLE` | 2 | required | Role that grants access, for example `kanbot-user`. Must not be empty |
 | `OIDC_SUBJECT_CLAIM` | 2 | `sub` | Claim that identifies the user. `oid` for Entra ID |
-| `OIDC_ALLOWED_CLIENTS` | 2 | any | Comma-separated client IDs, matched against `azp`, then `client_id`, then `cid`. Must not contain `OIDC_AUDIENCE` |
+| `OIDC_ALLOWED_CLIENTS` | 2 | any | Comma-separated client IDs, matched against `azp`, then `client_id`, then `cid`. Must not contain `OIDC_AUDIENCE`, and must contain `OIDC_CLIENT_ID` (sign-ins are checked against it too) |
 | `OIDC_JWKS_TTL` | 2 | `3600` | Seconds between JWKS refreshes |
 | `OIDC_JWKS_ALLOWED_ORIGINS` | 2 | none | Extra HTTPS origins allowed to serve the JWKS |
 | `OIDC_CA_FILE` | 2 | none | PEM bundle trusted for the IdP, in addition to the system roots |

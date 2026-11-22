@@ -394,7 +394,8 @@ fn refuse(auth: &Authentication, client: IpAddr, refusal: Refusal) -> AppError {
 }
 
 /// The user of a bearer token. A token whose key cannot be checked yet
-/// (keys not loaded) is `503`, not `401`: it may well be valid. The
+/// (keys not loaded, or too many requests waiting for a refresh) is `503`,
+/// not `401`: it may well be valid. The
 /// per-user limit applies once the token is verified, before the database.
 async fn user(auth: &Authentication, token: &str) -> Result<AuthenticatedUser, Refusal> {
     let state = &auth.app;
@@ -402,7 +403,9 @@ async fn user(auth: &Authentication, token: &str) -> Result<AuthenticatedUser, R
     let key = match state.keys.key(unverified.kid()).await {
         KeyLookup::Found(key) => key,
         KeyLookup::Unknown => return Err(Rejection::UnknownKey.into()),
-        KeyLookup::NotLoaded => return Err(Refusal::Error(AppError::Unavailable)),
+        KeyLookup::NotLoaded | KeyLookup::Busy => {
+            return Err(Refusal::Error(AppError::Unavailable));
+        }
     };
     let principal = unverified.verify(&key, state.keys.config(), now())?;
     auth.spend(&user_key(&principal.subject))

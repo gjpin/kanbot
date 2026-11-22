@@ -215,10 +215,10 @@ impl<'a> UnverifiedToken<'a> {
         config: &OidcConfig,
         now: u64,
     ) -> Result<Principal, Rejection> {
-        if self.algorithm != key.algorithm() {
+        if !key.allows(self.algorithm) {
             return Err(Rejection::BadAlgorithm);
         }
-        let mut validation = Validation::new(key.algorithm());
+        let mut validation = Validation::new(self.algorithm);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         validation.set_issuer(&[config.issuer.as_str()]);
         validation.set_audience(&[config.audience.as_str()]);
@@ -324,10 +324,10 @@ impl UnverifiedToken<'_> {
         client_id: &str,
         now: u64,
     ) -> Result<IdToken, Rejection> {
-        if self.algorithm != key.algorithm() {
+        if !key.allows(self.algorithm) {
             return Err(Rejection::BadAlgorithm);
         }
-        let mut validation = Validation::new(key.algorithm());
+        let mut validation = Validation::new(self.algorithm);
         // `iat` is required in ID tokens (OpenID Connect Core, section 2).
         validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub"]);
         validation.set_issuer(&[issuer.as_str()]);
@@ -381,10 +381,10 @@ impl UnverifiedToken<'_> {
         audience: &str,
         now: u64,
     ) -> Result<ForeignToken, Rejection> {
-        if self.algorithm != key.algorithm() {
+        if !key.allows(self.algorithm) {
             return Err(Rejection::BadAlgorithm);
         }
-        let mut validation = Validation::new(key.algorithm());
+        let mut validation = Validation::new(self.algorithm);
         validation.set_required_spec_claims(&["exp", "iss", "aud"]);
         validation.set_issuer(&[config.issuer.as_str()]);
         validation.set_audience(&[audience]);

@@ -7,7 +7,7 @@
 //! the entries appended by trusted proxies are skipped: the first address
 //! (from the right) that is not a trusted proxy is the client.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use axum::http::HeaderValue;
 
@@ -111,9 +111,10 @@ pub struct ClientIp(pub IpAddr);
 /// `X-Forwarded-For` headers `forwarded_for` (in order).
 ///
 /// Walks the forwarded addresses from the right, skipping trusted proxies.
-/// An entry that is not a bare IP address stops the walk at the last
-/// trusted hop: the request is then limited as coming from that proxy,
-/// never from an address a client could choose.
+/// An entry is an IP address, or an address and port (`198.51.100.1:443`,
+/// `[2001:db8::1]:443`), as some proxies write it. Anything else stops the
+/// walk at the last trusted hop: the request is then limited as coming
+/// from that proxy, never from an address a client could choose.
 pub fn client_ip<'a>(
     peer: IpAddr,
     forwarded_for: impl IntoIterator<Item = &'a HeaderValue>,
@@ -133,7 +134,11 @@ pub fn client_ip<'a>(
         .map(str::trim)
         .collect();
     for hop in hops.into_iter().rev() {
-        let Ok(ip) = hop.parse::<IpAddr>() else {
+        let Some(ip) = hop
+            .parse::<IpAddr>()
+            .ok()
+            .or_else(|| hop.parse::<SocketAddr>().ok().map(|addr| addr.ip()))
+        else {
             return client;
         };
         client = ip.to_canonical();
@@ -233,6 +238,32 @@ mod tests {
     }
 
     #[test]
+    fn forwarded_addresses_may_carry_a_port() {
+        let trusted = proxies("10.0.0.0/8");
+        for (forwarded, client) in [
+            ("198.51.100.1:51234", "198.51.100.1"),
+            ("[2001:db8::1]:443", "2001:db8::1"),
+            ("198.51.100.1:51234, 10.0.0.2:80", "198.51.100.1"),
+        ] {
+            let forwarded = HeaderValue::from_str(forwarded).unwrap();
+            assert_eq!(
+                client_ip(ip("10.0.0.1"), [&forwarded], &trusted),
+                ip(client),
+                "{forwarded:?}"
+            );
+        }
+        // Not an address: the walk stops at the proxy.
+        for bad in ["198.51.100.1:", "[2001:db8::1]", "198.51.100.1:99999"] {
+            let bad = HeaderValue::from_str(bad).unwrap();
+            assert_eq!(
+                client_ip(ip("10.0.0.1"), [&bad], &trusted),
+                ip("10.0.0.1"),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
     fn trusted_peer_forwards_the_client() {
         let trusted = proxies("10.0.0.0/8");
         assert_eq!(
@@ -295,10 +326,6 @@ mod tests {
         );
         assert_eq!(
             client_ip(ip("10.0.0.1"), &xff(&["198.51.100.1, garbage"]), &trusted),
-            ip("10.0.0.1")
-        );
-        assert_eq!(
-            client_ip(ip("10.0.0.1"), &xff(&["198.51.100.1:443"]), &trusted),
             ip("10.0.0.1")
         );
     }

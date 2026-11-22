@@ -65,7 +65,8 @@ fn stored_expiry(exp: u64) -> i64 {
 
 /// Why a token's key was not found.
 enum KeyFailure {
-    /// No keys have loaded yet: the token may well be valid.
+    /// The key cannot be checked now (no keys have loaded yet, or too
+    /// many requests wait for a refresh): the token may well be valid.
     NotLoaded,
     Rejected(Rejection),
 }
@@ -79,7 +80,7 @@ async fn key_for<'t>(
     match keys.key(unverified.kid()).await {
         KeyLookup::Found(key) => Ok((unverified, key)),
         KeyLookup::Unknown => Err(KeyFailure::Rejected(Rejection::UnknownKey)),
-        KeyLookup::NotLoaded => Err(KeyFailure::NotLoaded),
+        KeyLookup::NotLoaded | KeyLookup::Busy => Err(KeyFailure::NotLoaded),
     }
 }
 

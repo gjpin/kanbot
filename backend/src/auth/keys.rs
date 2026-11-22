@@ -22,7 +22,10 @@ use jsonwebtoken::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::{sync::Mutex, time::Instant};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    time::Instant,
+};
 
 use crate::auth::{
     config::OidcConfig,
@@ -41,21 +44,42 @@ const MAX_RSA_EXPONENT: u64 = (1 << 33) - 1;
 const ED25519_KEY_BYTES: usize = 32;
 /// An unknown `kid` refreshes the keys at most this often.
 pub const UNKNOWN_KEY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Requests that may wait at once for a refresh an unknown `kid` asked
+/// for; the others are [`KeyLookup::Busy`]. Waiting holds one of the
+/// server's in-flight slots, which forged `kid`s must not use up.
+pub const MAX_UNKNOWN_KEY_WAITERS: usize = 32;
 /// First retry delay after a failed refresh. Doubles up to
 /// [`MAX_RETRY_DELAY`], and never exceeds `OIDC_JWKS_TTL`.
 const FIRST_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
-/// A key and the one algorithm it may verify.
+/// RSA signature algorithms: an RSA key without an `alg` may verify any.
+const RSA_ALGORITHMS: &[Algorithm] = &[
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::PS256,
+    Algorithm::PS384,
+    Algorithm::PS512,
+];
+
+/// A key and the algorithms it may verify: the one its `alg` declares, or
+/// those its type implies.
 pub struct VerifyingKey {
-    algorithm: Algorithm,
+    algorithms: &'static [Algorithm],
     key: DecodingKey,
 }
 
 impl VerifyingKey {
     #[must_use]
-    pub fn algorithm(&self) -> Algorithm {
-        self.algorithm
+    pub fn algorithms(&self) -> &'static [Algorithm] {
+        self.algorithms
+    }
+
+    /// Whether the key may verify a signature made with `algorithm`.
+    #[must_use]
+    pub fn allows(&self, algorithm: Algorithm) -> bool {
+        self.algorithms.contains(&algorithm)
     }
 
     #[must_use]
@@ -108,9 +132,10 @@ fn usable_key(value: &Value) -> Option<(String, VerifyingKey)> {
         return None;
     }
     let kid = jwk.common.key_id.clone().filter(|kid| !kid.is_empty())?;
-    let algorithm = algorithm_for(&jwk)?;
+    let algorithms = algorithms_for(&jwk)?;
     let key = DecodingKey::from_jwk(&jwk).ok()?;
-    valid_material(&key, algorithm).then_some((kid, VerifyingKey { algorithm, key }))
+    let checked = *algorithms.first()?;
+    valid_material(&key, checked).then_some((kid, VerifyingKey { algorithms, key }))
 }
 
 /// Whether the key may verify signatures: `use` absent or `sig`, and
@@ -163,18 +188,19 @@ fn rsa_exponent_is_valid(e: &[u8]) -> bool {
     value >= 3 && value % 2 == 1 && value <= MAX_RSA_EXPONENT
 }
 
-/// The key's algorithm: its `alg` if that is allowed for its type, else
-/// the one its type implies. `None` for any other key.
-fn algorithm_for(jwk: &Jwk) -> Option<Algorithm> {
-    let implied = match &jwk.algorithm {
-        AlgorithmParameters::RSA(_) => Algorithm::RS256,
+/// The key's algorithms: its `alg` if that is allowed for its type, else
+/// those its type implies (`alg` is optional, RFC 7517). `None` for any
+/// other key.
+fn algorithms_for(jwk: &Jwk) -> Option<&'static [Algorithm]> {
+    let implied: &'static [Algorithm] = match &jwk.algorithm {
+        AlgorithmParameters::RSA(_) => RSA_ALGORITHMS,
         AlgorithmParameters::EllipticCurve(params) => match params.curve {
-            EllipticCurve::P256 => Algorithm::ES256,
-            EllipticCurve::P384 => Algorithm::ES384,
+            EllipticCurve::P256 => &[Algorithm::ES256],
+            EllipticCurve::P384 => &[Algorithm::ES384],
             _ => return None,
         },
         AlgorithmParameters::OctetKeyPair(params) if params.curve == EllipticCurve::Ed25519 => {
-            Algorithm::EdDSA
+            &[Algorithm::EdDSA]
         }
         _ => return None,
     };
@@ -182,16 +208,10 @@ fn algorithm_for(jwk: &Jwk) -> Option<Algorithm> {
         return Some(implied);
     };
     let declared = Algorithm::try_from(declared).ok()?;
-    let rsa = [
-        Algorithm::RS256,
-        Algorithm::RS384,
-        Algorithm::RS512,
-        Algorithm::PS256,
-        Algorithm::PS384,
-        Algorithm::PS512,
-    ];
-    let allowed = declared == implied || (implied == Algorithm::RS256 && rsa.contains(&declared));
-    allowed.then_some(declared)
+    let position = implied
+        .iter()
+        .position(|algorithm| *algorithm == declared)?;
+    implied.get(position..=position)
 }
 
 fn rsa_modulus_bits(key: &DecodingKey) -> Option<usize> {
@@ -230,6 +250,9 @@ pub enum KeyLookup {
     Unknown,
     /// No keys have been loaded yet: the service is not ready.
     NotLoaded,
+    /// Unknown, and too many requests already wait for a refresh: try
+    /// again shortly.
+    Busy,
 }
 
 /// The current signing keys and discovery document, refreshed in the
@@ -244,7 +267,12 @@ pub struct KeyCache {
     /// Incremented after every refresh attempt, so requests that waited for
     /// one do not start another.
     refreshes: AtomicU64,
-    refresh: Mutex<Option<Instant>>,
+    /// Serializes refreshes.
+    refresh: Mutex<()>,
+    /// When an unknown `kid` last refreshed the keys. Read without
+    /// waiting for [`KeyCache::refresh`]: a throttled lookup returns at once.
+    last_unknown_refresh: std::sync::Mutex<Option<Instant>>,
+    unknown_waiters: Semaphore,
 }
 
 impl KeyCache {
@@ -257,7 +285,9 @@ impl KeyCache {
             discovery: RwLock::new(None),
             keys: RwLock::new(None),
             refreshes: AtomicU64::new(0),
-            refresh: Mutex::new(None),
+            refresh: Mutex::new(()),
+            last_unknown_refresh: std::sync::Mutex::new(None),
+            unknown_waiters: Semaphore::new(MAX_UNKNOWN_KEY_WAITERS),
         }
     }
 
@@ -308,8 +338,10 @@ impl KeyCache {
     }
 
     /// The key for `kid`. An unknown `kid` triggers one refresh, shared by
-    /// every request waiting for it and at most once per
-    /// [`UNKNOWN_KEY_REFRESH_INTERVAL`]; then the key is looked up again.
+    /// every request waiting for it (at most [`MAX_UNKNOWN_KEY_WAITERS`]) and
+    /// at most once per [`UNKNOWN_KEY_REFRESH_INTERVAL`]; then the key is
+    /// looked up again. Within that interval it is [`KeyLookup::Unknown`]
+    /// without waiting, even while another refresh runs.
     pub async fn key(&self, kid: &str) -> KeyLookup {
         let Some(keys) = self.keys() else {
             return KeyLookup::NotLoaded;
@@ -317,23 +349,42 @@ impl KeyCache {
         if let Some(key) = keys.get(kid) {
             return KeyLookup::Found(key);
         }
+        if throttled(self.last_unknown_refresh(), Instant::now()) {
+            return self.lookup(kid);
+        }
+        let Ok(_waiting) = self.unknown_waiters.try_acquire() else {
+            return KeyLookup::Busy;
+        };
         let seen = self.refreshes.load(Ordering::Acquire);
-        let mut last = self.refresh.lock().await;
+        let serialized = self.refresh.lock().await;
         let refreshed_meanwhile = self.refreshes.load(Ordering::Acquire) != seen;
-        let now = Instant::now();
-        if !refreshed_meanwhile && !throttled(*last, now) {
+        if !refreshed_meanwhile && !throttled(self.last_unknown_refresh(), Instant::now()) {
             if let Err(error) = self.refresh_locked(false).await {
                 tracing::warn!(%error, "signing keys could not be refreshed for an unknown key id");
             }
             // From the end of the fetch: a slow identity provider is not
             // asked again the moment it answers.
-            *last = Some(Instant::now());
+            *self
+                .last_unknown_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
         }
-        drop(last);
+        drop(serialized);
+        self.lookup(kid)
+    }
+
+    fn lookup(&self, kid: &str) -> KeyLookup {
         match self.keys().and_then(|keys| keys.get(kid)) {
             Some(key) => KeyLookup::Found(key),
             None => KeyLookup::Unknown,
         }
+    }
+
+    fn last_unknown_refresh(&self) -> Option<Instant> {
+        *self
+            .last_unknown_refresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Fetches the discovery document, then the JWKS. On failure, or a
@@ -432,14 +483,22 @@ mod tests {
         jwk
     }
 
-    fn algorithm(jwk: &Value) -> Option<Algorithm> {
+    fn algorithms(jwk: &Value) -> Option<Vec<Algorithm>> {
         let set = KeySet::from_jwks(std::slice::from_ref(jwk));
-        set.get(jwk["kid"].as_str()?).map(|key| key.algorithm())
+        set.get(jwk["kid"].as_str()?)
+            .map(|key| key.algorithms().to_vec())
+    }
+
+    /// The first of the key's algorithms: RS256 for an RSA key without
+    /// `alg`.
+    fn algorithm(jwk: &Value) -> Option<Algorithm> {
+        algorithms(jwk)?.first().copied()
     }
 
     #[test]
-    fn derives_the_algorithm_from_the_key_type() {
-        assert_eq!(algorithm(&fixture("rsa-a")), Some(Algorithm::RS256));
+    fn derives_the_algorithms_from_the_key_type() {
+        // Any RSA algorithm: an RSA key without `alg` says nothing more.
+        assert_eq!(algorithms(&fixture("rsa-a")), Some(RSA_ALGORITHMS.to_vec()));
         assert_eq!(algorithm(&fixture("p256")), Some(Algorithm::ES256));
         assert_eq!(algorithm(&fixture("p384")), Some(Algorithm::ES384));
         assert_eq!(algorithm(&fixture("ed25519")), Some(Algorithm::EdDSA));
@@ -540,8 +599,8 @@ mod tests {
         assert_eq!(
             set.get(broken["kid"].as_str().unwrap())
                 .unwrap()
-                .algorithm(),
-            Algorithm::ES256
+                .algorithms(),
+            [Algorithm::ES256]
         );
         // Only broken keys: nothing usable, so the old set stays in use.
         assert!(KeySet::from_jwks(&[broken]).is_empty());
@@ -605,7 +664,7 @@ mod tests {
         let set =
             KeySet::from_jwks(&[fixture("p256"), with(fixture("p384"), "kid", json!("p256"))]);
         assert_eq!(set.len(), 1);
-        assert_eq!(set.get("p256").unwrap().algorithm(), Algorithm::ES256);
+        assert_eq!(set.get("p256").unwrap().algorithms(), [Algorithm::ES256]);
     }
 
     #[test]

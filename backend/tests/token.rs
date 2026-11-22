@@ -254,15 +254,35 @@ fn hmac_signed_with_the_public_key_is_refused() {
 }
 
 #[test]
+fn an_rsa_key_without_alg_verifies_any_rsa_algorithm() {
+    // As Entra ID publishes them: `alg` is optional (RFC 7517).
+    for alg in [Algorithm::RS384, Algorithm::PS256, Algorithm::PS512] {
+        let token = sign_with_header(
+            &json!({ "alg": alg, "kid": "rsa-a" }),
+            &encoding_key("rsa-a"),
+            alg,
+            &claims(),
+        );
+        assert!(validate(&token).is_ok(), "{alg:?}");
+    }
+}
+
+#[test]
 fn header_alg_must_match_the_key() {
-    // A real RS384 signature with the right key, but the key is RS256.
+    // A real RS384 signature with the right key, but the key says RS256.
+    let mut key = jwk("rsa-a");
+    key["alg"] = json!("RS256");
+    key["kid"] = json!("rsa-rs256");
     let token = sign_with_header(
-        &json!({ "alg": "RS384", "kid": "rsa-a" }),
+        &json!({ "alg": "RS384", "kid": "rsa-rs256" }),
         &encoding_key("rsa-a"),
         Algorithm::RS384,
         &claims(),
     );
-    assert_eq!(validate(&token), Err(Rejection::BadAlgorithm));
+    assert_eq!(
+        validate_with(&token, &config(&[]), &keys(&[key])),
+        Err(Rejection::BadAlgorithm)
+    );
     // An EC signature presented under an RSA kid.
     let token = sign_with_header(
         &json!({ "alg": "ES256", "kid": "rsa-a" }),

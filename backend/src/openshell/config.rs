@@ -124,7 +124,7 @@ impl OpenShellConfig {
         if audience.is_empty() {
             return Err(ConfigError::Var {
                 name: "OPENSHELL_AUDIENCE",
-                source: VarError::NotPresent,
+                not_unicode: false,
             });
         }
         if audience == kanbot_audience {

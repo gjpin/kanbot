@@ -4,9 +4,11 @@
 //!   [`crate::http::client_ip`]. Requires the server to provide
 //!   `ConnectInfo<SocketAddr>` (`into_make_service_with_connect_info`),
 //!   which `kanbot_backend::run` does.
-//! - Per authenticated user ([`limit_per_user`], `governor`), keyed by the
-//!   user ID the authentication middleware put in the request. Anonymous
-//!   requests pass.
+//! - Per authenticated user: the general limit is spent by the
+//!   authentication middleware (`auth::middleware`), keyed by the session
+//!   token or the access token's subject, before any database work.
+//!   [`limit_per_user`] adds a separate one to a group of routes (the
+//!   telemetry relay), keyed by user ID. Anonymous requests pass.
 //!
 //! The failed-authentication limit is in `auth::failures`: it must refuse a
 //! client before checking its credentials, which `governor` cannot do
@@ -186,14 +188,10 @@ where
         .finish()
         .ok_or(InvalidRateLimit)?;
     let limiter = Arc::clone(config.limiter());
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
-        loop {
-            interval.tick().await;
-            limiter.retain_recent();
-            // The map keeps its largest size otherwise.
-            limiter.shrink_to_fit();
-        }
+    spawn_periodic(move || {
+        limiter.retain_recent();
+        // The map keeps its largest size otherwise.
+        limiter.shrink_to_fit();
     });
     Ok(router.layer(GovernorLayer::new(config).error_handler(|error| rejection(&error))))
 }

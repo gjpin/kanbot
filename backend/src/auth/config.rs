@@ -68,6 +68,11 @@ pub enum OidcConfigError {
     )]
     AudienceIsClient,
     #[error(
+        "OIDC_ALLOWED_CLIENTS must list OIDC_CLIENT_ID: sign-ins keep that client's tokens, \
+         which are checked like any other"
+    )]
+    SignInClientNotAllowed,
+    #[error(
         "OIDC_JWKS_ALLOWED_ORIGINS entry {0:?} is not an https origin such as https://keys.example.com"
     )]
     JwksOrigin(String),
@@ -447,7 +452,7 @@ mod tests {
     fn each_required_variable_is_required() {
         for (name, _) in REQUIRED {
             assert!(
-                matches!(without(name), Err(ConfigError::Var { name: missing, source: VarError::NotPresent }) if missing == name),
+                matches!(without(name), Err(ConfigError::Var { name: missing, not_unicode: false }) if missing == name),
                 "{name}"
             );
         }
