@@ -44,8 +44,8 @@ pub enum SyncError {
     Gateway(#[from] GatewayError),
     #[error("database error: {}", crate::error::database_kind(.0))]
     Database(#[from] sqlx::Error),
-    #[error("authorization failed")]
-    Authz,
+    #[error("authorization failed: {}", .0.kind())]
+    Authz(crate::error::AppError),
     /// The sync's lock was lost (its connection dropped): another
     /// instance may be syncing, so this run stopped.
     #[error("the sync's lock was lost")]
@@ -125,7 +125,12 @@ async fn run(
     };
     let outcome = run_locked(db, policies, openshell, issuer, backoff, scope, &mut lock).await;
     // Whatever happened: the work done stands even if releasing fails.
-    lock.release().await;
+    if let Err(error) = sqlx::Connection::close(lock.release().await).await {
+        tracing::debug!(
+            error.type = crate::error::database_kind(&error),
+            "openshell: closing the sync's lock connection failed"
+        );
+    }
     outcome.map(Some)
 }
 

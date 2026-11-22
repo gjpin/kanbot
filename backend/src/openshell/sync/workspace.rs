@@ -12,7 +12,6 @@ use crate::{
         policies::Policies,
         service as authz,
     },
-    error::AppError,
     openshell::{
         OpenShell,
         gateway::{Added, GatewayError},
@@ -143,10 +142,7 @@ async fn desired(
         Resource::Organization(organization),
     )
     .await
-    .map_err(|error| match error {
-        AppError::Database(error) => SyncError::Database(error),
-        _ => SyncError::Authz,
-    })?;
+    .map_err(SyncError::Authz)?;
     Ok(candidates
         .into_iter()
         .zip(decisions)

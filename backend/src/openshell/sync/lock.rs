@@ -30,7 +30,12 @@ impl SyncLock {
         if repo::try_lock(&mut connection).await? {
             return Ok(Some(Self { connection }));
         }
-        close(connection).await;
+        if let Err(error) = connection.close().await {
+            tracing::debug!(
+                error.type = database_kind(&error),
+                "openshell: closing a connection failed"
+            );
+        }
         Ok(None)
     }
 
@@ -50,9 +55,9 @@ impl SyncLock {
         }
     }
 
-    /// Releases the lock and closes its connection. A failure is only
-    /// logged: the lock ends with its session anyway.
-    pub(super) async fn release(mut self) {
+    /// Releases the lock; its connection is the caller's to close. A
+    /// failure is only logged: the lock ends with its session anyway.
+    pub(super) async fn release(mut self) -> PgConnection {
         match repo::unlock(&mut self.connection).await {
             Ok(true) => {}
             Ok(false) => tracing::warn!("openshell: the sync's lock was no longer held"),
@@ -61,15 +66,43 @@ impl SyncLock {
                 "openshell: the sync's lock could not be released; it ends with its connection"
             ),
         }
-        close(self.connection).await;
+        self.connection
     }
 }
 
-async fn close(connection: PgConnection) {
-    if let Err(error) = connection.close().await {
-        tracing::debug!(
-            error.type = database_kind(&error),
-            "openshell: closing the sync's lock connection failed"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn one_holder_at_a_time_until_released(pool: PgPool) {
+        let mut lock = SyncLock::acquire(&pool).await.unwrap().unwrap();
+        lock.check().await.unwrap();
+        assert!(SyncLock::acquire(&pool).await.unwrap().is_none());
+
+        let mut connection = lock.release().await;
+        assert!(!repo::holds_lock(&mut connection).await.unwrap());
+        assert!(
+            !repo::unlock(&mut connection).await.unwrap(),
+            "released once"
         );
+        let mut next = SyncLock::acquire(&pool).await.unwrap().unwrap();
+        next.check().await.unwrap();
+        assert!(!repo::try_lock(&mut connection).await.unwrap());
+    }
+
+    #[sqlx::test]
+    async fn a_lock_whose_connection_died_is_lost(pool: PgPool) {
+        let mut lock = SyncLock::acquire(&pool).await.unwrap().unwrap();
+        let pid = sqlx::query_scalar!(r#"SELECT pg_backend_pid() AS "pid!""#)
+            .fetch_one(&mut lock.connection)
+            .await
+            .unwrap();
+        let ended = sqlx::query_scalar!(r#"SELECT pg_terminate_backend($1) AS "ended!""#, pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(ended);
+        assert!(matches!(lock.check().await, Err(SyncError::LockLost)));
     }
 }

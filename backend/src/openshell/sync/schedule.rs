@@ -222,14 +222,12 @@ fn report(outcome: &Result<Option<Changes>, SyncError>) {
                 .build();
             members.add(changes.added, &[KeyValue::new("change", "added")]);
             members.add(changes.removed, &[KeyValue::new("change", "removed")]);
-            if changes.failed > 0 {
-                meter
-                    .u64_counter("kanbot.openshell.sync.failures")
-                    .with_unit("{workspace}")
-                    .with_description("Workspaces a sync run could not sync.")
-                    .build()
-                    .add(changes.failed, &[]);
-            }
+            meter
+                .u64_counter("kanbot.openshell.sync.failures")
+                .with_unit("{workspace}")
+                .with_description("Workspaces a sync run could not sync.")
+                .build()
+                .add(changes.failed, &[]);
             if changes.changed() || changes.failed > 0 {
                 tracing::info!(
                     added = i64::try_from(changes.added).unwrap_or(i64::MAX),
