@@ -17,6 +17,11 @@ env:
   # Pinned SDK. Keep in step with the version used to develop locally.
   # renovate: datasource=flutter-version depName=flutter
   FLUTTER_VERSION: "3.50.0"
+  # The commit of that release (as .devcontainer/Dockerfile's
+  # FLUTTER_COMMIT): flutter-action does not verify what it downloads, so
+  # the SDK is checked against it. Renovate does not update it; until it is
+  # updated by hand, an SDK update fails here.
+  FLUTTER_COMMIT: "ab2912035e160d9cad6306df307576da6128ebdb"
 
 defaults:
   run:
@@ -35,6 +40,8 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - name: The Flutter SDK is the pinned commit
+        run: test "$(flutter --version --machine | jq -r .frameworkRevision)" = "$FLUTTER_COMMIT"
       # Fails if pubspec.lock is missing or out of date with pubspec.yaml.
       - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed .
@@ -70,6 +77,8 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - name: The Flutter SDK is the pinned commit
+        run: test "$(flutter --version --machine | jq -r .frameworkRevision)" = "$FLUTTER_COMMIT"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: backend

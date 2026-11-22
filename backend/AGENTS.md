@@ -276,7 +276,7 @@ The app cannot hold collector credentials, so it sends OTLP to the API at `/tele
 Users sign in at an external OIDC IdP; kanbot has no passwords or local accounts. The design, and the IdP requirements and setup guides, are in [`docs/oidc.md`](../docs/oidc.md). An API request is authenticated in one of two ways, and both resolve to the same validated user and roles:
 
 1. **An IdP JWT access token** in `Authorization: Bearer`, validated locally against the IdP's JWKS (CLI, scripts, CI, agents, other services).
-2. **A kanbot session**, for kanbot's own apps (`sessions/`): the `__Host-kanbot_session` cookie on web, a `kbs_` bearer token on native. The backend runs the login flow as the confidential client (`/auth/login`, `/auth/callback`, and `/auth/token` for the native one-time code), keeps the IdP tokens server-side sealed with XChaCha20-Poly1305 (`sessions/crypto.rs`, row and field bound, key ID for rotation), refreshes them under a row lock, and checks the stored access token with exactly the rules used for bearer tokens. A stale session *cookie* makes the request anonymous and is cleared; a bad `kbs_` bearer is a `401`.
+2. **A kanbot session**, for kanbot's own apps (`sessions/`): the `__Host-kanbot_session` cookie on web, a `kbs_` bearer token on native. The backend runs the login flow as the confidential client (`/auth/login`, `/auth/callback`, and `/auth/token` for the native one-time code), keeps the IdP tokens server-side sealed with XChaCha20-Poly1305 (`sessions/crypto.rs`, row and field bound, key ID for rotation), refreshes them under a short lease on the session row (no lock held while the IdP answers), and checks the stored access token with exactly the rules used for bearer tokens. A stale session *cookie* makes the request anonymous and is cleared; a bad `kbs_` bearer is a `401`.
 
 These rules hold in every change:
 
@@ -364,7 +364,11 @@ sqlx migrate run       # the SQL macros check queries against this database
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
-cargo deny check
+cargo deny --all-features check   # and for each workspace below, as CI does:
+cargo deny --manifest-path openshell-api/codegen/Cargo.toml --all-features check
+cargo deny --manifest-path fuzz/Cargo.toml --all-features check
+cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+cargo clippy --manifest-path fuzz/Cargo.toml --locked --bins -- -D warnings
 cargo sqlx prepare --check -- --all-targets --all-features   # needs sqlx-cli
 ```
 

@@ -33,7 +33,11 @@ fuzz_target!(|data: &[u8]| {
     };
     if let Ok(principal) = common::validate(&token, &KEYS, &CONFIG) {
         assert_eq!(claims["iss"], common::ISSUER);
-        assert!(claims["exp"].as_u64().is_some_and(|exp| exp >= common::NOW - LEEWAY_SECONDS));
+        assert!(
+            claims["exp"]
+                .as_u64()
+                .is_some_and(|exp| exp >= common::NOW - LEEWAY_SECONDS)
+        );
         // Not before, nor issued, in the future.
         for name in ["nbf", "iat"] {
             assert!(
@@ -53,7 +57,11 @@ fuzz_target!(|data: &[u8]| {
         assert!(!principal.subject.is_empty());
         assert_eq!(claims["sub"], principal.subject.as_str());
         let roles = &claims["realm_access"]["roles"];
-        let has = |role: &str| roles.as_array().is_some_and(|roles| roles.iter().any(|r| r == role));
+        let has = |role: &str| {
+            roles
+                .as_array()
+                .is_some_and(|roles| roles.iter().any(|r| r == role))
+        };
         match principal.role {
             PlatformRole::Admin => assert!(has("kanbot-admin")),
             PlatformRole::User => assert!(has("kanbot-user") && !has("kanbot-admin")),

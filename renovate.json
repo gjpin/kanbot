@@ -82,7 +82,7 @@
     },
     {
       "customType": "regex",
-      "description": "The protoc that regenerates the OpenShell client. Its checksums are not updated: until someone updates them by hand, the script refuses the download (CI does not run it).",
+      "description": "The protoc that regenerates the OpenShell client. Its checksums are not updated: until someone updates them by hand, the script refuses the download, and the openshell-api CI job, which runs it, fails.",
       "managerFilePatterns": ["/^backend/openshell-api/codegen/fetch-protoc\\.sh$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+version=(?<currentValue>\\S+)"

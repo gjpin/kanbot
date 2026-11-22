@@ -62,6 +62,9 @@ jobs:
           echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
           sh dev/auth-setup.sh
           docker compose up -d --wait
+      # The query check below describes every query against this database.
+      - name: Migrate the database
+        run: sqlx migrate run
       # Fails if a query changed without `cargo sqlx prepare` (.sqlx/ is stale).
       - name: Offline query data is up to date
         env:
@@ -70,7 +73,8 @@ jobs:
       - name: Tests with coverage threshold
         run: cargo llvm-cov --all-features --locked --fail-under-lines "$COVERAGE_MIN_LINES"
 
-  # Every Cargo workspace, with backend/deny.toml.
+  # Every Cargo workspace, with backend/deny.toml. cargo-deny comes from
+  # install-action, which checks its checksum.
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -78,17 +82,36 @@ jobs:
       fail-fast: false
       matrix:
         manifest:
-          - backend/Cargo.toml
-          - backend/openshell-api/codegen/Cargo.toml
-          - backend/fuzz/Cargo.toml
+          - Cargo.toml
+          - openshell-api/codegen/Cargo.toml
+          - fuzz/Cargo.toml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          manifest-path: ${{ matrix.manifest }}
-          command: check
+          tool: cargo-deny@0.22.0
+      - name: cargo deny
+        env:
+          MANIFEST: ${{ matrix.manifest }}
+        run: cargo deny --manifest-path "$MANIFEST" --all-features check
+
+  # The fuzz targets are a workspace of their own (fuzz/Cargo.toml), which
+  # the lint job does not reach. Fuzzing needs nightly and runs by hand;
+  # building and linting the targets does not.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend/fuzz
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+      - run: cargo clippy --manifest-path fuzz/Cargo.toml --locked --bins -- -D warnings
 
   migrations:
     if: github.event_name == 'pull_request'

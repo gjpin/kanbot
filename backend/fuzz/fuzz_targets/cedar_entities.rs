@@ -85,7 +85,9 @@ fuzz_target!(|data: &[u8]| {
             role,
             display_name: Some(input.string()),
             telemetry_opt_in: input.bool(),
-            groups: (0..input.byte() % 4).map(|_| input.name("contractors")).collect(),
+            groups: (0..input.byte() % 4)
+                .map(|_| input.name("contractors"))
+                .collect(),
             groups_claimed: true,
             client_id: input.bool().then(|| input.name("kanbot-ci")),
         },
@@ -102,7 +104,11 @@ fuzz_target!(|data: &[u8]| {
             maintainers: if input.bool() { vec![me] } else { vec![] },
             links: (0..input.byte() % 3)
                 .map(|_| {
-                    let access = if input.bool() { Access::Write } else { Access::Read };
+                    let access = if input.bool() {
+                        Access::Write
+                    } else {
+                        Access::Read
+                    };
                     (OrganizationId::from_uuid(input.id()), access)
                 })
                 .collect(),
@@ -116,7 +122,11 @@ fuzz_target!(|data: &[u8]| {
             admins: if input.bool() { vec![me] } else { vec![] },
         })
         .collect();
-    let member_of: Vec<TeamId> = teams.iter().filter(|_| input.bool()).map(|t| t.id).collect();
+    let member_of: Vec<TeamId> = teams
+        .iter()
+        .filter(|_| input.bool())
+        .map(|t| t.id)
+        .collect();
     let facts = Facts {
         user: UserFacts {
             teams: member_of,
@@ -174,8 +184,8 @@ fuzz_target!(|data: &[u8]| {
         .expect("entities from any facts are valid");
     let ci = actor.user.client_id.as_deref() == Some("kanbot-ci");
     let contractor = actor.user.groups.iter().any(|group| group == "contractors");
-    let in_office =
-        matches!(actor.ip.to_canonical(), IpAddr::V4(ip) if ip.octets()[0] == 10) && actor.via != Via::Bearer;
+    let in_office = matches!(actor.ip.to_canonical(), IpAddr::V4(ip) if ip.octets()[0] == 10)
+        && actor.via != Via::Bearer;
     for (((action, _), builtin), deployed) in requests.iter().zip(&decisions).zip(&deployed) {
         let forbidden = (ci && *action != Action::Read)
             || (contractor && *action == Action::Write)
@@ -187,6 +197,10 @@ fuzz_target!(|data: &[u8]| {
                         | Action::SetTeamIdpGroup
                         | Action::DeleteOrganization
                 ));
-        assert_eq!(deployed.allowed, builtin.allowed && !forbidden, "{action:?}");
+        assert_eq!(
+            deployed.allowed,
+            builtin.allowed && !forbidden,
+            "{action:?}"
+        );
     }
 });

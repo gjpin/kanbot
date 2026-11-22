@@ -543,9 +543,9 @@ browser decides.
 
 ## Local development
 
-The local stack (`backend/compose.yaml`) runs Authelia 4.39.28 next to
-Postgres at `https://auth.kanbot.internal:9443`, configured as described
-above (`backend/dev/authelia/`), and Keycloak 26.8.2 at
+The local stack (`backend/compose.yaml`, which pins the versions) runs Authelia
+next to Postgres at `https://auth.kanbot.internal:9443`, configured as described
+above (`backend/dev/authelia/`), and Keycloak at
 `https://auth.kanbot.internal:8443/realms/kanbot` (`backend/dev/keycloak/`),
 the second identity provider of the end-to-end tests. Both use the same
 hostname, so one `/etc/hosts` entry serves both. `backend/dev/auth-setup.sh` generates its

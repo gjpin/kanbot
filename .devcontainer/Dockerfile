@@ -1,6 +1,6 @@
 # Development container for kanbot: the Rust backend and the Flutter app,
 # with every tool the checks in backend/AGENTS.md and frontend/AGENTS.md use.
-# Docker (for compose: Postgres and Authelia) comes from the docker-in-docker
+# Docker (for compose: Postgres, Authelia and Keycloak) comes from the docker-in-docker
 # feature in devcontainer.json.
 #
 # Every download is pinned: images by digest, rustup-init by checksum,
