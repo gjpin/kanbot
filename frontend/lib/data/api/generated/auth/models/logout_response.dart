@@ -3,8 +3,10 @@
 /// The outcome of a sign-out.
 class LogoutResponse {
   const LogoutResponse({
-    /// Where to send the browser to sign out of the identity provider too,
-    /// when it supports that (RP-initiated logout). `null` otherwise.
+    /// For a web session, where to send the browser to sign out of the
+    /// identity provider too, when it supports that (RP-initiated logout).
+    /// `null` otherwise, and always for a native session: native apps sign
+    /// out without opening a browser.
     this.logoutUrl,
     this.additionalProperties = const {},
   });
@@ -19,8 +21,10 @@ class LogoutResponse {
     },
   );
 
-  /// Where to send the browser to sign out of the identity provider too,
-  /// when it supports that (RP-initiated logout). `null` otherwise.
+  /// For a web session, where to send the browser to sign out of the
+  /// identity provider too, when it supports that (RP-initiated logout).
+  /// `null` otherwise, and always for a native session: native apps sign
+  /// out without opening a browser.
   final String? logoutUrl;
 
   static const _knownKeys = <String>{'logout_url'};

@@ -184,8 +184,9 @@ fn parse_duration(raw: &str) -> Option<Duration> {
 pub struct PublicUrl(Url);
 
 impl PublicUrl {
-    /// `https`, or `http` on `localhost` or a loopback address (browsers
-    /// treat those as secure, so `__Host-` cookies still work). No
+    /// `https`, or `http` on `localhost` or a loopback address, for local
+    /// development: Chromium and Firefox treat those as secure, so
+    /// `__Host-` cookies still work; Safari does not, and needs `https`. No
     /// credentials, query or fragment. A trailing slash is ignored.
     ///
     /// # Errors
@@ -251,6 +252,10 @@ pub struct SessionKey {
     pub key: SecretBox<[u8; KEY_BYTES]>,
 }
 
+/// Longest key ID: it is stored in every sealed value, with a one-byte
+/// length.
+const MAX_KEY_ID_BYTES: usize = 64;
+
 /// The session encryption keys: the first encrypts, all decrypt.
 pub struct SessionKeys {
     current: SessionKey,
@@ -287,6 +292,7 @@ impl SessionKeys {
             let (id, key) = entry.split_once(':').ok_or(SessionConfigError::Keys)?;
             let id = id.trim();
             if id.is_empty()
+                || id.len() > MAX_KEY_ID_BYTES
                 || !id
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -535,6 +541,7 @@ mod tests {
             format!("k1:{short}"),
             "k1:not base64!".to_owned(),
             format!("k1:{KEY_1},k1:{KEY_2}"),
+            format!("{}:{KEY_1}", "k".repeat(65)),
         ] {
             assert!(
                 matches!(SessionKeys::parse(&bad), Err(SessionConfigError::Keys)),

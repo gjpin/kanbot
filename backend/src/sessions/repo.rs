@@ -186,6 +186,8 @@ pub(super) async fn activate_native_session(
 pub(super) struct ActiveSession {
     pub id: Uuid,
     pub user_id: Uuid,
+    /// The user's subject, to check that refreshed tokens are still theirs.
+    pub user_subject: String,
     pub kind: String,
     pub idp_access_token: Vec<u8>,
     /// The access token expires within the refresh window.
@@ -205,11 +207,13 @@ pub(super) async fn find_session(
 ) -> Result<Option<ActiveSession>, sqlx::Error> {
     sqlx::query_as!(
         ActiveSession,
-        r#"SELECT id, user_id, kind, idp_access_token,
-                  access_expires_at < now() + make_interval(secs => $2) AS "refresh_due!",
-                  last_used_at < now() - interval '1 minute' AS "touch_due!"
-           FROM sessions
-           WHERE token_hash = $1 AND idle_expires_at > now() AND absolute_expires_at > now()"#,
+        r#"SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,
+                  s.access_expires_at < now() + make_interval(secs => $2) AS "refresh_due!",
+                  s.last_used_at < now() - interval '1 minute' AS "touch_due!"
+           FROM sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.token_hash = $1 AND s.idle_expires_at > now()
+             AND s.absolute_expires_at > now()"#,
         token_hash,
         REFRESH_WINDOW_SECONDS,
     )
@@ -218,7 +222,8 @@ pub(super) async fn find_session(
 }
 
 /// Records use: `last_used_at` now, and the idle expiry moved forward (never
-/// past the absolute one).
+/// past the absolute one). At most once a minute, even when concurrent
+/// requests all found it due.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
 pub(super) async fn touch_session(
     db: &PgPool,
@@ -229,7 +234,7 @@ pub(super) async fn touch_session(
         "UPDATE sessions
          SET last_used_at = now(),
              idle_expires_at = LEAST(now() + make_interval(secs => $2), absolute_expires_at)
-         WHERE id = $1",
+         WHERE id = $1 AND last_used_at < now() - interval '1 minute'",
         id,
         idle_seconds,
     )
@@ -238,35 +243,65 @@ pub(super) async fn touch_session(
     Ok(())
 }
 
-/// The tokens of a session locked for refreshing (`FOR UPDATE`), so
-/// concurrent requests and instances never use one refresh token twice.
-pub(super) struct LockedTokens {
-    pub idp_access_token: Vec<u8>,
-    pub idp_refresh_token: Option<Vec<u8>>,
-    /// Still due: no one refreshed it while this request waited.
-    pub refresh_due: bool,
-}
+/// How long a refresh may take before another request may try: well over
+/// the identity provider's timeouts (token endpoint, then keys).
+pub(super) const REFRESH_LEASE_SECONDS: f64 = 30.0;
 
-pub(super) async fn lock_tokens(
-    tx: &mut sqlx::PgConnection,
+/// Takes the session's refresh lease, if its access token is still due and
+/// no one else holds the lease. Returns the sealed refresh token (`None`
+/// inside when there is none), or `None` when the lease was not taken.
+#[tracing::instrument(skip_all, fields(session.id = %id))]
+pub(super) async fn claim_refresh(
+    db: &PgPool,
     id: Uuid,
-) -> Result<Option<LockedTokens>, sqlx::Error> {
-    sqlx::query_as!(
-        LockedTokens,
-        r#"SELECT idp_access_token, idp_refresh_token,
-                  access_expires_at < now() + make_interval(secs => $2) AS "refresh_due!"
-           FROM sessions WHERE id = $1 FOR UPDATE"#,
+) -> Result<Option<Option<Vec<u8>>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "UPDATE sessions SET refreshing_until = now() + make_interval(secs => $3)
+         WHERE id = $1
+           AND access_expires_at < now() + make_interval(secs => $2)
+           AND (refreshing_until IS NULL OR refreshing_until < now())
+         RETURNING idp_refresh_token",
         id,
         REFRESH_WINDOW_SECONDS,
+        REFRESH_LEASE_SECONDS,
     )
-    .fetch_optional(tx)
+    .fetch_optional(db)
     .await
 }
 
-/// Stores refreshed tokens. `None` keeps the stored value (an identity
-/// provider that does not rotate refresh tokens, or sends no new ID token).
+/// Gives the refresh lease back without new tokens.
+#[tracing::instrument(skip_all, fields(session.id = %id))]
+pub(super) async fn release_refresh(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE sessions SET refreshing_until = NULL WHERE id = $1",
+        id
+    )
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// The session's stored access token, while it is live.
+#[tracing::instrument(skip_all, fields(session.id = %id))]
+pub(super) async fn stored_access_token(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT idp_access_token FROM sessions
+         WHERE id = $1 AND idle_expires_at > now() AND absolute_expires_at > now()",
+        id
+    )
+    .fetch_optional(db)
+    .await
+}
+
+/// Stores refreshed tokens and gives the lease back. `None` keeps the
+/// stored value (an identity provider that does not rotate refresh tokens,
+/// or sends no new ID token).
+#[tracing::instrument(skip_all, fields(session.id = %id))]
 pub(super) async fn store_refreshed(
-    tx: &mut sqlx::PgConnection,
+    db: &PgPool,
     id: Uuid,
     access_token: &[u8],
     refresh_token: Option<&[u8]>,
@@ -278,7 +313,8 @@ pub(super) async fn store_refreshed(
          SET idp_access_token = $2,
              idp_refresh_token = COALESCE($3, idp_refresh_token),
              idp_id_token = COALESCE($4, idp_id_token),
-             access_expires_at = to_timestamp($5::bigint)
+             access_expires_at = to_timestamp($5::bigint),
+             refreshing_until = NULL
          WHERE id = $1",
         id,
         access_token,
@@ -286,29 +322,28 @@ pub(super) async fn store_refreshed(
         id_token,
         access_expires_at,
     )
-    .execute(tx)
+    .execute(db)
     .await?;
     Ok(())
 }
 
-pub(super) async fn delete_session_in(
-    tx: &mut sqlx::PgConnection,
-    id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!("DELETE FROM sessions WHERE id = $1", id)
-        .execute(tx)
-        .await?;
-    Ok(())
+/// What a deleted session leaves for signing out at the identity
+/// provider.
+pub(super) struct DeletedSession {
+    pub kind: String,
+    pub idp_id_token: Option<Vec<u8>>,
+    pub idp_refresh_token: Option<Vec<u8>>,
 }
 
-/// Deletes a session; returns its sealed ID token, if it existed.
+/// Deletes a session; returns what it held, if it existed.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
 pub(super) async fn delete_session(
     db: &PgPool,
     id: Uuid,
-) -> Result<Option<Option<Vec<u8>>>, sqlx::Error> {
-    sqlx::query_scalar!(
-        "DELETE FROM sessions WHERE id = $1 RETURNING idp_id_token",
+) -> Result<Option<DeletedSession>, sqlx::Error> {
+    sqlx::query_as!(
+        DeletedSession,
+        "DELETE FROM sessions WHERE id = $1 RETURNING kind, idp_id_token, idp_refresh_token",
         id
     )
     .fetch_optional(db)

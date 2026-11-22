@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET access_expires_at = now() + interval '30 seconds'\n         WHERE user_id = (SELECT id FROM users WHERE subject = 'carol')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "94a828fe3c264acb66acc4c582a1d2cd7b8f53f9757462316ca65b87626b52da"
+}

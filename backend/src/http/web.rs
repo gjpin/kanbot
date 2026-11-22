@@ -62,7 +62,8 @@ async fn serve(files: ServeDir, index: ServeFile, request: Request<Body>) -> Res
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path_is_root = request.uri().path() == "/";
+    // `/index.html` is the same page as `/`: never cached either.
+    let path_is_root = matches!(request.uri().path(), "/" | "/index.html");
     let wants_html = request
         .headers()
         .get(header::ACCEPT)

@@ -173,7 +173,9 @@ pub struct AuthConfig {
 /// The outcome of a sign-out.
 #[derive(Serialize, ToSchema)]
 pub struct LogoutResponse {
-    /// Where to send the browser to sign out of the identity provider too,
-    /// when it supports that (RP-initiated logout). `null` otherwise.
+    /// For a web session, where to send the browser to sign out of the
+    /// identity provider too, when it supports that (RP-initiated logout).
+    /// `null` otherwise, and always for a native session: native apps sign
+    /// out without opening a browser.
     pub logout_url: Option<String>,
 }

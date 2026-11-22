@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT token_hash FROM sessions",
+  "query": "SELECT id FROM sessions FOR UPDATE NOWAIT",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "token_hash",
-        "type_info": "Bytea",
+        "name": "id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "sessions",
-            "name": "token_hash"
+            "name": "id"
           }
         }
       }
@@ -19,8 +19,8 @@
       "Left": []
     },
     "nullable": [
-      true
+      false
     ]
   },
-  "hash": "cef3161a47700e539577a84abe81c9cff07eaac8fce9cb39c02315ea73947d9f"
+  "hash": "f5cb3dc2ab27c1692b032883755bc9c34232d6c91fd5f5937d2286657c242ac9"
 }

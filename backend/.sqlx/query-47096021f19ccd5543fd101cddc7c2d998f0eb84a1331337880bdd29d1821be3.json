@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO login_attempts\n               (id, state_hash, nonce_hash, pkce_verifier, platform, browser_binding_hash,\n                expires_at)\n             VALUES ($1, $2, 'n', 'v', 'web', 'b', now() - interval '1 second')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "47096021f19ccd5543fd101cddc7c2d998f0eb84a1331337880bdd29d1821be3"
+}

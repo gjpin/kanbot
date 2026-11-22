@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{
+        discovery::{FetchError, OAuthError},
         keys::{KeyCache, KeyLookup, VerifyingKey},
         token::{Rejection, UnverifiedToken},
     },
@@ -175,6 +176,9 @@ pub struct CallbackParams<'a> {
     pub code: Option<&'a str>,
     /// The `error` parameter of an authorization error response.
     pub error: Option<&'a str>,
+    /// The `iss` parameter (RFC 9207), when the identity provider sends
+    /// it: it must be `OIDC_ISSUER`, against mix-up attacks.
+    pub issuer: Option<&'a str>,
 }
 
 /// A token endpoint's answer (RFC 6749, section 5.1).
@@ -297,6 +301,12 @@ async fn authorize(
     params: &CallbackParams<'_>,
     attempt: &repo::Attempt,
 ) -> Result<(TokenResponse, crate::auth::token::Principal), Refusal> {
+    if params
+        .issuer
+        .is_some_and(|issuer| issuer != keys.config().issuer.as_str())
+    {
+        return Err(refused("iss parameter from another issuer"));
+    }
     if let Some(error) = params.error {
         let error = if error == "access_denied" {
             LoginError::AccessDenied
@@ -424,7 +434,7 @@ async fn create_session(
             access_token: &access,
             refresh_token: refresh.as_deref(),
             id_token: id.as_deref(),
-            access_expires_at: i64::try_from(access_expires_at).unwrap_or(i64::MAX),
+            access_expires_at: stored_expiry(access_expires_at),
             idle_seconds: config.idle_timeout.as_secs_f64(),
             absolute_seconds: config.absolute_timeout.as_secs_f64(),
         },
@@ -463,6 +473,8 @@ pub async fn redeem_code(
         CodeChallenge::parse(&challenge).is_some_and(|challenge| challenge.matches(verifier));
     if !challenge_matches {
         tracing::info!(session.id = %session_id, "one-time code redeemed with a wrong verifier");
+        // The code is spent, so the session can never be handed over.
+        repo::delete_session(db, session_id).await?;
         return Err(AppError::BadRequest);
     }
     let token = secrets::issue(secrets::SESSION_TOKEN)?;
@@ -529,7 +541,7 @@ pub async fn authenticate_session(
         repo::touch_session(db, session.id, config.idle_timeout.as_secs_f64()).await?;
     }
     let principal = if session.refresh_due {
-        refresh(db, keys, config, session.id).await?
+        refresh(db, keys, config, &session).await?
     } else {
         verify_stored(keys, config, session.id, &session.idp_access_token).await?
     };
@@ -546,6 +558,7 @@ pub async fn authenticate_session(
     if user.id.as_uuid() != session.user_id {
         // Cannot happen unless the issuer or subject claim was reconfigured.
         tracing::warn!(session.id = %session.id, "session token belongs to another user");
+        repo::delete_session(db, session.id).await?;
         return Err(SessionRefusal::Invalid);
     }
     let kind = Platform::parse(&session.kind).unwrap_or(Platform::Web);
@@ -575,7 +588,9 @@ pub async fn stored_access_token(
         .map_err(|_| AppError::Internal("session token cannot be opened"))
 }
 
-/// Checks a stored access token with the bearer rules.
+/// Checks a stored access token with the bearer rules. Until the identity
+/// provider's keys have loaded, that cannot be done: `503`, never a
+/// refusal that would end the session.
 async fn verify_stored(
     keys: &KeyCache,
     config: &SessionConfig,
@@ -586,7 +601,10 @@ async fn verify_stored(
         .map_err(|_| SessionRefusal::Invalid)?;
     let (unverified, key) = key_for(keys, token.expose_secret())
         .await
-        .map_err(|_| SessionRefusal::Invalid)?;
+        .map_err(|failure| match failure {
+            KeyFailure::NotLoaded => SessionRefusal::Error(AppError::Unavailable),
+            KeyFailure::Rejected(_) => SessionRefusal::Invalid,
+        })?;
     unverified
         .verify(&key, keys.config(), now())
         .map_err(|rejection| match rejection {
@@ -595,38 +613,117 @@ async fn verify_stored(
         })
 }
 
-/// Refreshes the session's access token under a row lock, unless another
-/// request already did. Roles are re-evaluated: the new token passes the
-/// bearer rules or the session ends.
+/// How long a request waits for another one's refresh when its own
+/// stored token has already expired, in steps of [`REFRESH_WAIT_STEP`].
+const REFRESH_WAIT_STEPS: u32 = 20;
+const REFRESH_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Why a refresh did not give new tokens.
+enum RefreshFailure {
+    /// The identity provider ended the grant (`invalid_grant`), or the
+    /// refresh token cannot be opened: the session is over.
+    Ended,
+    /// No refresh token was issued: the stored token lasts until it
+    /// expires.
+    NoRefreshToken,
+    /// The identity provider failed or refused for another reason
+    /// (misconfiguration, outage): try again later.
+    Failed,
+}
+
+/// Refreshes the session's tokens. One request takes the refresh lease
+/// and calls the identity provider, holding no connection or row lock
+/// meanwhile; the others use the stored token while it is valid, or wait
+/// briefly for the new one. Roles are re-evaluated: the new token passes
+/// the bearer rules or the session ends.
 async fn refresh(
     db: &PgPool,
     keys: &KeyCache,
     config: &SessionConfig,
-    session_id: Uuid,
+    session: &repo::ActiveSession,
 ) -> Result<crate::auth::token::Principal, SessionRefusal> {
-    let mut tx = db.begin().await?;
-    let locked = repo::lock_tokens(&mut tx, session_id)
-        .await?
-        .ok_or(SessionRefusal::Invalid)?;
-    let (true, Some(sealed_refresh)) = (locked.refresh_due, locked.idp_refresh_token.as_deref())
-    else {
-        // Refreshed meanwhile, or nothing to refresh with: use what is
-        // stored while it is still valid.
-        tx.commit().await?;
-        return verify_stored(keys, config, session_id, &locked.idp_access_token).await;
+    let id = session.id;
+    let Some(sealed_refresh) = repo::claim_refresh(db, id).await? else {
+        return refreshed_elsewhere(db, keys, config, session).await;
     };
+    let tokens = match sealed_refresh.as_deref() {
+        Some(sealed) => request_refresh(keys, config, id, sealed).await,
+        None => Err(RefreshFailure::NoRefreshToken),
+    };
+    match tokens {
+        Ok((tokens, refresh_token)) => {
+            let reseal = sealed_refresh
+                .as_deref()
+                .is_some_and(|sealed| !crypto::sealed_with_current(&config.keys, sealed));
+            let kept_refresh = (tokens.refresh.is_none() && reseal).then_some(refresh_token);
+            finish_refresh(db, keys, config, session, &tokens, kept_refresh).await
+        }
+        Err(RefreshFailure::Ended) => {
+            repo::delete_session(db, id).await?;
+            tracing::info!(session.id = %id, "session ended: refresh refused");
+            Err(SessionRefusal::Ended)
+        }
+        Err(RefreshFailure::NoRefreshToken) => {
+            repo::release_refresh(db, id).await?;
+            verify_stored(keys, config, id, &session.idp_access_token).await
+        }
+        Err(RefreshFailure::Failed) => {
+            repo::release_refresh(db, id).await?;
+            // The stored token may still be valid for a few seconds.
+            verify_stored(keys, config, id, &session.idp_access_token)
+                .await
+                .map_err(|refusal| match refusal {
+                    SessionRefusal::Invalid => SessionRefusal::Error(AppError::Unavailable),
+                    other => other,
+                })
+        }
+    }
+}
+
+/// Another request holds the refresh lease, or has just refreshed: the
+/// newest stored token, waiting a moment for it if the old one expired.
+async fn refreshed_elsewhere(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session: &repo::ActiveSession,
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let id = session.id;
+    for step in 0..=REFRESH_WAIT_STEPS {
+        if step > 0 {
+            tokio::time::sleep(REFRESH_WAIT_STEP).await;
+        }
+        let sealed = repo::stored_access_token(db, id)
+            .await?
+            .ok_or(SessionRefusal::Invalid)?;
+        match verify_stored(keys, config, id, &sealed).await {
+            // Expired, and the refresh is still running.
+            Err(SessionRefusal::Invalid) if sealed == session.idp_access_token => {}
+            other => return other,
+        }
+    }
+    Err(SessionRefusal::Error(AppError::Unavailable))
+}
+
+/// The refresh token request. Holds no database connection.
+async fn request_refresh(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session_id: Uuid,
+    sealed_refresh: &[u8],
+) -> Result<(TokenResponse, SecretString), RefreshFailure> {
     let refresh_token = crypto::open(
         &config.keys,
         session_id,
         Field::RefreshToken,
         sealed_refresh,
     )
-    .map_err(|_| SessionRefusal::Invalid)?;
+    .map_err(|_| RefreshFailure::Ended)?;
     let endpoint = keys
         .discovery()
         .and_then(|discovery| discovery.token_endpoint.clone())
-        .ok_or(SessionRefusal::Error(AppError::Unavailable))?;
-    let refreshed: Result<TokenResponse, _> = keys
+        .ok_or(RefreshFailure::Failed)?;
+    let refreshed = keys
         .client()
         .post_form(
             endpoint,
@@ -639,38 +736,54 @@ async fn refresh(
             MAX_TOKEN_RESPONSE_BYTES,
         )
         .await;
-    let tokens = match refreshed {
-        Ok(tokens) => tokens,
-        Err(crate::auth::discovery::FetchError::Status(reqwest::StatusCode::BAD_REQUEST)) => {
-            // invalid_grant: the IdP ended the grant (sign-out, revocation,
-            // expiry). So does kanbot.
-            repo::delete_session_in(&mut tx, session_id).await?;
-            tx.commit().await?;
-            tracing::info!(session.id = %session_id, "session ended: refresh refused");
-            return Err(SessionRefusal::Ended);
-        }
+    match refreshed {
+        Ok(tokens) => Ok((tokens, refresh_token)),
+        // The identity provider ended the grant (sign-out, revocation,
+        // expiry). So does kanbot. Any other refusal (a wrong client
+        // secret, an outage) is not the user's: their session stays.
+        Err(FetchError::Refused(_, OAuthError::InvalidGrant)) => Err(RefreshFailure::Ended),
         Err(error) => {
-            drop(tx);
             tracing::warn!(%error, session.id = %session_id, "session refresh failed");
-            // The stored token may still be valid for a few seconds.
-            return verify_stored(keys, config, session_id, &locked.idp_access_token)
-                .await
-                .map_err(|refusal| match refusal {
-                    SessionRefusal::Invalid => SessionRefusal::Error(AppError::Unavailable),
-                    other => other,
-                });
+            Err(RefreshFailure::Failed)
         }
-    };
+    }
+}
+
+/// Checks the refreshed tokens and stores them. `kept_refresh` is the
+/// refresh token to store again when it was not rotated but is sealed with
+/// an old key.
+async fn finish_refresh(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session: &repo::ActiveSession,
+    tokens: &TokenResponse,
+    kept_refresh: Option<SecretString>,
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let id = session.id;
     let principal = match key_for(keys, &tokens.access).await {
         Ok((unverified, key)) => unverified.verify(&key, keys.config(), now()),
-        Err(rejection) => Err(rejection),
+        // The keys are not loaded, or not refreshed yet for a new key:
+        // keep the new tokens (every use checks the access token) and try
+        // again shortly. Dropping them could lose a rotated refresh token.
+        Err(KeyFailure::NotLoaded | KeyFailure::Rejected(Rejection::UnknownKey)) => {
+            let expires_at = unverified_expiry(&tokens.access).unwrap_or_else(now);
+            store_refreshed(db, config, id, tokens, None, kept_refresh, expires_at).await?;
+            tracing::warn!(session.id = %id, "refreshed token cannot be checked yet");
+            return Err(SessionRefusal::Error(AppError::Unavailable));
+        }
+        Err(KeyFailure::Rejected(rejection)) => Err(rejection),
     };
     let principal = match principal {
-        Ok(principal) => principal,
+        Ok(principal) if principal.subject == session.user_subject => principal,
+        Ok(_) => {
+            repo::delete_session(db, id).await?;
+            tracing::warn!(session.id = %id, "session ended: refreshed token is another user's");
+            return Err(SessionRefusal::Invalid);
+        }
         Err(rejection) => {
-            repo::delete_session_in(&mut tx, session_id).await?;
-            tx.commit().await?;
-            tracing::info!(session.id = %session_id, reason = rejection.reason(), "session ended: refreshed token refused");
+            repo::delete_session(db, id).await?;
+            tracing::info!(session.id = %id, reason = rejection.reason(), "session ended: refreshed token refused");
             return Err(if rejection == Rejection::NoRole {
                 SessionRefusal::NoRole
             } else {
@@ -678,19 +791,58 @@ async fn refresh(
             });
         }
     };
-    store_refreshed(&mut tx, config, session_id, &tokens, principal.expires_at).await?;
-    tx.commit().await?;
-    tracing::info!(session.id = %session_id, "session refreshed");
+    let id_token = verified_id_token(keys, config, tokens.id.as_deref()).await;
+    store_refreshed(
+        db,
+        config,
+        id,
+        tokens,
+        id_token,
+        kept_refresh,
+        principal.expires_at,
+    )
+    .await?;
+    tracing::info!(session.id = %id, "session refreshed");
     Ok(principal)
 }
 
+/// A refreshed ID token, if it verifies (`OpenID` Connect Core, section
+/// 12.2). Otherwise the stored one stays: it only serves as the logout
+/// hint.
+async fn verified_id_token<'t>(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    id_token: Option<&'t str>,
+) -> Option<&'t str> {
+    let id_token = id_token?;
+    let (unverified, key) = key_for(keys, id_token).await.ok()?;
+    unverified
+        .verify_id_token(&key, &keys.config().issuer, &config.client_id, now())
+        .ok()
+        .map(|_| id_token)
+}
+
+/// The `exp` of a JWT, unverified: only to schedule the next refresh of a
+/// token that every use still verifies.
+fn unverified_expiry(token: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Claims {
+        exp: u64,
+    }
+    let payload = token.split('.').nth(1)?;
+    let claims: Claims = serde_json::from_slice(&crate::base64::decode_url(payload)?).ok()?;
+    Some(claims.exp)
+}
+
 /// Seals and stores refreshed tokens, keeping the stored refresh and ID
-/// tokens when the identity provider sends no new ones.
+/// tokens when there are no new ones, and gives the lease back.
 async fn store_refreshed(
-    tx: &mut sqlx::PgConnection,
+    db: &PgPool,
     config: &SessionConfig,
     session_id: Uuid,
     tokens: &TokenResponse,
+    id_token: Option<&str>,
+    kept_refresh: Option<SecretString>,
     access_expires_at: u64,
 ) -> Result<(), AppError> {
     let seal = |field: Field, value: &str| {
@@ -702,31 +854,41 @@ async fn store_refreshed(
         )
     };
     let access = seal(Field::AccessToken, &tokens.access)?;
-    let rotated = tokens
-        .refresh
-        .as_deref()
-        .map(|token| seal(Field::RefreshToken, token))
-        .transpose()?;
-    let id = tokens
-        .id
-        .as_deref()
+    let refresh = match (tokens.refresh.as_deref(), kept_refresh) {
+        (Some(rotated), _) => Some(seal(Field::RefreshToken, rotated)?),
+        (None, Some(kept)) => Some(seal(Field::RefreshToken, kept.expose_secret())?),
+        (None, None) => None,
+    };
+    let id = id_token
         .map(|token| seal(Field::IdToken, token))
         .transpose()?;
     repo::store_refreshed(
-        tx,
+        db,
         session_id,
         &access,
-        rotated.as_deref(),
+        refresh.as_deref(),
         id.as_deref(),
-        i64::try_from(access_expires_at).unwrap_or(i64::MAX),
+        stored_expiry(access_expires_at),
     )
     .await?;
     Ok(())
 }
 
+/// The latest `exp` stored: Postgres timestamps end in year 294276, so a
+/// larger one is cut (to the end of year 9999) rather than failing.
+const MAX_STORED_EXPIRY: u64 = 253_402_300_799;
+
+fn stored_expiry(exp: u64) -> i64 {
+    i64::try_from(exp.min(MAX_STORED_EXPIRY)).unwrap_or(i64::MAX)
+}
+
 /// Ends a session. Returns the identity provider's logout URL (with
-/// `id_token_hint` and `post_logout_redirect_uri`) when discovery lists an
-/// `end_session_endpoint`, so the app can end that session too.
+/// `id_token_hint` and `post_logout_redirect_uri`) for a web session when
+/// discovery lists an `end_session_endpoint`, so the browser can end that
+/// session too; native apps never open a browser to sign out. The refresh
+/// token is revoked at the identity provider (RFC 7009) in the background
+/// when discovery lists a `revocation_endpoint`: without it, an offline
+/// session could outlive the sign-out there.
 ///
 /// # Errors
 ///
@@ -737,13 +899,24 @@ pub async fn logout(
     config: &SessionConfig,
     session_id: Uuid,
 ) -> Result<Option<Url>, AppError> {
-    let Some(sealed_id_token) = repo::delete_session(db, session_id).await? else {
+    let Some(deleted) = repo::delete_session(db, session_id).await? else {
         return Ok(None);
     };
     tracing::info!(session.id = %session_id, "signed out");
-    let Some(mut url) = keys
-        .discovery()
-        .and_then(|discovery| discovery.end_session_endpoint.clone())
+    let discovery = keys.discovery();
+    if let (Some(sealed), Some(endpoint)) = (
+        deleted.idp_refresh_token.as_deref(),
+        discovery
+            .as_ref()
+            .and_then(|discovery| discovery.revocation_endpoint.clone()),
+    ) && let Ok(token) = crypto::open(&config.keys, session_id, Field::RefreshToken, sealed)
+    {
+        revoke_in_background(keys, config, endpoint, token, session_id);
+    }
+    if Platform::parse(&deleted.kind) == Some(Platform::Native) {
+        return Ok(None);
+    }
+    let Some(mut url) = discovery.and_then(|discovery| discovery.end_session_endpoint.clone())
     else {
         return Ok(None);
     };
@@ -752,7 +925,8 @@ pub async fn logout(
         query
             .append_pair("client_id", &config.client_id)
             .append_pair("post_logout_redirect_uri", &config.public_url.join(""));
-        if let Some(id_token) = sealed_id_token
+        if let Some(id_token) = deleted
+            .idp_id_token
             .and_then(|sealed| crypto::open(&config.keys, session_id, Field::IdToken, &sealed).ok())
         {
             query.append_pair("id_token_hint", id_token.expose_secret());
@@ -761,25 +935,61 @@ pub async fn logout(
     Ok(Some(url))
 }
 
+/// Revokes `refresh_token` at `endpoint`, best effort: one call, bounded by
+/// the identity provider client's timeouts, not awaited by the sign-out.
+fn revoke_in_background(
+    keys: &KeyCache,
+    config: &SessionConfig,
+    endpoint: Url,
+    refresh_token: SecretString,
+    session_id: Uuid,
+) {
+    let client = keys.client().clone();
+    let client_id = config.client_id.clone();
+    let client_secret = config.client_secret.clone();
+    tokio::spawn(async move {
+        let revoked = client
+            .post_form_empty(
+                endpoint,
+                &client_id,
+                &client_secret,
+                &[
+                    ("token", refresh_token.expose_secret()),
+                    ("token_type_hint", "refresh_token"),
+                ],
+            )
+            .await;
+        if let Err(error) = revoked {
+            tracing::info!(%error, session.id = %session_id, "refresh token not revoked");
+        }
+    });
+}
+
 /// Rows deleted per statement by [`cleanup`].
 pub const CLEANUP_BATCH: i64 = 1000;
-/// Statements per table and run, so one run stays short; the rest waits
-/// for the next run.
-const CLEANUP_MAX_BATCHES: u32 = 10;
+/// How long one run may delete: short statements, but no limit on how
+/// many fit, so cleanup keeps up with sign-ins started at the sign-in
+/// routes' rate limit.
+const CLEANUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 /// How often [`spawn_cleanup`] runs [`cleanup`].
-const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Deletes expired login attempts, one-time codes and sessions, `batch`
-/// rows per statement, until a statement deletes fewer or
-/// `CLEANUP_MAX_BATCHES` ran per table. Returns how many rows went.
+/// rows per statement, until a statement deletes fewer or `budget` has
+/// passed. Returns how many rows went.
 ///
 /// # Errors
 ///
 /// A database error; what was deleted before it stays deleted.
-pub async fn cleanup(db: &PgPool, batch: i64) -> Result<u64, sqlx::Error> {
+pub async fn cleanup(
+    db: &PgPool,
+    batch: i64,
+    budget: std::time::Duration,
+) -> Result<u64, sqlx::Error> {
+    let started = tokio::time::Instant::now();
     let mut deleted = 0_u64;
     for table in 0..3 {
-        for _ in 0..CLEANUP_MAX_BATCHES {
+        while started.elapsed() < budget {
             let count = match table {
                 0 => repo::delete_expired_attempts(db, batch).await?,
                 1 => repo::delete_expired_codes(db, batch).await?,
@@ -800,7 +1010,7 @@ pub fn spawn_cleanup(db: PgPool) {
         let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
         loop {
             interval.tick().await;
-            match cleanup(&db, CLEANUP_BATCH).await {
+            match cleanup(&db, CLEANUP_BATCH, CLEANUP_BUDGET).await {
                 Ok(deleted) => tracing::debug!(
                     deleted = i64::try_from(deleted).unwrap_or(i64::MAX),
                     "expired sessions cleaned up"
@@ -814,15 +1024,23 @@ pub fn spawn_cleanup(db: PgPool) {
     });
 }
 
+/// Why a token's key was not found.
+enum KeyFailure {
+    /// No keys have loaded yet: the token may well be valid.
+    NotLoaded,
+    Rejected(Rejection),
+}
+
 /// The token's key, refreshing the keys once for an unknown `kid`.
 async fn key_for<'t>(
     keys: &KeyCache,
     token: &'t str,
-) -> Result<(UnverifiedToken<'t>, std::sync::Arc<VerifyingKey>), Rejection> {
-    let unverified = UnverifiedToken::parse(token)?;
+) -> Result<(UnverifiedToken<'t>, std::sync::Arc<VerifyingKey>), KeyFailure> {
+    let unverified = UnverifiedToken::parse(token).map_err(KeyFailure::Rejected)?;
     match keys.key(unverified.kid()).await {
         KeyLookup::Found(key) => Ok((unverified, key)),
-        KeyLookup::Unknown | KeyLookup::NotLoaded => Err(Rejection::UnknownKey),
+        KeyLookup::Unknown => Err(KeyFailure::Rejected(Rejection::UnknownKey)),
+        KeyLookup::NotLoaded => Err(KeyFailure::NotLoaded),
     }
 }
 

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions\n         SET idp_access_token = $2,\n             idp_refresh_token = COALESCE($3, idp_refresh_token),\n             idp_id_token = COALESCE($4, idp_id_token),\n             access_expires_at = to_timestamp($5::bigint),\n             refreshing_until = NULL\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "291830cbb5d2162cd27f1d5acff96ff227b80e3ac841e68f509eb8a37628e662"
+}

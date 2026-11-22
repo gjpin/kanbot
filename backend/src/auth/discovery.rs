@@ -11,6 +11,9 @@ use crate::auth::config::OidcConfig;
 
 /// Largest discovery document read, in bytes.
 pub const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
+/// Largest error body read from a token endpoint, in bytes: enough for
+/// the `error` code (RFC 6749, section 5.2), which is all that is kept.
+const MAX_ERROR_BYTES: usize = 4 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -25,10 +28,67 @@ pub enum FetchError {
     Request(#[source] reqwest::Error),
     #[error("unexpected status {0}")]
     Status(StatusCode),
+    /// A token or revocation endpoint's error response (`400`, `401`),
+    /// with its `error` code when it has a known one.
+    #[error("refused with {0}: {1}")]
+    Refused(StatusCode, OAuthError),
     #[error("response is larger than {0} bytes")]
     TooLarge(usize),
     #[error("response is not the expected JSON")]
     Json(#[source] serde_json::Error),
+}
+
+/// The `error` of a token endpoint's error response (RFC 6749, section
+/// 5.2; RFC 8693, section 2.2.2). Only known codes: never text from the
+/// response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OAuthError {
+    /// The grant (a refresh token, a code, a subject token) is invalid,
+    /// expired or revoked: it will not work again.
+    InvalidGrant,
+    InvalidClient,
+    UnauthorizedClient,
+    InvalidRequest,
+    InvalidScope,
+    InvalidTarget,
+    UnsupportedGrantType,
+    /// No body, no `error`, or a code not listed here.
+    Other,
+}
+
+impl OAuthError {
+    fn parse(code: &str) -> Self {
+        match code {
+            "invalid_grant" => Self::InvalidGrant,
+            "invalid_client" => Self::InvalidClient,
+            "unauthorized_client" => Self::UnauthorizedClient,
+            "invalid_request" => Self::InvalidRequest,
+            "invalid_scope" => Self::InvalidScope,
+            "invalid_target" => Self::InvalidTarget,
+            "unsupported_grant_type" => Self::UnsupportedGrantType,
+            _ => Self::Other,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidGrant => "invalid_grant",
+            Self::InvalidClient => "invalid_client",
+            Self::UnauthorizedClient => "unauthorized_client",
+            Self::InvalidRequest => "invalid_request",
+            Self::InvalidScope => "invalid_scope",
+            Self::InvalidTarget => "invalid_target",
+            Self::UnsupportedGrantType => "unsupported_grant_type",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl std::fmt::Display for OAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl IdpClient {
@@ -78,8 +138,9 @@ impl IdpClient {
     /// POSTs `form` to `url` (a token endpoint) with HTTP Basic client
     /// authentication (`client_secret_basic`, RFC 6749 section 2.3.1: the
     /// ID and secret are form-encoded first) and parses the JSON answer,
-    /// reading at most `max_bytes`. Anything but `200` is an error; the
-    /// error's body is never read.
+    /// reading at most `max_bytes`. Anything but `200` is an error; of an
+    /// error response, only the `error` code is read
+    /// ([`FetchError::Refused`]).
     ///
     /// # Errors
     ///
@@ -92,8 +153,41 @@ impl IdpClient {
         form: &[(&str, &str)],
         max_bytes: usize,
     ) -> Result<T, FetchError> {
-        let response = self
-            .0
+        let response = self.send_form(url, client_id, client_secret, form).await?;
+        let response = refused(response).await?;
+        read_json(response, max_bytes).await
+    }
+
+    /// POSTs `form` like [`IdpClient::post_form`] for an answer without a
+    /// body (token revocation, RFC 7009): `Ok` for `200`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdpClient::post_form`].
+    pub async fn post_form_empty(
+        &self,
+        url: Url,
+        client_id: &str,
+        client_secret: &SecretString,
+        form: &[(&str, &str)],
+    ) -> Result<(), FetchError> {
+        let response = self.send_form(url, client_id, client_secret, form).await?;
+        let response = refused(response).await?;
+        if response.status() == StatusCode::OK {
+            Ok(())
+        } else {
+            Err(FetchError::Status(response.status()))
+        }
+    }
+
+    async fn send_form(
+        &self,
+        url: Url,
+        client_id: &str,
+        client_secret: &SecretString,
+        form: &[(&str, &str)],
+    ) -> Result<reqwest::Response, FetchError> {
+        self.0
             .post(url)
             .basic_auth(
                 form_encode(&[("", client_id)]),
@@ -104,9 +198,31 @@ impl IdpClient {
             .body(form_encode(form))
             .send()
             .await
-            .map_err(FetchError::Request)?;
-        read_json(response, max_bytes).await
+            .map_err(FetchError::Request)
     }
+}
+
+/// A `400` or `401` as [`FetchError::Refused`], with the `error` code of
+/// its body (read up to [`MAX_ERROR_BYTES`]); any other response as is.
+async fn refused(mut response: reqwest::Response) -> Result<reqwest::Response, FetchError> {
+    #[derive(Deserialize)]
+    struct ErrorBody {
+        error: String,
+    }
+    let status = response.status();
+    if status != StatusCode::BAD_REQUEST && status != StatusCode::UNAUTHORIZED {
+        return Ok(response);
+    }
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if body.len().saturating_add(chunk.len()) > MAX_ERROR_BYTES {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let error = serde_json::from_slice::<ErrorBody>(&body)
+        .map_or(OAuthError::Other, |body| OAuthError::parse(&body.error));
+    Err(FetchError::Refused(status, error))
 }
 
 /// `application/x-www-form-urlencoded`. A single pair with an empty name
@@ -152,6 +268,9 @@ pub struct Discovery {
     pub token_endpoint: Option<Url>,
     /// Kept for logout. `None` when absent or not an allowed URL.
     pub end_session_endpoint: Option<Url>,
+    /// Kept for logout (RFC 7009). `None` when absent or not an allowed
+    /// URL.
+    pub revocation_endpoint: Option<Url>,
 }
 
 #[derive(Deserialize)]
@@ -161,6 +280,7 @@ struct Document {
     authorization_endpoint: Option<String>,
     token_endpoint: Option<String>,
     end_session_endpoint: Option<String>,
+    revocation_endpoint: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +337,7 @@ pub async fn discover(
         authorization_endpoint: endpoint(document.authorization_endpoint),
         token_endpoint: endpoint(document.token_endpoint),
         end_session_endpoint: endpoint(document.end_session_endpoint),
+        revocation_endpoint: endpoint(document.revocation_endpoint),
     })
 }
 

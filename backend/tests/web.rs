@@ -101,7 +101,12 @@ const HTML: &str = "text/html,application/xhtml+xml,*/*;q=0.8";
 async fn serves_the_app_with_its_policy_and_no_caching() {
     let dir = WebDir::new();
     let app = app(Some(&dir));
-    for path in ["/", "/boards/42", "/login?error=login_failed"] {
+    for path in [
+        "/",
+        "/index.html",
+        "/boards/42",
+        "/login?error=login_failed",
+    ] {
         let response = get(&app, Method::GET, path, HTML).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert!(header_of(&response, header::CONTENT_TYPE).starts_with("text/html"));

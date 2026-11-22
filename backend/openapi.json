@@ -2457,7 +2457,7 @@
               "string",
               "null"
             ],
-            "description": "Where to send the browser to sign out of the identity provider too,\nwhen it supports that (RP-initiated logout). `null` otherwise."
+            "description": "For a web session, where to send the browser to sign out of the\nidentity provider too, when it supports that (RP-initiated logout).\n`null` otherwise, and always for a native session: native apps sign\nout without opening a browser."
           }
         }
       },

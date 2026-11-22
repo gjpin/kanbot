@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::{HeaderMap, HeaderValue, Method, header},
     response::{IntoResponse, Redirect, Response},
 };
 use reqwest::Url;
@@ -14,7 +14,7 @@ use secrecy::ExposeSecret;
 
 use crate::{
     error::AppError,
-    http::problem::Problem,
+    http::problem::{ErrorCode, Problem},
     sessions::{
         dto::{AuthConfig, LoginQuery, LogoutResponse, TokenRequest, TokenResponse},
         model::LoginRequest,
@@ -86,9 +86,13 @@ fn set_cookie(
     ),
 )]
 pub(super) async fn login(
+    method: Method,
     State(state): State<AppState>,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, AppError> {
+    if let Some(response) = head_refused(&method) {
+        return Ok(response);
+    }
     let request = LoginRequest::try_from(query)?;
     let start = service::start_login(&state.db, &state.keys, &state.sessions, &request).await?;
     let mut response = Redirect::to(start.authorization_url.as_str()).into_response();
@@ -127,13 +131,18 @@ pub(super) async fn callback(
     State(state): State<AppState>,
     // Not a typed struct: identity providers add their own parameters
     // (`iss`, `scope`, `session_state`), which are ignored.
+    method: Method,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    if let Some(response) = head_refused(&method) {
+        return Ok(response);
+    }
     let params = CallbackParams {
         state: query.get("state").map(String::as_str),
         code: query.get("code").map(String::as_str),
         error: query.get("error").map(String::as_str),
+        issuer: query.get("iss").map(String::as_str),
     };
     let outcome = service::finish_login(
         &state.db,
@@ -176,6 +185,19 @@ pub(super) async fn callback(
     // The login cookie has done its job, whatever the outcome.
     headers.append(header::SET_COOKIE, set_cookie(LOGIN_COOKIE, "", 0, "Lax")?);
     Ok(response)
+}
+
+/// `HEAD` runs a `GET` handler in axum, and these change state (a login
+/// attempt, a spent callback): a link checker or proxy sending `HEAD`
+/// first must not use up the user's sign-in.
+fn head_refused(method: &Method) -> Option<Response> {
+    (method == Method::HEAD).then(|| {
+        let mut response = Problem::new(ErrorCode::MethodNotAllowed).into_response();
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET"));
+        response
+    })
 }
 
 /// `base` with `name=value` added to its query.

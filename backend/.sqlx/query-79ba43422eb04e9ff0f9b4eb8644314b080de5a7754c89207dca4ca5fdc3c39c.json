@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, kind, idp_access_token,\n                  access_expires_at < now() + make_interval(secs => $2) AS \"refresh_due!\",\n                  last_used_at < now() - interval '1 minute' AS \"touch_due!\"\n           FROM sessions\n           WHERE token_hash = $1 AND idle_expires_at > now() AND absolute_expires_at > now()",
+  "query": "SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,\n                  s.access_expires_at < now() + make_interval(secs => $2) AS \"refresh_due!\",\n                  s.last_used_at < now() - interval '1 minute' AS \"touch_due!\"\n           FROM sessions s\n           JOIN users u ON u.id = s.user_id\n           WHERE s.token_hash = $1 AND s.idle_expires_at > now()\n             AND s.absolute_expires_at > now()",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "user_subject",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "subject"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "kind",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "idp_access_token",
         "type_info": "Bytea",
         "origin": {
@@ -48,13 +59,13 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "refresh_due!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "touch_due!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -71,9 +82,10 @@
       false,
       false,
       false,
+      false,
       null,
       null
     ]
   },
-  "hash": "f04d373b61c3c9552aab9f484ca276f15e680033a07516774c3453bbf168ea70"
+  "hash": "79ba43422eb04e9ff0f9b4eb8644314b080de5a7754c89207dca4ca5fdc3c39c"
 }

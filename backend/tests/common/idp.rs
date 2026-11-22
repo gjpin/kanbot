@@ -49,6 +49,8 @@ pub enum Reply {
     Bytes(Vec<u8>),
     /// This body, streamed without a `Content-Length`.
     Chunked(Vec<u8>),
+    /// This status with this JSON body (an OAuth error response).
+    Error(StatusCode, Value),
 }
 
 /// A request to the token endpoint: its `Authorization` header and its
@@ -260,6 +262,7 @@ async fn respond(reply: Reply) -> Response {
     match reply {
         Reply::Json(value) => axum::Json(value).into_response(),
         Reply::Status(status) => status.into_response(),
+        Reply::Error(status, value) => (status, axum::Json(value)).into_response(),
         Reply::Redirect(location) => {
             (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
         }

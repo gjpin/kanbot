@@ -1,28 +1,26 @@
 {
   "db_name": "PostgreSQL",
-  "query": "DELETE FROM sessions WHERE id = $1 RETURNING idp_id_token",
+  "query": "SELECT idp_refresh_token FROM sessions\n         WHERE user_id = (SELECT id FROM users WHERE subject = 'carol')",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "idp_id_token",
+        "name": "idp_refresh_token",
         "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "sessions",
-            "name": "idp_id_token"
+            "name": "idp_refresh_token"
           }
         }
       }
     ],
     "parameters": {
-      "Left": [
-        "Uuid"
-      ]
+      "Left": []
     },
     "nullable": [
       true
     ]
   },
-  "hash": "3a59d227bcb2fdc0ac6a4f071d65b497dc82ba65b12406dcee9f987262d10855"
+  "hash": "c7dc9849ab0c4358da89f928f430561b241c8fa4192425fa5457b5f0899eb07d"
 }

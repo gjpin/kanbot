@@ -97,6 +97,15 @@ pub fn seal(
     Ok(sealed)
 }
 
+/// Whether `sealed` was sealed with the current key, so it would survive
+/// the older keys being retired.
+#[must_use]
+pub fn sealed_with_current(keys: &SessionKeys, sealed: &[u8]) -> bool {
+    let id = keys.current().id.as_str().as_bytes();
+    sealed.get(1).copied().map(usize::from) == Some(id.len())
+        && sealed.get(2..2_usize.saturating_add(id.len())) == Some(id)
+}
+
 /// Opens a value sealed for `field` of row `row`, with whichever key
 /// sealed it.
 ///
