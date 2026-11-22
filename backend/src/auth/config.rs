@@ -296,8 +296,9 @@ impl ClaimPath {
             .try_fold(claims.get(first)?, |value, segment| value.get(segment))
     }
 
-    #[must_use]
-    pub fn segments(&self) -> &[String] {
+    /// The path's segments, for tests.
+    #[cfg(test)]
+    fn segments(&self) -> &[String] {
         &self.0
     }
 }
