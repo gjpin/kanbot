@@ -1376,6 +1376,14 @@ mod link_and_sync {
         tokio::spawn(async move { sync::sync_all(&pool, &policies, &openshell, &issuer).await })
     }
 
+    /// `future`'s output, or a failure after 10 s: a run that never gets to
+    /// a held call fails the test rather than hanging it.
+    async fn within<T>(future: impl std::future::IntoFuture<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), future)
+            .await
+            .expect("not within 10 s")
+    }
+
     /// Waits up to 10 s for `done`.
     async fn eventually(what: &str, done: impl Fn() -> bool) {
         for _ in 0..200 {
@@ -1581,7 +1589,7 @@ mod link_and_sync {
         }
         let held = setup.fake.hold_list("alpha");
         let run = spawn_run(&pool, &setup);
-        held.reached.await.unwrap();
+        within(held.reached).await.unwrap();
         // The lock's connection dies (a server timeout, a failover): the
         // lock goes with it, and another instance could start syncing.
         assert_eq!(lock_holders(&pool).await, 1);
@@ -1599,7 +1607,10 @@ mod link_and_sync {
         .unwrap();
         assert_eq!(ended, 1);
         held.release.send(()).unwrap();
-        assert!(matches!(run.await.unwrap(), Err(sync::SyncError::LockLost)));
+        assert!(matches!(
+            within(run).await.unwrap(),
+            Err(sync::SyncError::LockLost)
+        ));
         assert_eq!(setup.fake.lists_of("beta"), 0, "beta is left alone");
     }
 
@@ -1623,7 +1634,7 @@ mod link_and_sync {
         }
         let held = setup.fake.hold_list("alpha");
         let run = spawn_run(&pool, &setup);
-        held.reached.await.unwrap();
+        within(held.reached).await.unwrap();
         // While alpha syncs, beta moves from Beta to Gamma.
         sqlx::query!(
             "UPDATE organizations SET openshell_workspace = NULL WHERE id = $1",
@@ -1634,7 +1645,7 @@ mod link_and_sync {
         .unwrap();
         link(&pool, gamma, "beta").await;
         held.release.send(()).unwrap();
-        let changes = run.await.unwrap().unwrap().unwrap();
+        let changes = within(run).await.unwrap().unwrap().unwrap();
         assert_eq!(changes.added, 1, "alpha only");
         assert!(
             members_of(&setup.fake, "beta").is_empty(),
@@ -1669,11 +1680,11 @@ mod link_and_sync {
         .unwrap();
         let held = setup.fake.hold_list("alpha");
         let run = spawn_run(&pool, &setup);
-        held.reached.await.unwrap();
+        within(held.reached).await.unwrap();
         // ... but is linked again before its turn.
         link(&pool, beta, "beta").await;
         held.release.send(()).unwrap();
-        let changes = run.await.unwrap().unwrap().unwrap();
+        let changes = within(run).await.unwrap().unwrap().unwrap();
         assert_eq!(changes.removed, 0);
         assert_eq!(members_of(&setup.fake, "beta"), [("bob".to_owned(), 2)]);
         assert_eq!(recorded(&pool, "beta").await, [pair("bob", "admin")]);
