@@ -88,13 +88,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev \
             libwebkit2gtk-4.1-dev libsoup-3.0-dev xvfb dbus gnome-keyring
+      # Only what dev/dev.env uses: Keycloak is not needed here.
       - name: Local stack
         working-directory: backend
-        run: |
-          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
-          sh dev/auth-setup.sh
-          # Only what dev/dev.env uses: Keycloak is not needed here.
-          docker compose up -d --wait postgres authelia
+        run: sh dev/local-stack.sh postgres authelia
       - name: Backend
         working-directory: backend
         env:

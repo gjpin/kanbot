@@ -58,10 +58,7 @@ jobs:
       # The local stack of backend/AGENTS.md: Postgres, Authelia and
       # Keycloak (compose.yaml, images pinned by digest).
       - name: Local stack
-        run: |
-          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
-          sh dev/auth-setup.sh
-          docker compose up -d --wait
+        run: sh dev/local-stack.sh
       # The query check below describes every query against this database.
       - name: Migrate the database
         run: sqlx migrate run
@@ -173,10 +170,7 @@ jobs:
       # tests that use the database and the local identity providers
       # (compose.yaml, images pinned by digest).
       - name: Local stack
-        run: |
-          echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts
-          sh dev/auth-setup.sh
-          docker compose up -d --wait
+        run: sh dev/local-stack.sh
       - name: Mutation-test changed code
         # --relative makes the paths relative to backend/, where cargo mutants
         # runs. With repo-root paths (backend/src/...) it matches no files and

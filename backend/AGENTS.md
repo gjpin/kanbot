@@ -217,7 +217,7 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | Variable | Phase | Default | Meaning |
 |---|---|---|---|
 | `DATABASE_URL` | | required | PostgreSQL connection string (secret). The only variable `kanbot-backend migrate` reads |
-| `DATABASE_MAX_CONNECTIONS` | 2 | `10` | Pool size per instance |
+| `DATABASE_MAX_CONNECTIONS` | 2 | `10` | Pool size per instance. With the OpenShell integration on, its sync opens up to two connections of its own besides (`docs/openshell.md`): count them in the database's `max_connections` |
 | `LISTEN_ADDR` | | `127.0.0.1:3000` | HTTP listen address |
 | `CORS_ALLOWED_ORIGINS` | | none | Browser origins allowed cross-origin, comma-separated. Optional when the backend serves the web build (`WEB_DIR`) |
 | `TRUSTED_PROXIES` | | none | Reverse proxies (IPs, CIDRs) whose `X-Forwarded-For` is trusted |
@@ -356,8 +356,7 @@ Authelia runs at `https://auth.kanbot.internal:9443`. It refuses special-use dom
 `dev/auth-setup.sh` (POSIX shell and `openssl`) generates a local CA, the certificate Authelia and Keycloak serve, Authelia's secrets and OIDC signing key into the git-ignored `dev/.generated/` (mounted into their containers), and keeps the CA's key in the git-ignored `dev/.generated-ca/` (not mounted). It is idempotent, so run it every time. To run the backend itself against the local stack, load `dev/dev.env` (`set -a; . dev/dev.env; set +a`), and get a token for `curl` with `cargo run --example dev-token -- alice`. With `--sign-in <url>`, the same example plays the system browser for a native app's sign-in (the frontend's Linux end-to-end test uses it).
 
 ```sh
-sh dev/auth-setup.sh
-docker compose up -d --wait   # Postgres, Authelia and Keycloak
+sh dev/local-stack.sh   # the /etc/hosts line, dev/auth-setup.sh, then Postgres, Authelia and Keycloak (as CI does)
 export DATABASE_URL=postgres://kanbot:kanbot@127.0.0.1:5432/kanbot
 sqlx migrate run       # the SQL macros check queries against this database
 
