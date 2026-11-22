@@ -397,11 +397,15 @@ consent, applies rate limits and runs against a local Authelia.
   );
   ```
 
-- [x] **`users/repo.rs`:** one query per authenticated request. It inserts, or
-  updates only when `last_seen_at` is more than 5 minutes old or the display name
-  or role changed. It always returns `(id, disabled_at, telemetry_opt_in)`.
-  - Pattern: a CTE with `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE ...
-    RETURNING`, combined with a `SELECT` for the row that was not updated.
+- [x] **`users/repo.rs`:** one query per authenticated request for a known
+  user. It inserts, or updates only when `last_seen_at` is more than 5 minutes
+  old or the display name or role changed. It always returns `(id, disabled_at,
+  telemetry_opt_in)`.
+  - Pattern: a CTE with a plain `UPDATE ... WHERE <due> RETURNING`, combined
+    with a `SELECT` for the row that was not updated; only for a new user,
+    `INSERT ... ON CONFLICT DO NOTHING`, then the first query again if another
+    request inserted first. Not `INSERT ... ON CONFLICT DO UPDATE ... WHERE`:
+    that locks the row on every request, even when the `WHERE` is false.
 - [x] **Disabled user** → `403` with the new error code `account_disabled`.
 - [x] **Endpoints** (done in 2.6: they need the authentication middleware):
   - `GET /me`: `{ id, display_name, platform_role, telemetry_opt_in }`.

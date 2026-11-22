@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO users (id, issuer, subject, display_name, platform_role, groups)\n        VALUES ($1, $2, $3, $4, $5, COALESCE($6::text[], '{}'))\n        ON CONFLICT (issuer, subject) DO NOTHING\n        RETURNING id, disabled_at IS NOT NULL AS \"disabled!\", telemetry_opt_in, groups\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "disabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "telemetry_opt_in",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "telemetry_opt_in"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "groups",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "groups"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "64c962eb0304cdd42da9900204617a7c0c15f4266764f43a94bb55039c9cda1b"
+}

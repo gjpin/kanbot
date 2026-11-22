@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH updated AS (\n            UPDATE users\n            SET display_name = COALESCE($3, display_name),\n                platform_role = $4,\n                groups = COALESCE($5::text[], groups),\n                last_seen_at = now()\n            WHERE issuer = $1 AND subject = $2\n              AND (last_seen_at < now() - interval '5 minutes'\n                   OR ($3::text IS NOT NULL AND display_name IS DISTINCT FROM $3)\n                   OR platform_role <> $4\n                   OR ($5::text[] IS NOT NULL AND groups IS DISTINCT FROM $5))\n            RETURNING id, disabled_at IS NOT NULL AS disabled, telemetry_opt_in, groups\n        )\n        SELECT id AS \"id!\", disabled AS \"disabled!\", telemetry_opt_in AS \"telemetry_opt_in!\",\n               groups AS \"groups!\"\n        FROM updated\n        UNION ALL\n        SELECT id, disabled_at IS NOT NULL, telemetry_opt_in, groups\n        FROM users\n        WHERE issuer = $1 AND subject = $2 AND NOT EXISTS (SELECT 1 FROM updated)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "disabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "telemetry_opt_in!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "groups!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "79f0af7686d92e31670a7776234b5d5d1c902f885dc40633d286df2788a9b7af"
+}

@@ -8,42 +8,83 @@ use crate::{
 };
 
 /// Records that the principal's user was seen, creating the user on first
-/// sight. One statement: it writes only when the user is new, was last
-/// seen over 5 minutes ago, or their display name, role or groups changed.
-/// A token without a display name or groups claim keeps the stored ones.
-///
-/// `None` only when another request created the same user concurrently;
-/// the caller retries.
+/// sight. It writes only when the user is new, was last seen over 5 minutes
+/// ago, or their display name, role or groups changed; otherwise it only
+/// reads, and locks nothing. (`INSERT ... ON CONFLICT DO UPDATE ... WHERE`
+/// would lock the row on every call, even when its `WHERE` is false.) A
+/// token without a display name or groups claim keeps the stored ones.
 #[tracing::instrument(skip_all)]
 pub(super) async fn record_seen(
     db: &PgPool,
     principal: &Principal,
-) -> Result<Option<SeenUser>, sqlx::Error> {
+) -> Result<SeenUser, sqlx::Error> {
+    if let Some(seen) = update_seen(db, principal).await? {
+        return Ok(seen);
+    }
+    if let Some(seen) = insert_seen(db, principal).await? {
+        return Ok(seen);
+    }
+    // Another request created the user meanwhile: the insert waited for it
+    // to commit, so this statement sees it.
+    update_seen(db, principal)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+}
+
+/// The principal's user, if it exists, updated only when that is due: last
+/// seen over 5 minutes ago, or a changed display name, role or groups. A
+/// plain `UPDATE` locks only the rows its `WHERE` matches.
+async fn update_seen(db: &PgPool, principal: &Principal) -> Result<Option<SeenUser>, sqlx::Error> {
     let groups: Option<&[String]> = principal.groups.as_deref();
     let row = sqlx::query!(
         r#"
-        WITH upserted AS (
-            INSERT INTO users (id, issuer, subject, display_name, platform_role, groups)
-            VALUES ($1, $2, $3, $4, $5, COALESCE($6::text[], '{}'))
-            ON CONFLICT (issuer, subject) DO UPDATE
-                SET display_name = COALESCE(EXCLUDED.display_name, users.display_name),
-                    platform_role = EXCLUDED.platform_role,
-                    groups = COALESCE($6, users.groups),
-                    last_seen_at = now()
-                WHERE users.last_seen_at < now() - interval '5 minutes'
-                   OR (EXCLUDED.display_name IS NOT NULL
-                       AND users.display_name IS DISTINCT FROM EXCLUDED.display_name)
-                   OR users.platform_role <> EXCLUDED.platform_role
-                   OR ($6::text[] IS NOT NULL AND users.groups IS DISTINCT FROM $6)
+        WITH updated AS (
+            UPDATE users
+            SET display_name = COALESCE($3, display_name),
+                platform_role = $4,
+                groups = COALESCE($5::text[], groups),
+                last_seen_at = now()
+            WHERE issuer = $1 AND subject = $2
+              AND (last_seen_at < now() - interval '5 minutes'
+                   OR ($3::text IS NOT NULL AND display_name IS DISTINCT FROM $3)
+                   OR platform_role <> $4
+                   OR ($5::text[] IS NOT NULL AND groups IS DISTINCT FROM $5))
             RETURNING id, disabled_at IS NOT NULL AS disabled, telemetry_opt_in, groups
         )
         SELECT id AS "id!", disabled AS "disabled!", telemetry_opt_in AS "telemetry_opt_in!",
                groups AS "groups!"
-        FROM upserted
+        FROM updated
         UNION ALL
         SELECT id, disabled_at IS NOT NULL, telemetry_opt_in, groups
         FROM users
-        WHERE issuer = $2 AND subject = $3 AND NOT EXISTS (SELECT 1 FROM upserted)
+        WHERE issuer = $1 AND subject = $2 AND NOT EXISTS (SELECT 1 FROM updated)
+        "#,
+        principal.issuer,
+        principal.subject,
+        principal.display_name,
+        principal.role.as_str(),
+        groups,
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|row| SeenUser {
+        id: UserId::from_uuid(row.id),
+        disabled: row.disabled,
+        telemetry_opt_in: row.telemetry_opt_in,
+        groups: row.groups,
+    }))
+}
+
+/// Creates the principal's user. `None` if it exists already: another
+/// request created it, and this one waited for that to commit.
+async fn insert_seen(db: &PgPool, principal: &Principal) -> Result<Option<SeenUser>, sqlx::Error> {
+    let groups: Option<&[String]> = principal.groups.as_deref();
+    let row = sqlx::query!(
+        r#"
+        INSERT INTO users (id, issuer, subject, display_name, platform_role, groups)
+        VALUES ($1, $2, $3, $4, $5, COALESCE($6::text[], '{}'))
+        ON CONFLICT (issuer, subject) DO NOTHING
+        RETURNING id, disabled_at IS NOT NULL AS "disabled!", telemetry_opt_in, groups
         "#,
         UserId::new().as_uuid(),
         principal.issuer,

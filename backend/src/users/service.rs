@@ -29,14 +29,7 @@ pub async fn authenticate(
     db: &PgPool,
     principal: &Principal,
 ) -> Result<AuthenticatedUser, AppError> {
-    // A concurrent first sign-in can hide the row from this statement's
-    // snapshot; the second try sees it.
-    let seen = match repo::record_seen(db, principal).await? {
-        Some(seen) => seen,
-        None => repo::record_seen(db, principal)
-            .await?
-            .ok_or(AppError::Database(sqlx::Error::RowNotFound))?,
-    };
+    let seen = repo::record_seen(db, principal).await?;
     if seen.disabled {
         tracing::info!(user.id = %seen.id.as_uuid(), "disabled user refused");
         return Err(AppError::AccountDisabled);

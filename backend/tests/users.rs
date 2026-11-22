@@ -128,6 +128,46 @@ async fn does_not_write_a_recently_seen_unchanged_user(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn does_not_lock_a_recently_seen_unchanged_user(pool: PgPool) {
+    // Every authenticated request records its user: when nothing is due,
+    // that must not lock the row (a write of its own, and a queue for the
+    // user's concurrent requests).
+    let user = service::authenticate(&pool, &principal("alice"))
+        .await
+        .unwrap();
+    service::authenticate(&pool, &principal("alice"))
+        .await
+        .unwrap();
+    let locker = sqlx::query_scalar!(
+        r#"SELECT xmax::text AS "xmax!" FROM users WHERE id = $1"#,
+        user.id.as_uuid()
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(locker, "0", "no transaction locked the row");
+
+    // Nor does it wait for another transaction's lock on it.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query!(
+        "SELECT id FROM users WHERE id = $1 FOR UPDATE",
+        user.id.as_uuid()
+    )
+    .fetch_one(&mut *holder)
+    .await
+    .unwrap();
+    let seen = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        service::authenticate(&pool, &principal("alice")),
+    )
+    .await
+    .expect("waited for the row lock")
+    .unwrap();
+    assert_eq!(seen.id, user.id);
+    holder.rollback().await.unwrap();
+}
+
+#[sqlx::test]
 async fn updates_last_seen_after_five_minutes(pool: PgPool) {
     let user = service::authenticate(&pool, &principal("alice"))
         .await
