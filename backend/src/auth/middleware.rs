@@ -13,12 +13,12 @@
 //! the failed-authentication budget, then CSRF for the session cookie, then
 //! the per-user limit (keyed by the session token, or by the subject of a
 //! verified access token).
+//!
+//! Signing out uses [`identify`] instead: the same, except that a session
+//! is only found from its token, so that it can end while the identity
+//! provider is unreachable.
 
-use std::{
-    net::IpAddr,
-    sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{net::IpAddr, sync::Arc, time::Instant};
 
 use axum::{
     extract::{Request, State},
@@ -37,7 +37,7 @@ use crate::{
     auth::{
         failures::FailureLimiter,
         keys::KeyLookup,
-        token::{Rejection, UnverifiedToken},
+        token::{Rejection, UnverifiedToken, now},
     },
     error::AppError,
     http::{
@@ -232,6 +232,17 @@ impl From<Rejection> for Refusal {
     }
 }
 
+/// What a session must pass.
+#[derive(Clone, Copy)]
+enum SessionCheck {
+    /// Every rule: the stored access token (refreshed when due) passes the
+    /// bearer rules and gives the request its user.
+    Full,
+    /// Only that the session exists and is live, found from its token's
+    /// hash: no identity provider, no user. For signing out.
+    Identify,
+}
+
 /// Middleware (`axum::middleware::from_fn_with_state`).
 ///
 /// A client that has used up its failed-authentication budget gets `429`
@@ -239,8 +250,32 @@ impl From<Rejection> for Refusal {
 /// without credentials are not affected.
 pub async fn authenticate(
     State(auth): State<Authentication>,
+    request: Request,
+    next: Next,
+) -> Response {
+    run(auth, request, next, SessionCheck::Full).await
+}
+
+/// Middleware for signing out (`POST /auth/logout`): as [`authenticate`],
+/// with the same limits and CSRF check, except that a session (cookie or
+/// `kbs_` bearer) is only identified from its token. It never calls the
+/// identity provider, so a session can end while that is unreachable or
+/// its keys have not loaded; the request gets the [`CurrentSession`] and
+/// no user. Any other credentials are checked exactly as
+/// [`authenticate`] does.
+pub async fn identify(
+    State(auth): State<Authentication>,
+    request: Request,
+    next: Next,
+) -> Response {
+    run(auth, request, next, SessionCheck::Identify).await
+}
+
+async fn run(
+    auth: Authentication,
     mut request: Request,
     next: Next,
+    check: SessionCheck,
 ) -> Response {
     let credentials = credentials(request.headers());
     if let Credentials::None = credentials {
@@ -268,7 +303,7 @@ pub async fn authenticate(
     };
     let result = match credentials {
         Credentials::None | Credentials::Unusable => Err(Refusal::Token(Rejection::Malformed)),
-        Credentials::Bearer(token) => user(&auth, token).await.map(|user| (user, None)),
+        Credentials::Bearer(token) => user(&auth, token).await.map(|user| (Some(user), None)),
         Credentials::Session { token, from_cookie } => {
             // Unknown shapes cannot match a session; they fail below.
             if let Some(hash) = secrets::presented(secrets::SESSION_TOKEN, token)
@@ -276,13 +311,20 @@ pub async fn authenticate(
             {
                 return too_many_requests(whole_seconds(wait));
             }
-            session_user(&auth.app, token, from_cookie).await
+            match check {
+                SessionCheck::Full => session_user(&auth.app, token, from_cookie)
+                    .await
+                    .map(|(user, session)| (Some(user), Some(session))),
+                SessionCheck::Identify => identified_session(&auth.app, token, from_cookie)
+                    .await
+                    .map(|session| (None, Some(session))),
+            }
         }
     };
     let result = match result {
-        Ok((user, session)) if user.groups_claimed => {
+        Ok((Some(user), session)) if user.groups_claimed => {
             match teams::sync_idp_groups(&auth.app.db, user.id, &user.groups).await {
-                Ok(()) => Ok((user, session)),
+                Ok(()) => Ok((Some(user), session)),
                 Err(error) => Err(Refusal::Error(error)),
             }
         }
@@ -290,7 +332,9 @@ pub async fn authenticate(
     };
     match result {
         Ok((user, session)) => {
-            request.extensions_mut().insert(user);
+            if let Some(user) = user {
+                request.extensions_mut().insert(user);
+            }
             request.extensions_mut().insert(ClientIp(ip));
             if let Some(token) = bearer {
                 request.extensions_mut().insert(BearerToken(token));
@@ -342,28 +386,46 @@ async fn session_user(
     state: &AppState,
     token: &str,
     from_cookie: bool,
-) -> Result<(AuthenticatedUser, Option<CurrentSession>), Refusal> {
-    match sessions::service::authenticate_session(&state.db, &state.keys, &state.sessions, token)
+) -> Result<(AuthenticatedUser, CurrentSession), Refusal> {
+    sessions::service::authenticate_session(&state.db, &state.keys, &state.sessions, token)
         .await
-    {
-        Ok(session) => Ok((
-            session.user,
-            Some(CurrentSession {
-                id: session.session_id,
-                kind: session.kind,
-                from_cookie,
-            }),
-        )),
-        Err(SessionRefusal::Invalid) if from_cookie => {
-            Err(Refusal::StaleCookie(Rejection::SessionInvalid))
-        }
-        Err(SessionRefusal::Ended) if from_cookie => {
-            Err(Refusal::StaleCookie(Rejection::SessionEnded))
-        }
-        Err(SessionRefusal::Invalid) => Err(Rejection::SessionInvalid.into()),
-        Err(SessionRefusal::Ended) => Err(Rejection::SessionEnded.into()),
-        Err(SessionRefusal::NoRole) => Err(Rejection::NoRole.into()),
-        Err(SessionRefusal::Error(error)) => Err(Refusal::Error(error)),
+        .map(|session| {
+            (
+                session.user,
+                CurrentSession {
+                    id: session.session_id,
+                    kind: session.kind,
+                    from_cookie,
+                },
+            )
+        })
+        .map_err(|refusal| session_refusal(refusal, from_cookie))
+}
+
+/// The live session of a session token, from the token alone.
+async fn identified_session(
+    state: &AppState,
+    token: &str,
+    from_cookie: bool,
+) -> Result<CurrentSession, Refusal> {
+    sessions::service::identify_session(&state.db, &state.sessions, token)
+        .await
+        .map(|session| CurrentSession {
+            id: session.id,
+            kind: session.kind,
+            from_cookie,
+        })
+        .map_err(|refusal| session_refusal(refusal, from_cookie))
+}
+
+fn session_refusal(refusal: SessionRefusal, from_cookie: bool) -> Refusal {
+    match refusal {
+        SessionRefusal::Invalid if from_cookie => Refusal::StaleCookie(Rejection::SessionInvalid),
+        SessionRefusal::Ended if from_cookie => Refusal::StaleCookie(Rejection::SessionEnded),
+        SessionRefusal::Invalid => Rejection::SessionInvalid.into(),
+        SessionRefusal::Ended => Rejection::SessionEnded.into(),
+        SessionRefusal::NoRole => Rejection::NoRole.into(),
+        SessionRefusal::Error(error) => Refusal::Error(error),
     }
 }
 
@@ -413,12 +475,4 @@ async fn user(auth: &Authentication, token: &str) -> Result<AuthenticatedUser, R
     users::authenticate(&state.db, &principal)
         .await
         .map_err(Refusal::Error)
-}
-
-/// Seconds since the Unix epoch. A clock before 1970 reads as the far
-/// future, so every token is expired: failing closed.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(u64::MAX, |since| since.as_secs())
 }

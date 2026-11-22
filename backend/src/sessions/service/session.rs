@@ -6,9 +6,12 @@ use secrecy::{ExposeSecret, SecretString};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{KeyFailure, expired, key_for, now, refresh::refresh};
+use super::{KeyFailure, expired, key_for, refresh::refresh};
 use crate::{
-    auth::{keys::KeyCache, token::Rejection},
+    auth::{
+        keys::KeyCache,
+        token::{Rejection, now},
+    },
     error::AppError,
     sessions::{
         config::SessionConfig,
@@ -16,7 +19,7 @@ use crate::{
         model::Platform,
         repo, secrets,
     },
-    users::service as users,
+    users::{model::UserId, service as users},
 };
 
 /// Why a session gives no user.
@@ -56,6 +59,9 @@ pub struct SessionUser {
 /// header). The stored access token is checked with exactly the bearer
 /// rules, after a refresh when it expires within a minute.
 ///
+/// A disabled user's session is refused before anything else, the
+/// identity provider included, and all of that user's sessions end.
+///
 /// # Errors
 ///
 /// [`SessionRefusal`].
@@ -66,24 +72,28 @@ pub async fn authenticate_session(
     token: &str,
 ) -> Result<SessionUser, SessionRefusal> {
     let hash = secrets::presented(secrets::SESSION_TOKEN, token).ok_or(SessionRefusal::Invalid)?;
-    let idle = repo::Idle {
-        seconds: config.idle_timeout.as_secs_f64(),
-        slack_seconds: touch_slack(config.idle_timeout),
-    };
+    let idle = idle(config);
     let session = repo::find_session(db, &hash, idle)
         .await?
         .ok_or(SessionRefusal::Invalid)?;
-    let principal = if session.refresh_due {
-        refresh(db, keys, config, &session).await?
-    } else {
-        verify_stored(keys, config, session.id, &session.idp_access_token).await?
+    if session.user_disabled {
+        users::end_sessions(db, UserId::from_uuid(session.user_id)).await?;
+        return Err(SessionRefusal::Error(AppError::AccountDisabled));
+    }
+    let principal = match session.refresh {
+        repo::RefreshDue::No => {
+            verify_stored(keys, config, session.id, &session.idp_access_token).await?
+        }
+        repo::RefreshDue::Yes | repo::RefreshDue::WithoutRefreshToken => {
+            refresh(db, keys, config, &session).await?
+        }
     };
     let user = match users::authenticate(db, &principal).await {
         Ok(user) => user,
         Err(AppError::AccountDisabled) => {
-            // Disabled since the session began: end all of their sessions.
-            users::end_sessions(db, crate::users::model::UserId::from_uuid(session.user_id))
-                .await?;
+            // Disabled since the session was found: end all of their
+            // sessions.
+            users::end_sessions(db, UserId::from_uuid(session.user_id)).await?;
             return Err(SessionRefusal::Error(AppError::AccountDisabled));
         }
         Err(error) => return Err(error.into()),
@@ -104,6 +114,44 @@ pub async fn authenticate_session(
         session_id: session.id,
         kind,
     })
+}
+
+/// A live session, found by [`identify_session`].
+pub struct IdentifiedSession {
+    pub id: Uuid,
+    pub kind: Platform,
+}
+
+/// The live session (neither idle too long nor past its absolute
+/// lifetime) of a session token, from the token's hash alone: neither the
+/// stored access token nor the user is checked, and the identity provider
+/// is never called. Only to end the session (logout), which must work
+/// while the identity provider is unreachable or its keys have not loaded.
+///
+/// # Errors
+///
+/// [`SessionRefusal::Invalid`] for an unknown or ended session, or a
+/// database error.
+pub async fn identify_session(
+    db: &PgPool,
+    config: &SessionConfig,
+    token: &str,
+) -> Result<IdentifiedSession, SessionRefusal> {
+    let hash = secrets::presented(secrets::SESSION_TOKEN, token).ok_or(SessionRefusal::Invalid)?;
+    let session = repo::find_session(db, &hash, idle(config))
+        .await?
+        .ok_or(SessionRefusal::Invalid)?;
+    Ok(IdentifiedSession {
+        id: session.id,
+        kind: Platform::parse(&session.kind).unwrap_or(Platform::Web),
+    })
+}
+
+fn idle(config: &SessionConfig) -> repo::Idle {
+    repo::Idle {
+        seconds: config.idle_timeout.as_secs_f64(),
+        slack_seconds: touch_slack(config.idle_timeout),
+    }
 }
 
 /// The identity provider access token behind a session, for a call to

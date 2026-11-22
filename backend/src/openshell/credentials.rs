@@ -13,10 +13,7 @@
 //! audience and not kanbot's, so no token valid for both services is ever
 //! sent. An exchanged token must name the user whose token was exchanged.
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -26,7 +23,7 @@ use crate::{
     auth::{
         discovery::FetchError,
         keys::{KeyCache, KeyLookup},
-        token::{Rejection, UnverifiedToken},
+        token::{Rejection, UnverifiedToken, now},
     },
     openshell::config::OpenShellConfig,
 };
@@ -98,12 +95,6 @@ pub struct Credentials {
     config: Arc<OpenShellConfig>,
     keys: Arc<KeyCache>,
     service: Mutex<Option<Checked>>,
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(u64::MAX, |since| since.as_secs())
 }
 
 impl Credentials {

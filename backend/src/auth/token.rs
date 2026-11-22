@@ -20,6 +20,16 @@ pub const MAX_TOKEN_BYTES: usize = 16 * 1024;
 /// Clock skew allowed for `exp`, `nbf` and `iat`, in seconds.
 pub const LEEWAY_SECONDS: u64 = 60;
 
+/// The current time to check tokens against, in seconds since the Unix
+/// epoch. A clock before 1970 reads as the far future, so every token is
+/// expired: failing closed.
+#[must_use]
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(u64::MAX, |since| since.as_secs())
+}
+
 /// Why a token was refused. [`Rejection::reason`] is the metric attribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {

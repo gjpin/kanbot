@@ -276,7 +276,7 @@ The app cannot hold collector credentials, so it sends OTLP to the API at `/tele
 Users sign in at an external OIDC IdP; kanbot has no passwords or local accounts. The design, and the IdP requirements and setup guides, are in [`docs/oidc.md`](../docs/oidc.md). An API request is authenticated in one of two ways, and both resolve to the same validated user and roles:
 
 1. **An IdP JWT access token** in `Authorization: Bearer`, validated locally against the IdP's JWKS (CLI, scripts, CI, agents, other services).
-2. **A kanbot session**, for kanbot's own apps (`sessions/`): the `__Host-kanbot_session` cookie on web, a `kbs_` bearer token on native. The backend runs the login flow as the confidential client (`/auth/login`, `/auth/callback`, and `/auth/token` for the native one-time code), keeps the IdP tokens server-side sealed with XChaCha20-Poly1305 (`sessions/crypto.rs`, row and field bound, key ID for rotation), refreshes them under a short lease on the session row (no lock held while the IdP answers), and checks the stored access token with exactly the rules used for bearer tokens. A stale session *cookie* makes the request anonymous and is cleared; a bad `kbs_` bearer is a `401`.
+2. **A kanbot session**, for kanbot's own apps (`sessions/`): the `__Host-kanbot_session` cookie on web, a `kbs_` bearer token on native. The backend runs the login flow as the confidential client (`/auth/login`, `/auth/callback`, and `/auth/token` for the native one-time code), keeps the IdP tokens server-side sealed with XChaCha20-Poly1305 (`sessions/crypto.rs`, row and field bound, key ID for rotation), refreshes them under a short lease on the session row (no lock held while the IdP answers; the answer is stored only while the lease is still held), and checks the stored access token with exactly the rules used for bearer tokens. A stale session *cookie* makes the request anonymous and is cleared; a bad `kbs_` bearer is a `401`. Signing out (`/auth/logout`, `auth::middleware::identify`) only finds the session from its token, so it never depends on the IdP.
 
 These rules hold in every change:
 
@@ -289,7 +289,8 @@ These rules hold in every change:
 - **Outbound calls** (IdP discovery, JWKS, token endpoint) have connect and total timeouts, do not follow redirects, and cap how many response bytes they read.
 - **CSRF:** a state-changing request authenticated by the session cookie needs `Origin` equal to `PUBLIC_URL`'s origin and `X-Kanbot-CSRF: 1`, else `403`. Bearer requests are exempt.
 - **Cookies** are `__Host-` (`Secure`, `Path=/`, no `Domain`) and `HttpOnly`: the session is `SameSite=Strict`, the login binding `SameSite=Lax` (it must survive the IdP's redirect).
-- **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom` (`sessions/secrets.rs`); never `rand`. Secrets are compared by looking up their SHA-256 hash in the database, never by comparing strings in memory.
+- **Randomness:** every token, code, state and nonce is 32 bytes from `getrandom` (`sessions/secrets.rs`); never `rand`.
+- **Comparing secrets:** a presented secret (session token, one-time code, state, login binding) is found by looking up its SHA-256 hash in the database, never by comparing it with stored values in memory. The only in-memory check allowed is of a single-use value bound to the one row such a lookup has already found and spent, and only of its hash: the ID token's nonce against the login attempt's `nonce_hash`, and the S256 hash of a PKCE verifier against the one-time code's challenge.
 - **Authorization** is decided by the `authz` module with Cedar (§3c). Never write an ad hoc role check in a handler or service.
 
 ## 3c. Authorization

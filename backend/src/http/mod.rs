@@ -113,6 +113,7 @@ fn api() -> OpenApiRouter<AppState> {
     let parts = api_parts();
     parts
         .protected
+        .merge(parts.logout)
         .merge(parts.public)
         .merge(parts.login)
         .merge(parts.liveness)
@@ -122,6 +123,9 @@ fn api() -> OpenApiRouter<AppState> {
 struct ApiParts {
     /// Every route that needs (or may use) a user: behind authentication.
     protected: OpenApiRouter<AppState>,
+    /// `/auth/logout`: behind authentication too, except that a session is
+    /// only identified, so it can end while the identity provider is down.
+    logout: OpenApiRouter<AppState>,
     /// The public routes that never look at credentials: `/ready` and
     /// `/auth/config`.
     public: OpenApiRouter<AppState>,
@@ -137,12 +141,12 @@ fn api_parts() -> ApiParts {
     doc.info.license = None;
     let protected = OpenApiRouter::with_openapi(doc)
         .merge(crate::users::routes())
-        .merge(crate::sessions::routes())
         .merge(crate::organizations::routes())
         .merge(crate::teams::routes())
         .merge(crate::audit::routes());
     ApiParts {
         protected,
+        logout: crate::sessions::logout_routes(),
         public: health::readiness_routes().merge(crate::sessions::public_routes()),
         login: crate::sessions::login_routes(),
         liveness: health::liveness_routes(),
@@ -229,6 +233,7 @@ pub fn router(
 ) -> Result<Router, StartupError> {
     let parts = api_parts();
     let (protected, _) = parts.protected.split_for_parts();
+    let (logout, _) = parts.logout.split_for_parts();
     let (public, _) = parts.public.split_for_parts();
     let (login, _) = parts.login.split_for_parts();
     let (liveness, _) = parts.liveness.split_for_parts();
@@ -250,20 +255,27 @@ pub fn router(
         None => protected,
     };
     // Every protected route, the relay included: credentials are checked
-    // wherever they are presented.
+    // wherever they are presented. Signing out shares the limits.
+    let authentication = Authentication::new(
+        state.clone(),
+        Arc::clone(&settings.trusted_proxies),
+        AuthLimits {
+            failure: settings.rate_limits.auth_failure,
+            user: settings.rate_limits.user,
+        },
+        settings.auth_metrics,
+    )?;
+    let logout = logout
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            authentication.clone(),
+            crate::auth::middleware::identify,
+        ));
     let protected = protected.layer(axum::middleware::from_fn_with_state(
-        Authentication::new(
-            state.clone(),
-            Arc::clone(&settings.trusted_proxies),
-            AuthLimits {
-                failure: settings.rate_limits.auth_failure,
-                user: settings.rate_limits.user,
-            },
-            settings.auth_metrics,
-        )?,
+        authentication,
         crate::auth::middleware::authenticate,
     ));
-    let routes = protected.merge(public);
+    let routes = protected.merge(logout).merge(public);
     // An explicit fallback, so that the per-IP limit below covers unknown
     // paths too: axum's default one is outside every layer.
     let routes = match &settings.web_dir {

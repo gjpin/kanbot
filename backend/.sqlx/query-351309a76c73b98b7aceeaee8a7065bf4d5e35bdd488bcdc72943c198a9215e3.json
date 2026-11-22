@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET refreshing_until = now() + interval '20 seconds'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "351309a76c73b98b7aceeaee8a7065bf4d5e35bdd488bcdc72943c198a9215e3"
+}

@@ -1827,10 +1827,21 @@ async fn a_due_token_without_a_refresh_token_is_used_until_it_expires(pool: PgPo
     let app = app(pool.clone(), &idp).await;
     let token = web_session_without_refresh(&app, &idp, "alice").await;
     expire_soon(&pool).await;
+    let version = || async {
+        sqlx::query_scalar!(r#"SELECT xmin::text AS "v!" FROM sessions"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let before = version().await;
 
-    assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+    for _ in 0..2 {
+        assert_eq!(me_by_bearer(&app, &token).await.status(), StatusCode::OK);
+    }
     assert_eq!(idp.token_requests().len(), 1, "nothing to refresh with");
-    assert!(!leased(&pool).await, "the lease was given back");
+    assert!(!leased(&pool).await);
+    // Not even a lease taken and given back: the session is not written.
+    assert_eq!(version().await, before);
     assert_eq!(session_count(&pool).await, 1);
 }
 
@@ -1997,6 +2008,170 @@ async fn logout_revokes_the_refresh_token_when_the_idp_can(pool: PgPool) {
     );
 }
 
+/// Has the identity provider revoke refresh tokens at its token endpoint,
+/// which records every request.
+fn revoke_at_the_token_endpoint(idp: &TestIdp) {
+    let mut document = idp.discovery_document();
+    document["revocation_endpoint"] = json!(format!("{}/token", idp.issuer));
+    idp.set_discovery(Reply::Json(document));
+}
+
+/// The refresh tokens revoked once `count` have been (revocation runs in
+/// the background).
+async fn revoked(idp: &TestIdp, count: usize) -> Vec<String> {
+    let revoked = || -> Vec<String> {
+        idp.token_requests()
+            .iter()
+            .filter(|request| {
+                request.form.get("token_type_hint").map(String::as_str) == Some("refresh_token")
+            })
+            .map(|request| request.form["token"].clone())
+            .collect()
+    };
+    for _ in 0..100 {
+        if revoked().len() >= count {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut tokens = revoked();
+    tokens.sort();
+    tokens
+}
+
+#[sqlx::test]
+async fn logout_works_while_the_idp_is_down(pool: PgPool) {
+    // The stored token has expired and the identity provider cannot
+    // refresh it: requests get 503, but signing out needs no identity
+    // provider, and the browser cannot clear its HttpOnly cookie itself.
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_now(&pool, &idp).await;
+    idp.set_token(Reply::Status(StatusCode::SERVICE_UNAVAILABLE));
+    idp.set_jwks(Reply::Status(StatusCode::SERVICE_UNAVAILABLE));
+    assert_eq!(
+        me_by_cookie(&app, &token).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let token_requests = idp.token_requests().len();
+    let cookie = format!("__Host-kanbot_session={token}");
+
+    // A cross-site request still cannot sign the user out.
+    let forged = Request::post("/auth/logout")
+        .header(header::COOKIE, &cookie)
+        .header(header::ORIGIN, "https://evil.example")
+        .header("x-kanbot-csrf", "1");
+    assert_eq!(send(&app, forged).await, StatusCode::FORBIDDEN);
+    assert_eq!(session_count(&pool).await, 1);
+
+    let response = logout(&app, (header::COOKIE, cookie)).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(set_cookies(&response).iter().any(|cookie| {
+        cookie.starts_with("__Host-kanbot_session=;") && cookie.contains("Max-Age=0")
+    }));
+    assert_eq!(session_count(&pool).await, 0);
+    assert_eq!(idp.token_requests().len(), token_requests, "no refresh");
+}
+
+#[sqlx::test]
+async fn logout_works_before_the_keys_load(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let ready = app(pool.clone(), &idp).await;
+    let token = web_session(&ready, &idp, "alice").await;
+    let starting = common::app_with_keys(pool.clone(), &db::MIGRATOR, idp.key_cache(&[]));
+    let bearer = (header::AUTHORIZATION, format!("Bearer {token}"));
+    assert_eq!(
+        me_by_bearer(&starting, &token).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    assert_eq!(
+        logout(&starting, bearer.clone()).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(session_count(&pool).await, 0);
+    // Signing out again: the token is just invalid now.
+    assert_eq!(
+        logout(&starting, bearer).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn a_session_signed_out_during_its_refresh_stays_signed_out(pool: PgPool) {
+    // A refresh is under way when the user signs out: the refreshed tokens
+    // are not stored, the request is refused, and the refresh token the
+    // identity provider has just rotated to is revoked too, so it does not
+    // outlive the sign-out there.
+    let idp = TestIdp::start().await;
+    revoke_at_the_token_endpoint(&idp);
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    let mut access = issued_claims(&idp.issuer, "alice", &["kanbot-user"]);
+    access["exp"] = json!(now().checked_add(900).unwrap());
+    idp.set_token(Reply::Slow(
+        Duration::from_millis(500),
+        json!({ "access_token": sign("rsa-a", &access), "refresh_token": "rotated-refresh" }),
+    ));
+    let refreshing = tokio::spawn({
+        let app = app.clone();
+        let token = token.clone();
+        async move { me_by_bearer(&app, &token).await.status() }
+    });
+    while idp.token_requests().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {token}"))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(refreshing.await.unwrap(), StatusCode::UNAUTHORIZED);
+    assert_eq!(session_count(&pool).await, 0);
+    assert_eq!(
+        revoked(&idp, 2).await,
+        ["refresh-from-idp", "rotated-refresh"]
+    );
+}
+
+#[sqlx::test]
+async fn a_refresh_that_lost_its_lease_stores_nothing(pool: PgPool) {
+    // A refresh outlasts its lease and another request takes the lease:
+    // the late answer must not overwrite what that one stores.
+    let idp = TestIdp::start().await;
+    revoke_at_the_token_endpoint(&idp);
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    let mut access = issued_claims(&idp.issuer, "alice", &["kanbot-user"]);
+    access["exp"] = json!(now().checked_add(900).unwrap());
+    idp.set_token(Reply::Slow(
+        Duration::from_millis(500),
+        json!({ "access_token": sign("rsa-a", &access), "refresh_token": "rotated-refresh" }),
+    ));
+    let refreshing = tokio::spawn({
+        let app = app.clone();
+        let token = token.clone();
+        async move { me_by_bearer(&app, &token).await.status() }
+    });
+    while idp.token_requests().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Another request's lease.
+    sqlx::query!("UPDATE sessions SET refreshing_until = now() + interval '20 seconds'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(refreshing.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(session_count(&pool).await, 1);
+    assert_eq!(stored_refresh_token(&pool).await, "refresh-from-idp");
+    assert!(leased(&pool).await, "the other lease stays");
+    assert_eq!(revoked(&idp, 1).await, ["rotated-refresh"]);
+}
+
 #[sqlx::test]
 async fn sign_in_routes_refuse_head(pool: PgPool) {
     // HEAD would run the handler: a link checker could use up a sign-in.
@@ -2043,9 +2218,45 @@ async fn a_callback_from_another_issuer_is_refused(pool: PgPool) {
 #[sqlx::test]
 async fn logout_needs_a_session(pool: PgPool) {
     let app = common::app_with_pool(pool);
+    // An identity provider's access token is checked as on every route:
+    // valid, it has no session to end.
     let jwt = common::idp::access_token("alice", &["kanbot-user"]);
     let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {jwt}"))).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let no_role = common::idp::access_token("alice", &["staff"]);
+    let response = logout(&app, (header::AUTHORIZATION, format!("Bearer {no_role}"))).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    for credentials in [
+        (header::AUTHORIZATION, "Bearer not-a-token".to_owned()),
+        (
+            header::AUTHORIZATION,
+            format!("Bearer kbs_{}", "A".repeat(43)),
+        ),
+    ] {
+        let response = logout(&app, credentials).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            r#"Bearer error="invalid_token""#
+        );
+    }
+    // A stale cookie: anonymous, and forgotten.
+    let response = logout(
+        &app,
+        (
+            header::COOKIE,
+            format!("__Host-kanbot_session=kbs_{}", "A".repeat(43)),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .any(|cookie| cookie.starts_with("__Host-kanbot_session=;"))
+    );
 }
 
 async fn send(app: &Router, request: axum::http::request::Builder) -> StatusCode {
@@ -2274,6 +2485,30 @@ async fn a_user_disabled_in_the_database_loses_every_session(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(problem(response).await["code"], "account_disabled");
     assert_eq!(session_count(&pool).await, 1, "only bob's session is left");
+}
+
+#[sqlx::test]
+async fn a_disabled_users_session_is_refused_before_any_refresh(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let token = web_session(&app, &idp, "alice").await;
+    expire_soon(&pool).await;
+    answer_refresh(&idp, "alice", &["kanbot-user"], Some("rotated-refresh"));
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE subject = 'alice'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = me_by_bearer(&app, &token).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem(response).await["code"], "account_disabled");
+    assert_eq!(
+        idp.token_requests().len(),
+        1,
+        "only the sign-in: the identity provider was not asked"
+    );
+    assert_eq!(session_count(&pool).await, 0);
 }
 
 #[sqlx::test]

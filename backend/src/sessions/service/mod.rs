@@ -14,11 +14,14 @@ pub use cleanup::{CLEANUP_BATCH, cleanup, spawn_cleanup};
 pub use login::{LoginStart, callback_url, start_login};
 pub use logout::{end_user_sessions, logout};
 pub use native::{RedeemedSession, redeem_code};
-pub use session::{SessionRefusal, SessionUser, authenticate_session, stored_access_token};
+pub use session::{
+    IdentifiedSession, SessionRefusal, SessionUser, authenticate_session, identify_session,
+    stored_access_token,
+};
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use secrecy::SecretString;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::{
     auth::{
@@ -26,7 +29,11 @@ use crate::{
         token::{LEEWAY_SECONDS, Rejection, UnverifiedToken},
     },
     error::AppError,
-    sessions::{crypto, secrets},
+    sessions::{
+        config::SessionConfig,
+        crypto::{self, Field},
+        secrets,
+    },
 };
 
 /// Largest token endpoint response read, in bytes.
@@ -84,12 +91,36 @@ async fn key_for<'t>(
     }
 }
 
-/// Seconds since the Unix epoch; a clock before 1970 fails closed (see
-/// `auth::middleware`).
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(u64::MAX, |since| since.as_secs())
+/// A session's identity provider tokens, sealed for its row.
+struct SealedTokens {
+    access: Vec<u8>,
+    refresh: Option<Vec<u8>>,
+    id: Option<Vec<u8>>,
+}
+
+/// Seals the identity provider's tokens for the session `session_id`.
+fn seal_tokens(
+    config: &SessionConfig,
+    session_id: Uuid,
+    access: &str,
+    refresh: Option<&str>,
+    id: Option<&str>,
+) -> Result<SealedTokens, crypto::CryptoError> {
+    let seal = |field: Field, value: &str| {
+        crypto::seal(
+            &config.keys,
+            session_id,
+            field,
+            &SecretString::from(value.to_owned()),
+        )
+    };
+    Ok(SealedTokens {
+        access: seal(Field::AccessToken, access)?,
+        refresh: refresh
+            .map(|token| seal(Field::RefreshToken, token))
+            .transpose()?,
+        id: id.map(|token| seal(Field::IdToken, token)).transpose()?,
+    })
 }
 
 /// The `exp` of a JWT, unverified: only to schedule the next refresh of a

@@ -324,10 +324,19 @@ pub(super) async fn config(
 )]
 pub(super) async fn logout(
     State(state): State<AppState>,
-    crate::http::extract::AuthUser(_): crate::http::extract::AuthUser,
+    // Behind `auth::middleware::identify`: a session is identified from its
+    // token alone, so that it ends while the identity provider is down;
+    // other credentials give a user and no session.
     session: Option<axum::Extension<crate::auth::middleware::CurrentSession>>,
+    user: Option<axum::Extension<crate::users::model::AuthenticatedUser>>,
 ) -> Result<Response, AppError> {
-    let axum::Extension(session) = session.ok_or(AppError::BadRequest)?;
+    let Some(axum::Extension(session)) = session else {
+        return Err(if user.is_some() {
+            AppError::BadRequest
+        } else {
+            AppError::Unauthorized
+        });
+    };
     let logout_url = service::logout(&state.db, &state.keys, &state.sessions, session.id).await?;
     let mut response = Json(LogoutResponse {
         logout_url: logout_url.map(String::from),

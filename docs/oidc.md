@@ -45,20 +45,32 @@ App exchanges the one-time code and its PKCE verifier for a kanbot session token
   with every supported IdP, including those that reject custom URL schemes
   (Authelia).
 - **IdP access and refresh tokens never reach the apps.** The backend keeps
-  them encrypted and refreshes them. Signing out or disabling a user in kanbot
-  ends their sessions immediately. Signing out also revokes the refresh token
-  at the IdP (RFC 7009) when discovery lists a `revocation_endpoint`, so an
-  offline session there ends too. Only the web app is sent to the IdP's
-  logout page, with the ID token as `id_token_hint` (it is no access token:
-  its audience is `OIDC_CLIENT_ID`, never `OIDC_AUDIENCE`); native apps sign
-  out without opening a browser.
+  them encrypted and refreshes them.
+- **Signing out** (`POST /auth/logout`) ends the session immediately. It needs
+  only the session's token (and, for the cookie, the CSRF proof), never the
+  IdP, so it works while the IdP is down or its keys have not loaded. It also
+  revokes the refresh token at the IdP (RFC 7009), best effort, when discovery
+  lists a `revocation_endpoint`, so an offline session there ends too. Only
+  the web app is sent to the IdP's logout page, with the ID token as
+  `id_token_hint` (it is no access token: its audience is `OIDC_CLIENT_ID`,
+  never `OIDC_AUDIENCE`); native apps sign out without opening a browser.
+- **Disabling a user in kanbot** (`users.disabled_at`; there is no API for it
+  yet) refuses every request of theirs from then on with `403
+  account_disabled`, bearer tokens included. Their sessions end at the first
+  request made with any of them: that request ends all of the user's
+  sessions, before anything else, so a disabled user's session never calls
+  the IdP.
 - **Refreshing** holds no database connection or lock while the IdP answers:
   one request takes a short lease and refreshes, the others keep using the
   stored token while it is valid. The refresh finishes and is stored even if
-  the request that started it goes away. Only `invalid_grant` ends a session;
-  any other refusal (a wrong client secret, an outage) is the server's
-  problem, and the session lasts until its token expires. A session the IdP
-  issued no refresh token for ends when its access token expires. While the
+  the request that started it goes away, but only while it still holds its
+  lease: if the session was signed out meanwhile (or another request took
+  over an expired lease), nothing is stored, a newly rotated refresh token is
+  revoked at the IdP, and the request is refused. Only `invalid_grant` ends a
+  session; any other refusal (a wrong client secret, an outage) is the
+  server's problem, and the session lasts until its token expires. A session
+  the IdP issued no refresh token for takes no lease, and ends when its access
+  token expires. While the
   IdP rotates its signing keys, a stored token signed with a key kanbot has
   not fetched yet gets `503`, not a sign-out.
 - **The native handoff is protected.** The one-time code is bound to the app's
@@ -191,8 +203,9 @@ needs API access, so each can be revoked on its own.
 **Recommended lifetimes:**
 
 - **Access tokens:** 5 to 15 minutes. Bearer-token callers keep access until
-  their token expires, even after being disabled at the IdP. Kanbot's own
-  sessions can be revoked immediately.
+  their token expires, even after being disabled at the IdP; so do kanbot's
+  own sessions, until their next refresh. Disabling the user in kanbot
+  refuses both at once.
 - **Refresh tokens:** these decide how long a user stays signed in, because the
   backend refreshes access tokens in the background. Set them to match your
   sign-in policy.

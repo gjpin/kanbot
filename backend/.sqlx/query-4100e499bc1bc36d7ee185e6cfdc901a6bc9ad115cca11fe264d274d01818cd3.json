@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET refreshing_until = NULL\n         WHERE id = $1 AND (extract(epoch FROM refreshing_until) * 1000000)::bigint = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4100e499bc1bc36d7ee185e6cfdc901a6bc9ad115cca11fe264d274d01818cd3"
+}

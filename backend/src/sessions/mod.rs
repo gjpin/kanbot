@@ -32,7 +32,9 @@ pub fn public_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(handlers::config))
 }
 
-/// `/auth/logout`, behind authentication.
-pub fn routes() -> OpenApiRouter<AppState> {
+/// `/auth/logout`, behind the authentication middleware's sign-out variant
+/// ([`crate::auth::middleware::identify`]), which finds a session from its
+/// token alone.
+pub fn logout_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(handlers::logout))
 }

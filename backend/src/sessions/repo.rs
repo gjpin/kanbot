@@ -190,11 +190,24 @@ pub(super) struct ActiveSession {
     pub user_subject: String,
     pub kind: String,
     pub idp_access_token: Vec<u8>,
-    /// The access token expires within the refresh window.
-    pub refresh_due: bool,
+    pub refresh: RefreshDue,
+    /// The user has been disabled.
+    pub user_disabled: bool,
     /// The idle expiry has fallen more than [`Idle::slack_seconds`] behind
     /// a full idle timeout (and is not at the absolute expiry).
     pub touch_due: bool,
+}
+
+/// Whether a session's access token is to be refreshed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RefreshDue {
+    /// It does not expire within the refresh window.
+    No,
+    /// It does, and the session has a refresh token to replace it.
+    Yes,
+    /// It does, and the session has no refresh token: nothing can replace
+    /// it.
+    WithoutRefreshToken,
 }
 
 /// The idle timeout, and how far the idle expiry may fall behind it before
@@ -215,10 +228,11 @@ pub(super) async fn find_session(
     token_hash: &[u8],
     idle: Idle,
 ) -> Result<Option<ActiveSession>, sqlx::Error> {
-    sqlx::query_as!(
-        ActiveSession,
+    let row = sqlx::query!(
         r#"SELECT s.id, s.user_id, u.subject AS user_subject, s.kind, s.idp_access_token,
+                  s.idp_refresh_token IS NOT NULL AS "refreshable!",
                   s.access_expires_at < now() + make_interval(secs => $2) AS "refresh_due!",
+                  u.disabled_at IS NOT NULL AS "user_disabled!",
                   s.idle_expires_at < LEAST(now() + make_interval(secs => $3)
                                               - make_interval(secs => $4),
                                             s.absolute_expires_at) AS "touch_due!"
@@ -232,7 +246,21 @@ pub(super) async fn find_session(
         idle.slack_seconds,
     )
     .fetch_optional(db)
-    .await
+    .await?;
+    Ok(row.map(|row| ActiveSession {
+        id: row.id,
+        user_id: row.user_id,
+        user_subject: row.user_subject,
+        kind: row.kind,
+        idp_access_token: row.idp_access_token,
+        refresh: match (row.refresh_due, row.refreshable) {
+            (false, _) => RefreshDue::No,
+            (true, true) => RefreshDue::Yes,
+            (true, false) => RefreshDue::WithoutRefreshToken,
+        },
+        user_disabled: row.user_disabled,
+        touch_due: row.touch_due,
+    }))
 }
 
 /// Records use: `last_used_at` now, and the idle expiry moved forward to a
@@ -261,34 +289,61 @@ pub(super) async fn touch_session(db: &PgPool, id: Uuid, idle: Idle) -> Result<(
 /// the identity provider's timeouts (token endpoint, then keys).
 pub(super) const REFRESH_LEASE_SECONDS: f64 = 30.0;
 
-/// Takes the session's refresh lease, if its access token is still due and
-/// no one else holds the lease. Returns the sealed refresh token (`None`
-/// inside when there is none), or `None` when the lease was not taken.
+/// A refresh lease one request holds: its `refreshing_until`, in
+/// microseconds since the Unix epoch (the column's precision). Only that
+/// claim set this value, so a session whose `refreshing_until` still has it
+/// is still leased to that request: not ended, and not claimed again by
+/// another request once the lease ran out.
+#[derive(Clone, Copy)]
+pub(super) struct RefreshLease(i64);
+
+/// A refresh lease taken, and the sealed refresh token to refresh with.
+pub(super) struct ClaimedRefresh {
+    pub lease: RefreshLease,
+    pub refresh_token: Vec<u8>,
+}
+
+/// Takes the session's refresh lease, if it has a refresh token, its
+/// access token is still due, and no one else holds the lease. `None` when
+/// the lease was not taken.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
 pub(super) async fn claim_refresh(
     db: &PgPool,
     id: Uuid,
-) -> Result<Option<Option<Vec<u8>>>, sqlx::Error> {
-    sqlx::query_scalar!(
-        "UPDATE sessions SET refreshing_until = now() + make_interval(secs => $3)
-         WHERE id = $1
-           AND access_expires_at < now() + make_interval(secs => $2)
-           AND (refreshing_until IS NULL OR refreshing_until < now())
-         RETURNING idp_refresh_token",
+) -> Result<Option<ClaimedRefresh>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"UPDATE sessions SET refreshing_until = now() + make_interval(secs => $3)
+           WHERE id = $1
+             AND idp_refresh_token IS NOT NULL
+             AND access_expires_at < now() + make_interval(secs => $2)
+             AND (refreshing_until IS NULL OR refreshing_until < now())
+           RETURNING idp_refresh_token AS "refresh_token!",
+                     (extract(epoch FROM refreshing_until) * 1000000)::bigint AS "lease!""#,
         id,
         REFRESH_WINDOW_SECONDS,
         REFRESH_LEASE_SECONDS,
     )
     .fetch_optional(db)
-    .await
+    .await?;
+    Ok(row.map(|row| ClaimedRefresh {
+        lease: RefreshLease(row.lease),
+        refresh_token: row.refresh_token,
+    }))
 }
 
-/// Gives the refresh lease back without new tokens.
+/// Gives the refresh lease back without new tokens, if it is still this
+/// one.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
-pub(super) async fn release_refresh(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub(super) async fn release_refresh(
+    db: &PgPool,
+    id: Uuid,
+    lease: RefreshLease,
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "UPDATE sessions SET refreshing_until = NULL WHERE id = $1",
-        id
+        "UPDATE sessions SET refreshing_until = NULL
+         WHERE id = $1 AND (extract(epoch FROM refreshing_until) * 1000000)::bigint = $2",
+        id,
+        lease.0,
     )
     .execute(db)
     .await?;
@@ -312,35 +367,47 @@ pub(super) async fn live_session_access_token(
     .await
 }
 
-/// Stores refreshed tokens and gives the lease back. `None` keeps the
-/// stored value (an identity provider that does not rotate refresh tokens,
-/// or sends no new ID token).
+/// Refreshed tokens to store, sealed. `None` keeps the stored value (an
+/// identity provider that does not rotate refresh tokens, or sends no new
+/// ID token).
+pub(super) struct Refreshed<'a> {
+    pub access_token: &'a [u8],
+    pub refresh_token: Option<&'a [u8]>,
+    pub id_token: Option<&'a [u8]>,
+    /// The access token's `exp`, in seconds since the Unix epoch.
+    pub access_expires_at: i64,
+}
+
+/// Stores refreshed tokens and gives the lease back, if the session still
+/// exists and `lease` is still its lease. `false` otherwise: the session
+/// has ended (signed out) or another request has taken the lease since,
+/// and nothing was stored.
 #[tracing::instrument(skip_all, fields(session.id = %id))]
 pub(super) async fn store_refreshed(
     db: &PgPool,
     id: Uuid,
-    access_token: &[u8],
-    refresh_token: Option<&[u8]>,
-    id_token: Option<&[u8]>,
-    access_expires_at: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+    lease: RefreshLease,
+    tokens: &Refreshed<'_>,
+) -> Result<bool, sqlx::Error> {
+    let stored = sqlx::query!(
         "UPDATE sessions
-         SET idp_access_token = $2,
-             idp_refresh_token = COALESCE($3, idp_refresh_token),
-             idp_id_token = COALESCE($4, idp_id_token),
-             access_expires_at = to_timestamp($5::bigint),
+         SET idp_access_token = $3,
+             idp_refresh_token = COALESCE($4, idp_refresh_token),
+             idp_id_token = COALESCE($5, idp_id_token),
+             access_expires_at = to_timestamp($6::bigint),
              refreshing_until = NULL
-         WHERE id = $1",
+         WHERE id = $1 AND (extract(epoch FROM refreshing_until) * 1000000)::bigint = $2",
         id,
-        access_token,
-        refresh_token,
-        id_token,
-        access_expires_at,
+        lease.0,
+        tokens.access_token,
+        tokens.refresh_token,
+        tokens.id_token,
+        tokens.access_expires_at,
     )
     .execute(db)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    Ok(stored == 1)
 }
 
 /// What a deleted session leaves for signing out at the identity

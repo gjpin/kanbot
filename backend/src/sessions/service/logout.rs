@@ -38,20 +38,17 @@ pub async fn logout(
         return Ok(None);
     };
     tracing::info!(session.id = %session_id, "signed out");
-    let discovery = keys.discovery();
-    if let (Some(sealed), Some(endpoint)) = (
-        deleted.idp_refresh_token.as_deref(),
-        discovery
-            .as_ref()
-            .and_then(|discovery| discovery.revocation_endpoint.clone()),
-    ) && let Ok(token) = crypto::open(&config.keys, session_id, Field::RefreshToken, sealed)
+    if let Some(sealed) = deleted.idp_refresh_token.as_deref()
+        && let Ok(token) = crypto::open(&config.keys, session_id, Field::RefreshToken, sealed)
     {
-        revoke_in_background(keys, config, endpoint, token, session_id);
+        revoke_in_background(keys, config, token, session_id);
     }
     if Platform::parse(&deleted.kind) == Some(Platform::Native) {
         return Ok(None);
     }
-    let Some(mut url) = discovery.and_then(|discovery| discovery.end_session_endpoint.clone())
+    let Some(mut url) = keys
+        .discovery()
+        .and_then(|discovery| discovery.end_session_endpoint.clone())
     else {
         return Ok(None);
     };
@@ -70,15 +67,21 @@ pub async fn logout(
     Ok(Some(url))
 }
 
-/// Revokes `refresh_token` at `endpoint`, best effort: one call, bounded by
-/// the identity provider client's timeouts, not awaited by the sign-out.
-fn revoke_in_background(
+/// Revokes `refresh_token` (RFC 7009) when discovery lists a
+/// `revocation_endpoint`, best effort: one call, bounded by the identity
+/// provider client's timeouts, not awaited by the caller.
+pub(super) fn revoke_in_background(
     keys: &KeyCache,
     config: &SessionConfig,
-    endpoint: Url,
     refresh_token: SecretString,
     session_id: Uuid,
 ) {
+    let Some(endpoint) = keys
+        .discovery()
+        .and_then(|discovery| discovery.revocation_endpoint.clone())
+    else {
+        return;
+    };
     let client = keys.client().clone();
     let client_id = config.client_id.clone();
     let client_secret = config.client_secret.clone();

@@ -5,9 +5,14 @@ use secrecy::{ExposeSecret, SecretString};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{MAX_TOKEN_RESPONSE_BYTES, TokenResponse, callback_url, key_for, now, stored_expiry};
+use super::{
+    MAX_TOKEN_RESPONSE_BYTES, TokenResponse, callback_url, key_for, seal_tokens, stored_expiry,
+};
 use crate::{
-    auth::{keys::KeyCache, token::Rejection},
+    auth::{
+        keys::KeyCache,
+        token::{Rejection, now},
+    },
     error::AppError,
     sessions::{
         config::SessionConfig,
@@ -298,25 +303,13 @@ async fn create_session(
     access_expires_at: u64,
 ) -> Result<(Uuid, Option<secrets::Issued>), AppError> {
     let session_id = Uuid::new_v4();
-    let seal = |field: Field, value: &str| {
-        crypto::seal(
-            &config.keys,
-            session_id,
-            field,
-            &SecretString::from(value.to_owned()),
-        )
-    };
-    let access = seal(Field::AccessToken, &tokens.access)?;
-    let refresh = tokens
-        .refresh
-        .as_deref()
-        .map(|token| seal(Field::RefreshToken, token))
-        .transpose()?;
-    let id = tokens
-        .id
-        .as_deref()
-        .map(|token| seal(Field::IdToken, token))
-        .transpose()?;
+    let sealed = seal_tokens(
+        config,
+        session_id,
+        &tokens.access,
+        tokens.refresh.as_deref(),
+        tokens.id.as_deref(),
+    )?;
     let session_token = match platform {
         Platform::Web => Some(secrets::issue(secrets::SESSION_TOKEN)?),
         Platform::Native => None,
@@ -328,9 +321,9 @@ async fn create_session(
             token_hash: session_token.as_ref().map(|token| token.hash.as_slice()),
             user_id,
             kind: platform.as_str(),
-            access_token: &access,
-            refresh_token: refresh.as_deref(),
-            id_token: id.as_deref(),
+            access_token: &sealed.access,
+            refresh_token: sealed.refresh.as_deref(),
+            id_token: sealed.id.as_deref(),
             access_expires_at: stored_expiry(access_expires_at),
             idle_seconds: config.idle_timeout.as_secs_f64(),
             absolute_seconds: config.absolute_timeout.as_secs_f64(),

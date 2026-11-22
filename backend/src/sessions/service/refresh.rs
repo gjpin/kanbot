@@ -9,20 +9,21 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use super::{
-    KeyFailure, MAX_TOKEN_RESPONSE_BYTES, SessionRefusal, TokenResponse, key_for, now,
-    session::verify_stored, stored_expiry, unverified_expiry,
+    KeyFailure, MAX_TOKEN_RESPONSE_BYTES, SessionRefusal, TokenResponse, key_for,
+    logout::revoke_in_background, seal_tokens, session::verify_stored, stored_expiry,
+    unverified_expiry,
 };
 use crate::{
     auth::{
         discovery::{FetchError, OAuthError},
         keys::KeyCache,
-        token::Rejection,
+        token::{Rejection, now},
     },
     error::AppError,
     sessions::{
         config::SessionConfig,
         crypto::{self, Field},
-        repo,
+        repo::{self, RefreshLease},
     },
 };
 
@@ -36,9 +37,6 @@ enum RefreshFailure {
     /// The identity provider ended the grant (`invalid_grant`), or the
     /// refresh token cannot be opened: the session is over.
     Ended,
-    /// No refresh token was issued: the stored token lasts until it
-    /// expires.
-    NoRefreshToken,
     /// The identity provider failed or refused for another reason
     /// (misconfiguration, outage): try again later.
     Failed,
@@ -55,12 +53,18 @@ enum RefreshFailure {
 /// request timed out) does not lose a rotated refresh token the identity
 /// provider has already issued. The task is bounded by the identity
 /// provider client's timeouts.
+///
+/// A session without a refresh token takes no lease: there is nothing to
+/// refresh with.
 pub(super) async fn refresh(
     db: &PgPool,
     keys: &Arc<KeyCache>,
     config: &Arc<SessionConfig>,
     session: &repo::ActiveSession,
 ) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    if session.refresh == repo::RefreshDue::WithoutRefreshToken {
+        return without_refresh_token(db, keys, config, session).await;
+    }
     let claimed = tokio::spawn(
         claim_and_refresh(
             db.clone(),
@@ -80,6 +84,24 @@ pub(super) async fn refresh(
     }
 }
 
+/// A due token that no refresh token can replace: it is used until it
+/// fails (it has expired), and then the session is over.
+async fn without_refresh_token(
+    db: &PgPool,
+    keys: &KeyCache,
+    config: &SessionConfig,
+    session: &repo::ActiveSession,
+) -> Result<crate::auth::token::Principal, SessionRefusal> {
+    let id = session.id;
+    let verified = verify_stored(keys, config, id, &session.idp_access_token).await;
+    if matches!(verified, Err(SessionRefusal::Invalid)) {
+        repo::delete_session(db, id).await?;
+        tracing::info!(session.id = %id, "session ended: token failed, no refresh token");
+        return Err(SessionRefusal::Ended);
+    }
+    verified
+}
+
 /// Takes the refresh lease and refreshes; `None` if another request holds
 /// the lease or has just refreshed.
 async fn claim_and_refresh(
@@ -89,9 +111,7 @@ async fn claim_and_refresh(
     session: repo::ActiveSession,
 ) -> Option<Result<crate::auth::token::Principal, SessionRefusal>> {
     match repo::claim_refresh(&db, session.id).await {
-        Ok(Some(sealed_refresh)) => {
-            Some(refresh_claimed(&db, &keys, &config, &session, sealed_refresh).await)
-        }
+        Ok(Some(claimed)) => Some(refresh_claimed(&db, &keys, &config, &session, claimed).await),
         Ok(None) => None,
         Err(error) => Some(Err(error.into())),
     }
@@ -103,40 +123,29 @@ async fn refresh_claimed(
     keys: &KeyCache,
     config: &SessionConfig,
     session: &repo::ActiveSession,
-    sealed_refresh: Option<Vec<u8>>,
+    claimed: repo::ClaimedRefresh,
 ) -> Result<crate::auth::token::Principal, SessionRefusal> {
     let id = session.id;
-    let tokens = match sealed_refresh.as_deref() {
-        Some(sealed) => request_refresh(keys, config, id, sealed).await,
-        None => Err(RefreshFailure::NoRefreshToken),
-    };
-    match tokens {
+    let lease = claimed.lease;
+    match request_refresh(keys, config, id, &claimed.refresh_token).await {
         Ok((tokens, refresh_token)) => {
-            let reseal = sealed_refresh
-                .as_deref()
-                .is_some_and(|sealed| !crypto::sealed_with_current(&config.keys, sealed));
+            let reseal = !crypto::sealed_with_current(&config.keys, &claimed.refresh_token);
             let kept_refresh = (tokens.refresh.is_none() && reseal).then_some(refresh_token);
-            finish_refresh(db, keys, config, session, &tokens, kept_refresh).await
+            let refreshed = Refreshed {
+                session_id: id,
+                lease,
+                tokens: &tokens,
+                kept_refresh,
+            };
+            finish_refresh(db, keys, config, session, &refreshed).await
         }
         Err(RefreshFailure::Ended) => {
             repo::delete_session(db, id).await?;
             tracing::info!(session.id = %id, "session ended: refresh refused");
             Err(SessionRefusal::Ended)
         }
-        Err(RefreshFailure::NoRefreshToken) => {
-            // Nothing can replace the stored token: once it fails (it has
-            // expired), the session is over.
-            let verified = verify_stored(keys, config, id, &session.idp_access_token).await;
-            if matches!(verified, Err(SessionRefusal::Invalid)) {
-                repo::delete_session(db, id).await?;
-                tracing::info!(session.id = %id, "session ended: token failed, no refresh token");
-                return Err(SessionRefusal::Ended);
-            }
-            repo::release_refresh(db, id).await?;
-            verified
-        }
         Err(RefreshFailure::Failed) => {
-            repo::release_refresh(db, id).await?;
+            repo::release_refresh(db, id, lease).await?;
             // The stored token may still be valid for a few seconds.
             verify_stored(keys, config, id, &session.idp_access_token)
                 .await
@@ -217,18 +226,27 @@ async fn request_refresh(
     }
 }
 
-/// Checks the refreshed tokens and stores them. `kept_refresh` is the
-/// refresh token to store again when it was not rotated but is sealed with
-/// an old key.
+/// The identity provider's answer to a refresh, to store.
+struct Refreshed<'t> {
+    session_id: Uuid,
+    /// The lease the refresh ran under.
+    lease: RefreshLease,
+    tokens: &'t TokenResponse,
+    /// The refresh token to store again when it was not rotated but is
+    /// sealed with an old key.
+    kept_refresh: Option<SecretString>,
+}
+
+/// Checks the refreshed tokens and stores them.
 async fn finish_refresh(
     db: &PgPool,
     keys: &KeyCache,
     config: &SessionConfig,
     session: &repo::ActiveSession,
-    tokens: &TokenResponse,
-    kept_refresh: Option<SecretString>,
+    refreshed: &Refreshed<'_>,
 ) -> Result<crate::auth::token::Principal, SessionRefusal> {
     let id = session.id;
+    let tokens = refreshed.tokens;
     let principal = match key_for(keys, &tokens.access).await {
         Ok((unverified, key)) => unverified.verify(&key, keys.config(), now()),
         // The keys are not loaded, or not refreshed yet for a new key:
@@ -236,7 +254,7 @@ async fn finish_refresh(
         // again shortly. Dropping them could lose a rotated refresh token.
         Err(KeyFailure::NotLoaded | KeyFailure::Rejected(Rejection::UnknownKey)) => {
             let expires_at = unverified_expiry(&tokens.access).unwrap_or_else(now);
-            store_refreshed(db, config, id, tokens, None, kept_refresh, expires_at).await?;
+            store_refreshed(db, keys, config, refreshed, None, expires_at).await?;
             tracing::warn!(session.id = %id, "refreshed token cannot be checked yet");
             return Err(SessionRefusal::Error(AppError::Unavailable));
         }
@@ -260,16 +278,7 @@ async fn finish_refresh(
         }
     };
     let id_token = verified_id_token(keys, config, tokens.id.as_deref()).await;
-    store_refreshed(
-        db,
-        config,
-        id,
-        tokens,
-        id_token,
-        kept_refresh,
-        principal.expires_at,
-    )
-    .await?;
+    store_refreshed(db, keys, config, refreshed, id_token, principal.expires_at).await?;
     tracing::info!(session.id = %id, "session refreshed");
     Ok(principal)
 }
@@ -292,40 +301,62 @@ async fn verified_id_token<'t>(
 
 /// Seals and stores refreshed tokens, keeping the stored refresh and ID
 /// tokens when there are no new ones, and gives the lease back.
+///
+/// Nothing is stored if the session ended meanwhile (signed out) or the
+/// lease ran out and another request took it: a rotated refresh token is
+/// then revoked, best effort, so that it does not outlive the session at
+/// the identity provider. The request is refused: [`SessionRefusal::Invalid`]
+/// for a session that is gone, `503` for one refreshed by another request.
 async fn store_refreshed(
     db: &PgPool,
+    keys: &KeyCache,
     config: &SessionConfig,
-    session_id: Uuid,
-    tokens: &TokenResponse,
+    refreshed: &Refreshed<'_>,
     id_token: Option<&str>,
-    kept_refresh: Option<SecretString>,
     access_expires_at: u64,
-) -> Result<(), AppError> {
-    let seal = |field: Field, value: &str| {
-        crypto::seal(
-            &config.keys,
-            session_id,
-            field,
-            &SecretString::from(value.to_owned()),
-        )
-    };
-    let access = seal(Field::AccessToken, &tokens.access)?;
-    let refresh = match (tokens.refresh.as_deref(), kept_refresh) {
-        (Some(rotated), _) => Some(seal(Field::RefreshToken, rotated)?),
-        (None, Some(kept)) => Some(seal(Field::RefreshToken, kept.expose_secret())?),
+) -> Result<(), SessionRefusal> {
+    let session_id = refreshed.session_id;
+    let tokens = refreshed.tokens;
+    let refresh = match (tokens.refresh.as_deref(), &refreshed.kept_refresh) {
+        (Some(rotated), _) => Some(rotated),
+        (None, Some(kept)) => Some(kept.expose_secret()),
         (None, None) => None,
     };
-    let id = id_token
-        .map(|token| seal(Field::IdToken, token))
-        .transpose()?;
-    repo::store_refreshed(
+    let sealed = seal_tokens(config, session_id, &tokens.access, refresh, id_token)
+        .map_err(AppError::from)?;
+    let stored = repo::store_refreshed(
         db,
         session_id,
-        &access,
-        refresh.as_deref(),
-        id.as_deref(),
-        stored_expiry(access_expires_at),
+        refreshed.lease,
+        &repo::Refreshed {
+            access_token: &sealed.access,
+            refresh_token: sealed.refresh.as_deref(),
+            id_token: sealed.id.as_deref(),
+            access_expires_at: stored_expiry(access_expires_at),
+        },
     )
     .await?;
-    Ok(())
+    if stored {
+        return Ok(());
+    }
+    // A refresh token that was not rotated is the stored one: whoever
+    // ended the session revoked it, or another request uses it.
+    if let Some(rotated) = tokens.refresh.as_deref() {
+        revoke_in_background(
+            keys,
+            config,
+            SecretString::from(rotated.to_owned()),
+            session_id,
+        );
+    }
+    if repo::live_session_access_token(db, session_id)
+        .await?
+        .is_some()
+    {
+        tracing::warn!(session.id = %session_id, "refresh outlasted its lease: not stored");
+        Err(SessionRefusal::Error(AppError::Unavailable))
+    } else {
+        tracing::info!(session.id = %session_id, "session ended during its refresh: not stored");
+        Err(SessionRefusal::Invalid)
+    }
 }
