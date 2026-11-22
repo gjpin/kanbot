@@ -2,6 +2,7 @@ import 'package:kanbot/data/api/generated/kanbot_api.dart' as api;
 import 'package:kanbot/data/repositories/api_result.dart';
 import 'package:kanbot/data/repositories/mappers.dart';
 import 'package:kanbot/data/services/api_connection.dart';
+import 'package:kanbot/domain/models/list_page.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/domain/models/user.dart';
 import 'package:kanbot/utils/result.dart';
@@ -16,11 +17,16 @@ class OrganizationsRepository {
 
   api.OrganizationsClient get _client => _connection.api.organizations;
 
-  Future<Result<List<OrganizationSummary>>> list() => apiResult(
-    () async => (await _client.listOrganizations())
-        .map(organizationSummaryFrom)
-        .toList(),
-  );
+  /// A page of the organizations the user may read, after [after] (a
+  /// previous page's `next`).
+  Future<Result<ListPage<OrganizationSummary>>> list({String? after}) =>
+      apiResult(() async {
+        final page = await _client.listOrganizations(after: after);
+        return ListPage(
+          items: page.organizations.map(organizationSummaryFrom).toList(),
+          next: page.next,
+        );
+      });
 
   Future<Result<Organization>> get(String id) => apiResult(
     () async => organizationFrom(await _client.getOrganization(id: id)),

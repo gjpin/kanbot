@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/data/services/api_exception.dart';
+import 'package:kanbot/domain/models/list_page.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/routing/router.dart';
@@ -320,7 +321,8 @@ class AccessSelect extends StatelessWidget {
 class LinkTeamDialog extends StatefulWidget {
   const LinkTeamDialog({super.key, required this.teams});
 
-  final Future<Result<List<TeamSummary>>> Function() teams;
+  /// A page of the teams to choose from, after a previous page's `next`.
+  final Future<Result<ListPage<TeamSummary>>> Function({String? after}) teams;
 
   @override
   State<LinkTeamDialog> createState() => _LinkTeamDialogState();
@@ -328,6 +330,9 @@ class LinkTeamDialog extends StatefulWidget {
 
 class _LinkTeamDialogState extends State<LinkTeamDialog> {
   Loadable<List<TeamSummary>> _teams = const Loading();
+  String? _next;
+  bool _loadingMore = false;
+  Exception? _moreError;
   String? _team;
   Access _access = Access.read;
 
@@ -338,15 +343,49 @@ class _LinkTeamDialogState extends State<LinkTeamDialog> {
   }
 
   Future<void> _load() async {
-    setState(() => _teams = const Loading());
+    setState(() {
+      _teams = const Loading();
+      _next = null;
+      _moreError = null;
+    });
     final result = await widget.teams();
     if (!mounted) return;
-    setState(
-      () => _teams = switch (result) {
-        Ok(:final value) => Loaded(value),
-        Failure(:final error) => LoadFailed(error),
-      },
-    );
+    setState(() {
+      switch (result) {
+        case Ok(:final value):
+          _teams = Loaded(value.items);
+          _next = value.next;
+        case Failure(:final error):
+          _teams = LoadFailed(error);
+      }
+    });
+  }
+
+  /// Adds the next page of teams to the choice.
+  Future<void> _loadMore() async {
+    final after = _next;
+    final current = _teams;
+    if (_loadingMore ||
+        after == null ||
+        current is! Loaded<List<TeamSummary>>) {
+      return;
+    }
+    setState(() {
+      _loadingMore = true;
+      _moreError = null;
+    });
+    final result = await widget.teams(after: after);
+    if (!mounted) return;
+    setState(() {
+      _loadingMore = false;
+      switch (result) {
+        case Ok(:final value):
+          _teams = Loaded([...current.value, ...value.items]);
+          _next = value.next;
+        case Failure(:final error):
+          _moreError = error;
+      }
+    });
   }
 
   @override
@@ -387,6 +426,12 @@ class _LinkTeamDialogState extends State<LinkTeamDialog> {
                 ),
                 onChanged: (id) => setState(() => _team = id),
               ),
+              if (_moreError case final error?) ErrorPanel(error: error),
+              if (_next != null)
+                ShadButton.ghost(
+                  onPressed: _loadingMore ? null : _loadMore,
+                  child: const Text(Messages.moreTeams),
+                ),
               AccessSelect(
                 value: _access,
                 onChanged: (access) => setState(() => _access = access),

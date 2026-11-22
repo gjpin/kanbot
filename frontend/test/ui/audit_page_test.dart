@@ -60,7 +60,7 @@ void main() {
   testWidgets('others are refused by the server', (tester) async {
     final backend = FakeBackend()
       ..on('GET', '/audit', problem(403, 'forbidden'), status: 403)
-      ..on('GET', '/organizations', <Object?>[]);
+      ..on('GET', '/organizations', organizationPage([]));
     await pumpApp(tester, await signedIn(backend), location: Routes.audit);
     expect(find.text('You are not allowed to do that.'), findsOneWidget);
     await tester.tap(find.text(Messages.organizations));

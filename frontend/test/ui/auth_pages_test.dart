@@ -166,7 +166,7 @@ void main() {
           'expires_at': '2026-12-21T00:00:00Z',
         })
         ..on('GET', '/me', me())
-        ..on('GET', '/organizations', <Object?>[]);
+        ..on('GET', '/organizations', organizationPage([]));
 
       await tester.tap(find.widgetWithText(ShadButton, Messages.signIn));
       await tester.pumpAndSettle();
@@ -195,7 +195,7 @@ void main() {
       backend
         ..on('GET', '/auth/config', authConfig())
         ..on('GET', '/me', me())
-        ..on('GET', '/organizations', <Object?>[]);
+        ..on('GET', '/organizations', organizationPage([]));
       await tester.tap(find.text(Messages.retry));
       await tester.pumpAndSettle();
       expect(dependencies.auth.status, AuthStatus.signedIn);

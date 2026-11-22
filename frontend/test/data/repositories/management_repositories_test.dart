@@ -32,9 +32,13 @@ void main() {
   group('organizations', () {
     test('lists and reads, with permissions', () async {
       backend
-        ..on('GET', '/organizations', [
-          {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
-        ])
+        ..on(
+          'GET',
+          '/organizations',
+          organizationPage([
+            {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
+          ], next: 'acme'),
+        )
         ..on(
           'GET',
           '/organizations/$orgId',
@@ -50,7 +54,18 @@ void main() {
         );
       final repository = testDependencies(backend: backend).organizations;
 
-      expect(ok(await repository.list()).single.name, 'Acme');
+      final page = ok(await repository.list());
+      expect(page.items.single.name, 'Acme');
+      expect(page.next, 'acme');
+      // The first page: no cursor.
+      expect(
+        backend.sent('GET', '/organizations').single.url.queryParameters,
+        isEmpty,
+      );
+      ok(await repository.list(after: 'acme'));
+      expect(backend.sent('GET', '/organizations').last.url.queryParameters, {
+        'after': 'acme',
+      });
       final read = ok(await repository.get(orgId));
       expect(read.permissions, {
         OrganizationPermission.write,
@@ -183,7 +198,11 @@ void main() {
   group('teams', () {
     test('reads teams and members', () async {
       backend
-        ..on('GET', '/teams', [teamSummary(idpGroup: 'platform-team')])
+        ..on(
+          'GET',
+          '/teams',
+          teamPage([teamSummary(idpGroup: 'platform-team')]),
+        )
         ..on(
           'GET',
           '/teams/$teamId',
@@ -199,7 +218,12 @@ void main() {
         );
       final repository = testDependencies(backend: backend).teams;
 
-      expect(ok(await repository.list()).single.idpGroup, 'platform-team');
+      final teams = ok(await repository.list(after: 'ops'));
+      expect(teams.items.single.idpGroup, 'platform-team');
+      expect(teams.next, isNull);
+      expect(backend.sent('GET', '/teams').single.url.queryParameters, {
+        'after': 'ops',
+      });
       expect(ok(await repository.get(teamId)).permissions, {
         TeamPermission.manage,
         TeamPermission.manageMembers,

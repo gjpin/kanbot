@@ -100,6 +100,8 @@ abstract final class Messages {
   static const String members = 'Members';
   static const String addMember = 'Add member';
   static const String moreMembers = 'More members';
+  static const String moreTeams = 'More teams';
+  static const String moreOrganizations = 'More organizations';
   static const String member = 'Member';
   static const String maintainer = 'Maintainer';
   static const String fromIdentityProvider = 'From identity provider';

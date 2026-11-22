@@ -1,5 +1,6 @@
 import 'package:kanbot/data/repositories/organizations_repository.dart';
 import 'package:kanbot/data/repositories/teams_repository.dart';
+import 'package:kanbot/domain/models/list_page.dart';
 import 'package:kanbot/domain/models/organization.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/domain/models/user.dart';
@@ -93,6 +94,7 @@ class OrganizationViewModel extends ViewModel {
   Future<Result<Organization>> unlinkOpenShellWorkspace() =>
       _change(_organizations.unlinkOpenShellWorkspace(id));
 
-  /// The teams the user can see, to choose one to link.
-  Future<Result<List<TeamSummary>>> teams() => _teams.list();
+  /// A page of the teams the user can see, to choose one to link.
+  Future<Result<ListPage<TeamSummary>>> teams({String? after}) =>
+      _teams.list(after: after);
 }

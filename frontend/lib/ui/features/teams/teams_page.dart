@@ -7,7 +7,9 @@ import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/domain/models/user.dart';
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/app_page.dart';
+import 'package:kanbot/ui/core/loadable.dart';
 import 'package:kanbot/ui/core/messages.dart';
+import 'package:kanbot/ui/core/more_footer.dart';
 import 'package:kanbot/ui/core/name_dialog.dart';
 import 'package:kanbot/ui/features/teams/teams_view_model.dart';
 import 'package:shad/shad.dart';
@@ -53,43 +55,53 @@ class _TeamsPageState extends State<TeamsPage> {
   @override
   Widget build(BuildContext context) {
     final user = widget.dependencies.auth.user;
-    return AppPage(
-      user: user,
-      title: Messages.teams,
-      actions: [
-        if (user != null && user.can(PlatformPermission.createTeam))
-          ShadButton(
-            onPressed: _create,
-            leading: const Icon(LucideIcons.plus, size: 16),
-            child: const Text(Messages.newTeam),
-          ),
-      ],
-      child: ListenableBuilder(
-        listenable: _viewModel,
-        builder: (context, _) => LoadableView(
-          loadable: _viewModel.teams,
-          onRetry: _viewModel.load,
-          builder: (context, teams) => teams.isEmpty
-              ? const Text(Messages.nothingHere)
-              : ShadColumn(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  spacing: 2,
-                  children: [
-                    for (final team in teams)
-                      ShadButton.outline(
-                        mainAxisAlignment: MainAxisAlignment.start,
-                        onPressed: () => context.go(Routes.team(team.id)),
-                        trailing: team.idpGroup == null
-                            ? null
-                            : const ShadBadge.secondary(
-                                child: Text(Messages.fromIdentityProvider),
-                              ),
-                        child: Text(team.name),
-                      ),
-                  ],
-                ),
-        ),
-      ),
+    return ListenableBuilder(
+      listenable: _viewModel,
+      builder: (context, _) {
+        final loadable = _viewModel.teams;
+        final teams = switch (loadable) {
+          Loaded(:final value) => value,
+          _ => const <TeamSummary>[],
+        };
+        return AppPage(
+          user: user,
+          title: Messages.teams,
+          actions: [
+            if (user != null && user.can(PlatformPermission.createTeam))
+              ShadButton(
+                onPressed: _create,
+                leading: const Icon(LucideIcons.plus, size: 16),
+                child: const Text(Messages.newTeam),
+              ),
+          ],
+          itemCount: teams.length,
+          itemBuilder: (context, index) {
+            final team = teams[index];
+            return ShadButton.outline(
+              mainAxisAlignment: MainAxisAlignment.start,
+              onPressed: () => context.go(Routes.team(team.id)),
+              trailing: team.idpGroup == null
+                  ? null
+                  : const ShadBadge.secondary(
+                      child: Text(Messages.fromIdentityProvider),
+                    ),
+              child: Text(team.name),
+            );
+          },
+          footer: moreFooter(_viewModel, Messages.moreTeams),
+          // Loading, a failure, or nothing yet; the teams are built
+          // lazily below, as the list can grow long.
+          child: switch (loadable) {
+            Loaded(value: []) => const Text(Messages.nothingHere),
+            Loaded() => const SizedBox.shrink(),
+            _ => LoadableView(
+              loadable: loadable,
+              onRetry: _viewModel.load,
+              builder: (context, _) => const SizedBox.shrink(),
+            ),
+          },
+        );
+      },
     );
   }
 }

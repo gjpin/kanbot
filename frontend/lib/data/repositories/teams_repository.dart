@@ -2,6 +2,7 @@ import 'package:kanbot/data/api/generated/kanbot_api.dart' as api;
 import 'package:kanbot/data/repositories/api_result.dart';
 import 'package:kanbot/data/repositories/mappers.dart';
 import 'package:kanbot/data/services/api_connection.dart';
+import 'package:kanbot/domain/models/list_page.dart';
 import 'package:kanbot/domain/models/team.dart';
 import 'package:kanbot/utils/result.dart';
 
@@ -14,9 +15,16 @@ class TeamsRepository {
 
   api.TeamsClient get _client => _connection.api.teams;
 
-  Future<Result<List<TeamSummary>>> list() => apiResult(
-    () async => (await _client.listTeams()).map(teamSummaryFrom).toList(),
-  );
+  /// A page of the teams the user may see, after [after] (a previous
+  /// page's `next`).
+  Future<Result<ListPage<TeamSummary>>> list({String? after}) =>
+      apiResult(() async {
+        final page = await _client.listTeams(after: after);
+        return ListPage(
+          items: page.teams.map(teamSummaryFrom).toList(),
+          next: page.next,
+        );
+      });
 
   Future<Result<Team>> get(String id) =>
       apiResult(() async => teamFrom(await _client.getTeam(id: id)));

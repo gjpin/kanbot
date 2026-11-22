@@ -252,7 +252,8 @@ void main() {
 
   group('signed in', () {
     Future<FakeBackend> pump(WidgetTester tester, String location) async {
-      final backend = FakeBackend()..on('GET', '/organizations', <Object?>[]);
+      final backend = FakeBackend()
+        ..on('GET', '/organizations', organizationPage([]));
       final dependencies = await signedIn(backend);
       await tester.pumpWidget(
         KanbotApp(

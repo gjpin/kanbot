@@ -135,7 +135,8 @@ void main() {
   }
 
   test('a ViewModel disposed while loading does not notify', () async {
-    final backend = FakeBackend()..on('GET', '/organizations', <Object?>[]);
+    final backend = FakeBackend()
+      ..on('GET', '/organizations', organizationPage([]));
     final dependencies = await signedIn(backend);
     final viewModel = OrganizationsViewModel(
       repository: dependencies.organizations,

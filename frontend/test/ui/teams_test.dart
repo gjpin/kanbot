@@ -39,7 +39,7 @@ void main() {
     tester,
   ) async {
     final backend = FakeBackend()
-      ..on('GET', '/teams', [teamSummary(idpGroup: 'platform-team')])
+      ..on('GET', '/teams', teamPage([teamSummary(idpGroup: 'platform-team')]))
       ..on('GET', '/teams/$teamId', team())
       ..on('GET', '/teams/$teamId/members', memberPage([]));
     await pumpApp(
@@ -54,9 +54,43 @@ void main() {
     expect(find.byType(TeamPage), findsOneWidget);
   });
 
+  testWidgets('more teams load after the last page shown', (tester) async {
+    const otherId = '55555555-5555-4555-8555-555555555555';
+    final backend = FakeBackend()
+      ..handle('GET', '/teams', (request) {
+        final body = switch (request.url.queryParameters['after']) {
+          null => teamPage([teamSummary()], next: 'platform'),
+          'platform' => teamPage([teamSummary(id: otherId, name: 'Ops')]),
+          final other => fail('unexpected cursor: $other'),
+        };
+        return http.Response(
+          jsonEncode(body),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+    await pumpApp(tester, await signedIn(backend), location: Routes.teams);
+    expect(find.text('Platform'), findsOneWidget);
+    expect(find.text('Ops'), findsNothing);
+
+    await tester.tap(find.text(Messages.moreTeams));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Platform'), findsOneWidget);
+    expect(find.text('Ops'), findsOneWidget);
+    // The last page: no button, and no further request.
+    expect(find.text(Messages.moreTeams), findsNothing);
+    expect(
+      backend
+          .sent('GET', '/teams')
+          .map((request) => request.url.queryParameters['after']),
+      [null, 'platform'],
+    );
+  });
+
   testWidgets('creating a team opens it', (tester) async {
     final backend = FakeBackend()
-      ..on('GET', '/teams', <Object?>[])
+      ..on('GET', '/teams', teamPage([]))
       ..on('POST', '/teams', team(), status: 201)
       ..on('GET', '/teams/$teamId', team())
       ..on('GET', '/teams/$teamId/members', memberPage([]));
@@ -272,7 +306,7 @@ void main() {
   testWidgets('maintainers delete the team after confirming', (tester) async {
     final backend = backendFor(permissions: ['manage'])
       ..on('DELETE', '/teams/$teamId', null, status: 204)
-      ..on('GET', '/teams', <Object?>[]);
+      ..on('GET', '/teams', teamPage([]));
     await pumpApp(
       tester,
       await signedIn(backend),

@@ -20,9 +20,9 @@ import 'package:kanbot/data/api/generated/teams/models/team_changes_dto.dart'
 import 'package:kanbot/data/api/generated/teams/models/team_dto.dart'
     as models
     show TeamDto;
-import 'package:kanbot/data/api/generated/teams/models/team_summary_dto.dart'
+import 'package:kanbot/data/api/generated/teams/models/team_page_dto.dart'
     as models
-    show TeamSummaryDto;
+    show TeamPageDto;
 
 class TeamsClient {
   TeamsClient(this._transport, {required this.baseUrl, this.prepareRequest});
@@ -57,7 +57,7 @@ class TeamsClient {
 
   /// The teams the caller may see, by slug: their own, or all of them for
   /// platform and organization admins.
-  Future<List<models.TeamSummaryDto>> listTeams({
+  Future<models.TeamPageDto> listTeams({
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
@@ -79,9 +79,24 @@ class TeamsClient {
     },
     Future<void>? abortTrigger,
     HttpRequestOptions? options,
+
+    /// The previous page's `next`.
+    String? after,
+
+    /// Teams per page: 1 to 500, default 100.
+    int? limit,
   }) async {
     final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
-    final url = Uri.parse('$base/teams');
+    var url = Uri.parse('$base/teams');
+    final query = _httpQuery(<String, Object?>{
+      'after': ?after,
+      'limit': ?limit,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
     final request = http.AbortableRequest(
       'GET',
       url,
@@ -106,12 +121,7 @@ class TeamsClient {
     }
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
-      return (value as List<Object?>)
-          .map(
-            (item) =>
-                models.TeamSummaryDto.fromJson(item as Map<String, Object?>),
-          )
-          .toList();
+      return models.TeamPageDto.fromJson(value as Map<String, Object?>);
     });
   }
 

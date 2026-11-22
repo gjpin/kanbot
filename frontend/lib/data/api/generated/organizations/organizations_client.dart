@@ -20,9 +20,9 @@ import 'package:kanbot/data/api/generated/organizations/models/organization_chan
 import 'package:kanbot/data/api/generated/organizations/models/organization_dto.dart'
     as models
     show OrganizationDto;
-import 'package:kanbot/data/api/generated/organizations/models/organization_summary_dto.dart'
+import 'package:kanbot/data/api/generated/organizations/models/organization_page_dto.dart'
     as models
-    show OrganizationSummaryDto;
+    show OrganizationPageDto;
 import 'package:kanbot/data/api/generated/organizations/models/team_link_change_dto.dart'
     as models
     show TeamLinkChangeDto;
@@ -43,8 +43,30 @@ class OrganizationsClient {
 
   final void Function(http.BaseRequest, Map<String, Object?>)? prepareRequest;
 
+  static String _httpQuery(Map<String, Object?> fields) {
+    final entries = <String>[];
+    void add(String key, Object? value) {
+      if (value is Iterable) {
+        for (final item in value) {
+          add(key, item);
+        }
+      } else if (value is Map) {
+        for (final entry in value.entries) {
+          add('$key[${entry.key}]', entry.value);
+        }
+      } else {
+        entries.add(
+          '${Uri.encodeQueryComponent(key)}=${Uri.encodeQueryComponent(value?.toString() ?? '')}',
+        );
+      }
+    }
+
+    fields.forEach(add);
+    return entries.join('&');
+  }
+
   /// The organizations the caller may read, by slug.
-  Future<List<models.OrganizationSummaryDto>> listOrganizations({
+  Future<models.OrganizationPageDto> listOrganizations({
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
@@ -66,9 +88,24 @@ class OrganizationsClient {
     },
     Future<void>? abortTrigger,
     HttpRequestOptions? options,
+
+    /// The previous page's `next`.
+    String? after,
+
+    /// Organizations per page: 1 to 500, default 100.
+    int? limit,
   }) async {
     final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
-    final url = Uri.parse('$base/organizations');
+    var url = Uri.parse('$base/organizations');
+    final query = _httpQuery(<String, Object?>{
+      'after': ?after,
+      'limit': ?limit,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
     final request = http.AbortableRequest(
       'GET',
       url,
@@ -93,13 +130,7 @@ class OrganizationsClient {
     }
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
-      return (value as List<Object?>)
-          .map(
-            (item) => models.OrganizationSummaryDto.fromJson(
-              item as Map<String, Object?>,
-            ),
-          )
-          .toList();
+      return models.OrganizationPageDto.fromJson(value as Map<String, Object?>);
     });
   }
 

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
+import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/features/organizations/organization_page.dart';
@@ -17,9 +19,13 @@ void main() {
   group('organizations list', () {
     testWidgets('lists organizations and opens one', (tester) async {
       final backend = FakeBackend()
-        ..on('GET', '/organizations', [
-          {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
-        ])
+        ..on(
+          'GET',
+          '/organizations',
+          organizationPage([
+            {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
+          ]),
+        )
         ..on('GET', '/organizations/$orgId', organization())
         ..on('GET', '/organizations/$orgId/admins', <Object?>[])
         ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
@@ -31,13 +37,60 @@ void main() {
       expect(find.byType(OrganizationPage), findsOneWidget);
     });
 
+    testWidgets('more organizations load, and a failure keeps the first', (
+      tester,
+    ) async {
+      var failing = true;
+      final backend = FakeBackend()
+        ..handle('GET', '/organizations', (request) {
+          final after = request.url.queryParameters['after'];
+          if (after == 'acme' && failing) {
+            throw http.ClientException('down');
+          }
+          final body = switch (after) {
+            null => organizationPage([
+              {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
+            ], next: 'acme'),
+            'acme' => organizationPage([
+              {'id': teamId, 'slug': 'globex', 'name': 'Globex'},
+            ]),
+            final other => fail('unexpected cursor: $other'),
+          };
+          return http.Response(
+            jsonEncode(body),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        });
+      await pumpApp(tester, await signedIn(backend));
+
+      await tester.tap(find.text(Messages.moreOrganizations));
+      await tester.pumpAndSettle();
+      expect(find.text('Acme'), findsOneWidget);
+      expect(
+        find.text(Messages.error(const ApiNetworkException())),
+        findsOneWidget,
+      );
+
+      failing = false;
+      await tester.tap(find.text(Messages.moreOrganizations));
+      await tester.pumpAndSettle();
+      expect(find.text('Acme'), findsOneWidget);
+      expect(find.text('Globex'), findsOneWidget);
+      expect(find.text(Messages.moreOrganizations), findsNothing);
+      expect(
+        find.text(Messages.error(const ApiNetworkException())),
+        findsNothing,
+      );
+    });
+
     testWidgets('a failure offers a retry', (tester) async {
       final backend = FakeBackend()
         ..on('GET', '/organizations', problem(503, 'unavailable'), status: 503);
       await pumpApp(tester, await signedIn(backend));
       expect(find.text(Messages.retry), findsOneWidget);
 
-      backend.on('GET', '/organizations', <Object?>[]);
+      backend.on('GET', '/organizations', organizationPage([]));
       await tester.tap(find.text(Messages.retry));
       await tester.pumpAndSettle();
       expect(find.text(Messages.nothingHere), findsOneWidget);
@@ -45,7 +98,7 @@ void main() {
 
     testWidgets('platform admins create organizations', (tester) async {
       final backend = FakeBackend()
-        ..on('GET', '/organizations', <Object?>[])
+        ..on('GET', '/organizations', organizationPage([]))
         ..on(
           'POST',
           '/organizations',
@@ -301,6 +354,41 @@ void main() {
       expect(find.text('Bob'), findsOneWidget);
     });
 
+    testWidgets('the teams to link come a page at a time', (tester) async {
+      final backend = backendFor(permissions: ['manage_team_links'])
+        ..handle('GET', '/teams', (request) {
+          final body = switch (request.url.queryParameters['after']) {
+            null => teamPage([teamSummary()], next: 'platform'),
+            'platform' => teamPage([teamSummary(id: bobId, name: 'Ops')]),
+            final other => fail('unexpected cursor: $other'),
+          };
+          return http.Response(
+            jsonEncode(body),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        });
+      await pumpApp(
+        tester,
+        await signedIn(backend),
+        location: Routes.organization(orgId),
+      );
+
+      await tester.tap(find.text(Messages.linkTeam));
+      await tester.pumpAndSettle();
+      expect(find.byType(LinkTeamDialog), findsOneWidget);
+      await tester.tap(find.text(Messages.moreTeams));
+      await tester.pumpAndSettle();
+
+      expect(find.text(Messages.moreTeams), findsNothing);
+      expect(
+        backend
+            .sent('GET', '/teams')
+            .map((request) => request.url.queryParameters['after']),
+        [null, 'platform'],
+      );
+    });
+
     testWidgets('admins unlink a team', (tester) async {
       final backend = backendFor(
         permissions: ['manage_team_links'],
@@ -326,7 +414,7 @@ void main() {
     testWidgets('platform admins delete it after confirming', (tester) async {
       final backend = backendFor(permissions: ['delete'])
         ..on('DELETE', '/organizations/$orgId', null, status: 204)
-        ..on('GET', '/organizations', <Object?>[]);
+        ..on('GET', '/organizations', organizationPage([]));
       await pumpApp(
         tester,
         await signedIn(backend),

@@ -129,6 +129,18 @@ Map<String, Object?> user({
   bool disabled = false,
 }) => {'id': id, 'display_name': name, 'disabled': disabled};
 
+/// `GET /organizations`: a page of [organizations].
+Map<String, Object?> organizationPage(
+  List<Object?> organizations, {
+  String? next,
+}) => {'organizations': organizations, 'next': next};
+
+/// `GET /teams`: a page of [teams].
+Map<String, Object?> teamPage(List<Object?> teams, {String? next}) => {
+  'teams': teams,
+  'next': next,
+};
+
 /// `GET /teams/{id}/members`: a page of [members].
 Map<String, Object?> memberPage(List<Object?> members, {String? next}) => {
   'members': members,

@@ -27,10 +27,14 @@ void main() {
 
   testWidgets('organizations', (tester) async {
     final backend = FakeBackend()
-      ..on('GET', '/organizations', [
-        {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
-        {'id': teamId, 'slug': 'globex', 'name': 'Globex'},
-      ]);
+      ..on(
+        'GET',
+        '/organizations',
+        organizationPage([
+          {'id': orgId, 'slug': 'acme', 'name': 'Acme'},
+          {'id': teamId, 'slug': 'globex', 'name': 'Globex'},
+        ]),
+      );
     await pumpApp(
       tester,
       await signedIn(
