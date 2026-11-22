@@ -57,6 +57,54 @@ void main() {
       }
     });
 
+    test('a DNS name starting with 127 is not loopback', () {
+      // Plain http to it would carry the session token in clear text.
+      for (final raw in [
+        'http://127.attacker.example',
+        'http://127.0.0.1.attacker.example',
+        'http://[::ffff:127.attacker]',
+      ]) {
+        expect(
+          () => parseApiBaseUrl(raw, release: false),
+          throwsFormatException,
+          reason: raw,
+        );
+      }
+      // And a release build may use it.
+      expect(
+        parseApiBaseUrl('https://127.example.com', release: true),
+        Uri.parse('https://127.example.com/'),
+      );
+    });
+
+    test('rejects hosts that only resolvers read as IPv4 addresses', () {
+      // All 127.0.0.1, which a four-number check would not see.
+      for (final release in [false, true]) {
+        for (final raw in [
+          'https://127.1',
+          'https://2130706433',
+          'https://0x7f.1',
+          'https://0x7f000001',
+          'https://127.0.0.256',
+          'https://example.0x10',
+        ]) {
+          expect(
+            () => parseApiBaseUrl(raw, release: release),
+            throwsFormatException,
+            reason: '$raw (release: $release)',
+          );
+        }
+      }
+      expect(
+        parseApiBaseUrl('https://192.0.2.10', release: true),
+        Uri.parse('https://192.0.2.10/'),
+      );
+      expect(
+        parseApiBaseUrl('https://example.0xg', release: true),
+        Uri.parse('https://example.0xg/'),
+      );
+    });
+
     test('rejects insecure, relative and malformed URLs', () {
       for (final release in [false, true]) {
         for (final raw in [
@@ -98,6 +146,28 @@ void main() {
         ),
       );
     });
+  });
+
+  test('isLoopbackHost applies 127.0.0.0/8 to IPv4 addresses only', () {
+    for (final host in [
+      '127.0.0.1',
+      '127.255.255.254',
+      '127.0.0.1.',
+      '::ffff:127.0.0.1',
+      'localhost',
+    ]) {
+      expect(isLoopbackHost(host), isTrue, reason: host);
+    }
+    for (final host in [
+      '127.example.com',
+      '127.attacker.example',
+      '127.0.0.1.example.com',
+      '127.1',
+      '::ffff:127.example',
+      '128.0.0.1',
+    ]) {
+      expect(isLoopbackHost(host), isFalse, reason: host);
+    }
   });
 
   group('defaultServerUrl', () {
