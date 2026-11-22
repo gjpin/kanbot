@@ -182,6 +182,38 @@ void main() {
     );
   });
 
+  testWidgets('a refused role change shows the role the server has', (
+    tester,
+  ) async {
+    final backend =
+        backendFor(
+          permissions: ['manage', 'manage_members'],
+          members: [
+            {'user': user(), 'role': 'member', 'source': 'manual'},
+          ],
+        )..on(
+          'PUT',
+          '/teams/$teamId/members/$bobId',
+          problem(409, 'conflict'),
+          status: 409,
+        );
+    await pumpApp(
+      tester,
+      await signedIn(backend),
+      location: Routes.team(teamId),
+    );
+    expect(find.text(Messages.member), findsOneWidget);
+
+    await tester.tap(find.text(Messages.member));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Messages.maintainer).last);
+    await tester.pumpAndSettle();
+
+    expect(backend.sent('PUT', '/teams/$teamId/members/$bobId'), hasLength(1));
+    expect(find.text(Messages.member), findsOneWidget);
+    expect(find.text(Messages.maintainer), findsNothing);
+  });
+
   testWidgets('identity provider members are read-only', (tester) async {
     await pumpApp(
       tester,

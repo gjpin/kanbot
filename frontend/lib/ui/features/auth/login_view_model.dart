@@ -31,6 +31,13 @@ class LoginViewModel extends ViewModel {
   /// The server's address, shown so the user knows where they sign in.
   Uri? get server => _connection.baseUrl;
 
+  /// Shows the server's `error` from a failed web sign-in.
+  void showServerError(String? error) {
+    if (error == null) return;
+    _error = SignInRefusedException(error);
+    notifyListeners();
+  }
+
   /// Native apps can change server; the web app belongs to its server.
   bool get canChangeServer => _serverStore != null;
 

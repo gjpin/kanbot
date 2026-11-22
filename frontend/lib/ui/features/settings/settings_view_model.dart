@@ -42,10 +42,31 @@ class SettingsViewModel extends ViewModel {
     notifyListeners();
   }
 
-  Future<void> signOut() => _auth.signOut();
+  bool _leaving = false;
+
+  /// Signs out. A second tap while it runs does nothing.
+  Future<void> signOut() async {
+    if (_leaving) return;
+    _leaving = true;
+    try {
+      await _auth.signOut();
+    } finally {
+      _leaving = false;
+    }
+  }
 
   /// Signs out and forgets the server; the router shows the server page.
   Future<void> changeServer() async {
+    if (_leaving) return;
+    _leaving = true;
+    try {
+      await _changeServer();
+    } finally {
+      _leaving = false;
+    }
+  }
+
+  Future<void> _changeServer() async {
     await _auth.signOut();
     try {
       await _serverStore?.clear();

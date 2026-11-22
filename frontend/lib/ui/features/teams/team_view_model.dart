@@ -25,8 +25,7 @@ class TeamViewModel extends ViewModel {
       _details = const Loading();
       notifyListeners();
     }
-    final team = await _teams.get(id);
-    final members = await _teams.members(id);
+    final (team, members) = await (_teams.get(id), _teams.members(id)).wait;
     _details = switch ((team, members)) {
       (Ok(value: final t), Ok(value: final m)) => Loaded((
         team: t,
@@ -66,10 +65,17 @@ class TeamViewModel extends ViewModel {
     }
   }
 
-  /// Runs [change], then reloads on success.
+  /// Bumped on every reload, so controls showing a choice (a role, an
+  /// access) are rebuilt from what the server has.
+  int get revision => _revision;
+  int _revision = 0;
+
+  /// Runs [change], then reloads, on failure too: a control may show a
+  /// choice the server refused.
   Future<Result<T>> _change<T>(Future<Result<T>> change) async {
     final result = await change;
-    if (result is Ok) await load();
+    _revision++;
+    await load();
     return result;
   }
 

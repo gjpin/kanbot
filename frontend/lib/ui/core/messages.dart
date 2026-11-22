@@ -122,6 +122,14 @@ abstract final class Messages {
   static const String pageNotFound = 'Page not found';
   static const String goHome = 'Go home';
 
+  /// [at] in local time, to the minute: `2026-11-22 14:05`.
+  static String dateTime(DateTime at) {
+    final local = at.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
   /// A user-facing message for a failure. Never shows the response body or
   /// the error code itself (AGENTS.md §3).
   static String error(Exception error) => switch (error) {

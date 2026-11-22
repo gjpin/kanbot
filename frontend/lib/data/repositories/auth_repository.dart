@@ -116,7 +116,7 @@ class AuthRepository extends ChangeNotifier {
         return const Ok(null);
       case Failure(error: ApiUnauthorizedException()):
         _lastError = null;
-        await _tokenStore?.clear();
+        await _forgetToken();
         _setSignedOut();
         return const Ok(null);
       case Failure(:final error):
@@ -195,7 +195,11 @@ class AuthRepository extends ChangeNotifier {
       case Failure(:final error):
         return Failure(error);
       case Ok(:final value):
-        await _tokenStore?.write(value.sessionToken);
+        try {
+          await _tokenStore?.write(value.sessionToken);
+        } on Exception catch (_) {
+          return const Failure(SignInFailedException());
+        }
         return refresh();
     }
   }
@@ -206,7 +210,7 @@ class AuthRepository extends ChangeNotifier {
   /// here.
   Future<void> signOut() async {
     final result = await apiResult(_connection.api.auth.logout);
-    await _tokenStore?.clear();
+    await _forgetToken();
     _setSignedOut();
     if (result case Ok(:final value) when _web) {
       final logoutUrl = Uri.tryParse(value.logoutUrl ?? '');
@@ -231,6 +235,17 @@ class AuthRepository extends ChangeNotifier {
     }
   }
 
+  /// Clears the stored token. Secure storage failing changes nothing for
+  /// the user: the token cannot be read either, and is replaced at the next
+  /// sign-in.
+  Future<void> _forgetToken() async {
+    try {
+      await _tokenStore?.clear();
+    } on Exception {
+      // See above.
+    }
+  }
+
   /// The server answered `401`: the session is gone.
   void _sessionEnded() {
     if (_status != AuthStatus.signedIn) return;
@@ -250,12 +265,7 @@ class AuthRepository extends ChangeNotifier {
   /// changes server): the token must never reach another server.
   Future<void> forgetServer() async {
     _server = null;
-    try {
-      await _tokenStore?.clear();
-    } on Exception {
-      // Secure storage failed: the token cannot be read either, and a new
-      // sign-in replaces it.
-    }
+    await _forgetToken();
     _setSignedOut();
   }
 }

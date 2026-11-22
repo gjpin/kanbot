@@ -2,14 +2,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/main.dart';
 import 'package:kanbot/routing/router.dart';
+import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/core/not_found_page.dart';
 import 'package:kanbot/ui/features/auth/loading_page.dart';
 import 'package:kanbot/ui/features/auth/login_page.dart';
 import 'package:kanbot/ui/features/auth/server_page.dart';
+import 'package:kanbot/ui/features/organizations/organization_page.dart';
 import 'package:kanbot/ui/features/organizations/organizations_page.dart';
 import 'package:kanbot/ui/features/settings/settings_page.dart';
 
 import '../helpers/fake_backend.dart';
+import '../helpers/pump.dart';
 import '../helpers/test_dependencies.dart';
 
 /// Every route that needs a signed-in user.
@@ -60,6 +63,8 @@ void main() {
         'javascript:alert(1)',
         'teams',
         ':::',
+        r'/\evil.example.com',
+        '/loading?from=/loading',
       ]) {
         expect(
           go(
@@ -181,7 +186,7 @@ void main() {
     for (final location in [
       '/no/such/page',
       '/teams/not-a-uuid',
-      '/organizations/ABCDEF00-0000-4000-8000-000000000000',
+      '/organizations/abcdef00-0000-4000-8000-00000000000',
     ]) {
       testWidgets('$location shows not found', (tester) async {
         final backend = await pump(tester, location);
@@ -193,9 +198,25 @@ void main() {
       });
     }
 
+    testWidgets('IDs in links may be in upper case', (tester) async {
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', authConfig())
+        ..on('GET', '/me', me())
+        ..on('GET', '/organizations/$orgId', organization())
+        ..on('GET', '/organizations/$orgId/admins', <Object?>[])
+        ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
+      await pumpApp(
+        tester,
+        await signedIn(backend),
+        location: '/organizations/${orgId.toUpperCase()}',
+      );
+      expect(find.byType(OrganizationPage), findsOneWidget);
+      expect(backend.sent('GET', '/organizations/$orgId'), hasLength(1));
+    });
+
     testWidgets('not found leads back home', (tester) async {
       await pump(tester, '/no/such/page');
-      await tester.tap(find.text('Go home'));
+      await tester.tap(find.text(Messages.goHome));
       await tester.pumpAndSettle();
       expect(find.byType(OrganizationsPage), findsOneWidget);
     });

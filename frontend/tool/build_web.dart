@@ -14,11 +14,27 @@ library;
 
 import 'dart:io';
 
+/// Whether [args] set `API_BASE_URL`, in any of `flutter build`'s forms:
+/// `--dart-define=API_BASE_URL=...`, `--dart-define API_BASE_URL=...`, or
+/// a `--dart-define-from-file`, which this script cannot see into.
+bool definesApiBaseUrl(List<String> args) {
+  for (var i = 0; i < args.length; i++) {
+    final arg = args[i];
+    final next = i + 1 < args.length ? args[i + 1] : '';
+    if (arg.startsWith('--dart-define=API_BASE_URL') ||
+        (arg == '--dart-define' && next.startsWith('API_BASE_URL')) ||
+        arg.startsWith('--dart-define-from-file')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Future<void> main(List<String> args) async {
-  if (args.any((arg) => arg.startsWith('--dart-define=API_BASE_URL'))) {
+  if (definesApiBaseUrl(args)) {
     stderr.writeln(
       'The web app talks to the server it is loaded from: '
-      'do not set API_BASE_URL.',
+      'do not set API_BASE_URL (nor use --dart-define-from-file).',
     );
     exitCode = 64;
     return;

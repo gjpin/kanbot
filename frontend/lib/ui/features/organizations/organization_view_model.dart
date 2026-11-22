@@ -35,9 +35,11 @@ class OrganizationViewModel extends ViewModel {
       _details = const Loading();
       notifyListeners();
     }
-    final organization = await _organizations.get(id);
-    final admins = await _organizations.admins(id);
-    final links = await _organizations.teamLinks(id);
+    final (organization, admins, links) = await (
+      _organizations.get(id),
+      _organizations.admins(id),
+      _organizations.teamLinks(id),
+    ).wait;
     _details = switch ((organization, admins, links)) {
       (Ok(value: final o), Ok(value: final a), Ok(value: final l)) => Loaded((
         organization: o,
@@ -51,10 +53,17 @@ class OrganizationViewModel extends ViewModel {
     notifyListeners();
   }
 
-  /// Runs [change], then reloads on success.
+  /// Bumped on every reload, so controls showing a choice (a role, an
+  /// access) are rebuilt from what the server has.
+  int get revision => _revision;
+  int _revision = 0;
+
+  /// Runs [change], then reloads, on failure too: a control may show a
+  /// choice the server refused.
   Future<Result<T>> _change<T>(Future<Result<T>> change) async {
     final result = await change;
-    if (result is Ok) await load();
+    _revision++;
+    await load();
     return result;
   }
 

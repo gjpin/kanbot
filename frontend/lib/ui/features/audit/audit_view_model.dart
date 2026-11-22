@@ -15,6 +15,9 @@ class AuditViewModel extends ViewModel {
   bool _loadingMore = false;
   Exception? _moreError;
 
+  /// Bumped by [load]: a page that arrives after a reload is dropped.
+  int _generation = 0;
+
   Loadable<List<AuditEntry>> get entries => _entries;
 
   /// Whether older entries exist.
@@ -25,10 +28,15 @@ class AuditViewModel extends ViewModel {
   Exception? get moreError => _moreError;
 
   Future<void> load() async {
+    final generation = ++_generation;
     _entries = const Loading();
     _nextBefore = null;
+    _loadingMore = false;
+    _moreError = null;
     notifyListeners();
-    switch (await _users.audit()) {
+    final result = await _users.audit();
+    if (generation != _generation) return;
+    switch (result) {
       case Ok(:final value):
         _entries = Loaded(value.entries);
         _nextBefore = value.nextBefore;
@@ -41,11 +49,18 @@ class AuditViewModel extends ViewModel {
   Future<void> loadMore() async {
     final before = _nextBefore;
     final current = _entries;
-    if (before == null || current is! Loaded<List<AuditEntry>>) return;
+    if (_loadingMore ||
+        before == null ||
+        current is! Loaded<List<AuditEntry>>) {
+      return;
+    }
+    final generation = _generation;
     _loadingMore = true;
     _moreError = null;
     notifyListeners();
-    switch (await _users.audit(before: before)) {
+    final result = await _users.audit(before: before);
+    if (generation != _generation) return;
+    switch (result) {
       case Ok(:final value):
         _entries = Loaded([...current.value, ...value.entries]);
         _nextBefore = value.nextBefore;

@@ -7,7 +7,8 @@ import 'package:kanbot/ui/core/messages.dart';
 import 'package:shad/shad.dart';
 
 /// The frame of every signed-in page: navigation on top, then [child],
-/// scrollable and at a readable width.
+/// scrollable and at a readable width. A long list goes in [itemCount] and
+/// [itemBuilder], after [child]: only the items on screen are built.
 class AppPage extends StatelessWidget {
   const AppPage({
     super.key,
@@ -15,7 +16,17 @@ class AppPage extends StatelessWidget {
     required this.title,
     required this.child,
     this.actions = const [],
+    this.itemCount = 0,
+    this.itemBuilder,
+    this.footer,
   });
+
+  /// How many items [itemBuilder] builds, after [child].
+  final int itemCount;
+  final IndexedWidgetBuilder? itemBuilder;
+
+  /// After the items (a "load more" button, for example).
+  final Widget? footer;
 
   /// The signed-in user: decides which navigation entries exist.
   final User? user;
@@ -57,12 +68,10 @@ class AppPage extends StatelessWidget {
             ),
             const ShadSeparator.horizontal(margin: EdgeInsets.zero),
             Expanded(
-              child: SingleChildScrollView(
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 880),
-                    child: ShadPadding.all(
-                      6,
+              child: CustomScrollView(
+                slivers: [
+                  _readable(
+                    SliverToBoxAdapter(
                       child: ShadColumn(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         spacing: 6,
@@ -82,7 +91,24 @@ class AppPage extends StatelessWidget {
                       ),
                     ),
                   ),
-                ),
+                  if (itemBuilder case final itemBuilder? when itemCount > 0)
+                    _readable(
+                      SliverList.builder(
+                        itemCount: itemCount,
+                        itemBuilder: (context, index) => ShadPadding.only(
+                          top: 3,
+                          child: itemBuilder(context, index),
+                        ),
+                      ),
+                    ),
+                  if (footer case final footer?)
+                    _readable(
+                      SliverToBoxAdapter(
+                        child: ShadPadding.only(top: 3, child: footer),
+                      ),
+                    ),
+                  const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                ],
               ),
             ),
           ],
@@ -91,6 +117,20 @@ class AppPage extends StatelessWidget {
     );
   }
 }
+
+/// [sliver] at a readable width, with the page's side margins.
+Widget _readable(Widget sliver) => SliverLayoutBuilder(
+  builder: (context, constraints) {
+    final side = ((constraints.crossAxisExtent - 880) / 2).clamp(
+      0.0,
+      double.infinity,
+    );
+    return SliverPadding(
+      padding: EdgeInsets.only(left: side + 24, right: side + 24, top: 24),
+      sliver: sliver,
+    );
+  },
+);
 
 class _NavLink extends StatelessWidget {
   const _NavLink({required this.label, required this.path});

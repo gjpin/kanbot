@@ -74,6 +74,30 @@ void main() {
     );
   });
 
+  test('keeps the platform error handler that was there', () {
+    final previousFlutter = FlutterError.onError;
+    final saved = PlatformDispatcher.instance.onError;
+    addTearDown(() {
+      FlutterError.onError = previousFlutter;
+      PlatformDispatcher.instance.onError = saved;
+    });
+    final before = <Object>[];
+    PlatformDispatcher.instance.onError = (error, stack) {
+      before.add(error);
+      return true;
+    };
+
+    reportUncaughtErrors();
+
+    final error = StateError('platform');
+    expect(
+      PlatformDispatcher.instance.onError!(error, StackTrace.empty),
+      isTrue,
+    );
+    expect(before, [error]);
+    expect(harness.logs.records, hasLength(1));
+  });
+
   test('reports uncaught platform errors without handling them', () {
     final previousFlutter = FlutterError.onError;
     final previousPlatform = PlatformDispatcher.instance.onError;

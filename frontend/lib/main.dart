@@ -8,6 +8,7 @@ import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/config/telemetry.dart';
 import 'package:kanbot/data/services/browser.dart' as browser;
 import 'package:kanbot/routing/router.dart';
+import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/core/theme.dart';
 import 'package:shad/shad.dart';
 
@@ -42,7 +43,7 @@ class KanbotApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ShadApp.router(
-      title: 'Kanbot',
+      title: Messages.appName,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
       themeMode: ShadThemeMode.system,

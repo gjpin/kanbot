@@ -48,8 +48,9 @@ GoRouter createRouter({
   required AppDependencies dependencies,
   String initialLocation = Routes.home,
 }) {
+  // IDs in links may come in upper case: the API's are lower case.
   String? id(GoRouterState state) {
-    final raw = state.pathParameters['id'];
+    final raw = state.pathParameters['id']?.toLowerCase();
     return raw != null && _uuid.hasMatch(raw) ? raw : null;
   }
 
@@ -172,7 +173,10 @@ String _internal(String? raw) {
       uri.hasScheme ||
       uri.hasAuthority ||
       !uri.path.startsWith('/') ||
-      uri.path.startsWith('//')) {
+      uri.path.startsWith('//') ||
+      uri.path.contains(r'\') ||
+      // Never back to the loading page: it would loop.
+      uri.path == Routes.loading) {
     return Routes.home;
   }
   return uri.toString();

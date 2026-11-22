@@ -73,6 +73,7 @@ class _NameDialogState<T> extends State<NameDialog<T>> {
   }
 
   Future<void> _submit() async {
+    if (_busy) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -138,7 +139,13 @@ class _NameDialogState<T> extends State<NameDialog<T>> {
           children: [
             field(Messages.name, _name, '/name'),
             field(Messages.slug, _slug, '/slug', hint: Messages.slugHint),
-            if (error != null && error is! ApiValidationException)
+            // Errors the fields do not show (another field, or none).
+            if (error != null &&
+                (error is! ApiValidationException ||
+                    error.fieldErrors.any(
+                      (field) =>
+                          field.pointer != '/name' && field.pointer != '/slug',
+                    )))
               Text(Messages.error(error), style: errorStyle),
           ],
         ),

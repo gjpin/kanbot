@@ -32,6 +32,9 @@ class _UserPickerState extends State<UserPicker> {
   final TextEditingController _query = TextEditingController();
   Loadable<List<UserSummary>>? _results;
 
+  /// The latest search: an older one answering late is ignored.
+  int _searches = 0;
+
   @override
   void dispose() {
     _query.dispose();
@@ -39,9 +42,10 @@ class _UserPickerState extends State<UserPicker> {
   }
 
   Future<void> _search() async {
+    final search = ++_searches;
     setState(() => _results = const Loading());
     final result = await widget.users.search(_query.text.trim());
-    if (!mounted) return;
+    if (!mounted || search != _searches) return;
     setState(
       () => _results = switch (result) {
         Ok(:final value) => Loaded(value),
@@ -84,18 +88,20 @@ class _UserPickerState extends State<UserPicker> {
                 onRetry: _search,
                 builder: (context, users) => users.isEmpty
                     ? const Text(Messages.noUsersFound)
-                    : ShadColumn(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        spacing: 1,
-                        children: [
-                          for (final user in users)
-                            ShadButton.ghost(
-                              mainAxisAlignment: MainAxisAlignment.start,
-                              onPressed: () => Navigator.of(context).pop(user),
-                              child: Text(displayName(user)),
-                            ),
-                        ],
+                    // A search can find many people: the list scrolls
+                    // inside the dialog.
+                    : ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 320),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: users.length,
+                          itemBuilder: (context, index) => ShadButton.ghost(
+                            mainAxisAlignment: MainAxisAlignment.start,
+                            onPressed: () =>
+                                Navigator.of(context).pop(users[index]),
+                            child: Text(displayName(users[index])),
+                          ),
+                        ),
                       ),
               ),
           ],

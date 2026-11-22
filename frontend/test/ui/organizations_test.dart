@@ -296,7 +296,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('You are not allowed to do that.'), findsOneWidget);
-      expect(backend.sent('GET', '/organizations/$orgId/admins'), hasLength(1));
+      // Reloaded after the failure too: the page shows what the server has.
+      expect(backend.sent('GET', '/organizations/$orgId/admins'), hasLength(2));
+      expect(find.text('Bob'), findsOneWidget);
     });
 
     testWidgets('admins unlink a team', (tester) async {

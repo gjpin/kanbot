@@ -70,7 +70,20 @@ class _TeamPageState extends State<TeamPage> {
     );
   }
 
+  /// A delete is under way: the button does nothing meanwhile.
+  bool _deleting = false;
+
   Future<void> _delete() async {
+    if (_deleting) return;
+    _deleting = true;
+    try {
+      await _confirmAndDelete();
+    } finally {
+      _deleting = false;
+    }
+  }
+
+  Future<void> _confirmAndDelete() async {
     final confirmed = await confirm(
       context,
       title: Messages.deleteTeam,
@@ -170,6 +183,10 @@ class _TeamPageState extends State<TeamPage> {
                           if (manage &&
                               member.source == MembershipSource.manual) ...[
                             ShadSelect<TeamRole>(
+                              key: ValueKey((
+                                member.user.id,
+                                _viewModel.revision,
+                              )),
                               initialValue: member.role,
                               options: [
                                 for (final role in TeamRole.values)
@@ -241,10 +258,29 @@ class _IdpGroupEditor extends StatefulWidget {
 }
 
 class _IdpGroupEditorState extends State<_IdpGroupEditor> {
+  bool _busy = false;
+
   @override
   void initState() {
     super.initState();
     widget.controller.text = widget.group ?? '';
+  }
+
+  @override
+  void didUpdateWidget(_IdpGroupEditor old) {
+    super.didUpdateWidget(old);
+    // Saved: show what the server now has.
+    if (old.group != widget.group) widget.controller.text = widget.group ?? '';
+  }
+
+  Future<void> _save(String group) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onSave(group);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -260,15 +296,15 @@ class _IdpGroupEditorState extends State<_IdpGroupEditor> {
         children: [
           SizedBox(width: 280, child: ShadInput(controller: widget.controller)),
           ShadButton.outline(
-            onPressed: () => widget.onSave(widget.controller.text.trim()),
+            onPressed: _busy
+                ? null
+                : () => _save(widget.controller.text.trim()),
             child: const Text(Messages.save),
           ),
+          // The field keeps the group until the server has cleared it.
           if (widget.group != null)
             ShadButton.ghost(
-              onPressed: () async {
-                widget.controller.clear();
-                await widget.onSave('');
-              },
+              onPressed: _busy ? null : () => _save(''),
               child: const Text(Messages.stopSyncing),
             ),
         ],

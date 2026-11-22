@@ -109,7 +109,13 @@ class AppDependencies {
     if (web && page != null) {
       connectWeb(page);
     } else {
-      final server = await serverStore?.read(release: release) ?? defaultServer;
+      Uri? stored;
+      try {
+        stored = await serverStore?.read(release: release);
+      } on Exception {
+        // Secure storage failed: ask for the server again.
+      }
+      final server = stored ?? defaultServer;
       if (server == null) return;
       connection.connect(server);
     }

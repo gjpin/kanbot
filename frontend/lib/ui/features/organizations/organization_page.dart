@@ -71,7 +71,20 @@ class _OrganizationPageState extends State<OrganizationPage> {
     );
   }
 
+  /// A delete is under way: the button does nothing meanwhile.
+  bool _deleting = false;
+
   Future<void> _delete() async {
+    if (_deleting) return;
+    _deleting = true;
+    try {
+      await _confirmAndDelete();
+    } finally {
+      _deleting = false;
+    }
+  }
+
+  Future<void> _confirmAndDelete() async {
     final confirmed = await confirm(
       context,
       title: Messages.deleteOrganization,
@@ -235,6 +248,10 @@ class _OrganizationPageState extends State<OrganizationPage> {
                           )
                           ? [
                               AccessSelect(
+                                key: ValueKey((
+                                  link.team.id,
+                                  _viewModel.revision,
+                                )),
                                 value: link.access,
                                 onChanged: (access) async => _report(
                                   await _viewModel.linkTeam(
@@ -412,6 +429,7 @@ class _WorkspaceDialogState extends State<WorkspaceDialog> {
   }
 
   Future<void> _submit() async {
+    if (_busy) return;
     setState(() {
       _busy = true;
       _error = null;

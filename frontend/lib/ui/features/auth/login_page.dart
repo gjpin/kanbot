@@ -28,6 +28,13 @@ class _LoginPageState extends State<LoginPage> {
   );
 
   @override
+  void didUpdateWidget(LoginPage old) {
+    super.didUpdateWidget(old);
+    // Another failed web sign-in (`/login?error=...`) on the same page.
+    if (widget.error != old.error) _viewModel.showServerError(widget.error);
+  }
+
+  @override
   void dispose() {
     _viewModel.dispose();
     super.dispose();
@@ -55,7 +62,8 @@ class _LoginPageState extends State<LoginPage> {
           children: [
             if (server != null && _viewModel.canChangeServer)
               Text(
-                '${Messages.server}: ${server.host}',
+                // With its port, if any: two servers can share a host.
+                '${Messages.server}: ${server.authority}',
                 style: theme.textTheme.muted,
               ),
             if (error != null)

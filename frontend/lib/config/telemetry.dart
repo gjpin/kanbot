@@ -148,10 +148,11 @@ void reportUncaughtErrors() {
     reportError(details.exception, details.stack);
     presentError?.call(details);
   };
+  final previous = PlatformDispatcher.instance.onError;
   PlatformDispatcher.instance.onError = (error, stack) {
     reportError(error, stack);
-    // Not handled: keep the platform's default behaviour.
-    return false;
+    // Whoever handled it before still does; else the platform's default.
+    return previous?.call(error, stack) ?? false;
   };
 }
 
