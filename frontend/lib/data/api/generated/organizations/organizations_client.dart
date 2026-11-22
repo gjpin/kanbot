@@ -4,9 +4,6 @@ import 'dart:convert' as convert;
 
 import 'package:http/http.dart' as http;
 
-import 'package:kanbot/data/api/generated/audit/models/user_summary_dto.dart'
-    as models
-    show UserSummaryDto;
 import 'package:kanbot/data/api/generated/http_request_options.dart';
 import 'package:kanbot/data/api/generated/organizations/models/new_organization_dto.dart'
     as models
@@ -14,6 +11,9 @@ import 'package:kanbot/data/api/generated/organizations/models/new_organization_
 import 'package:kanbot/data/api/generated/organizations/models/open_shell_link_dto.dart'
     as models
     show OpenShellLinkDto;
+import 'package:kanbot/data/api/generated/organizations/models/organization_admin_page_dto.dart'
+    as models
+    show OrganizationAdminPageDto;
 import 'package:kanbot/data/api/generated/organizations/models/organization_changes_dto.dart'
     as models
     show OrganizationChangesDto;
@@ -26,9 +26,9 @@ import 'package:kanbot/data/api/generated/organizations/models/organization_page
 import 'package:kanbot/data/api/generated/organizations/models/team_link_change_dto.dart'
     as models
     show TeamLinkChangeDto;
-import 'package:kanbot/data/api/generated/organizations/models/team_link_dto.dart'
+import 'package:kanbot/data/api/generated/organizations/models/team_link_page_dto.dart'
     as models
-    show TeamLinkDto;
+    show TeamLinkPageDto;
 
 class OrganizationsClient {
   OrganizationsClient(
@@ -372,8 +372,8 @@ class OrganizationsClient {
     });
   }
 
-  /// The organization's admins, by display name.
-  Future<List<models.UserSummaryDto>> listOrganizationAdmins({
+  /// The organization's admins, a page at a time, by display name.
+  Future<models.OrganizationAdminPageDto> listOrganizationAdmins({
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
@@ -398,14 +398,29 @@ class OrganizationsClient {
 
     /// The organization's ID (a UUID).
     required String id,
+
+    /// The previous page's `next`.
+    String? after,
+
+    /// Admins per page: 1 to 500, default 100.
+    int? limit,
   }) async {
     if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
       throw ArgumentError('Invalid path segment.');
     }
     final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
-    final url = Uri.parse(
+    var url = Uri.parse(
       '$base/organizations/${Uri.encodeComponent(id)}/admins',
     );
+    final query = _httpQuery(<String, Object?>{
+      'after': ?after,
+      'limit': ?limit,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
     final request = http.AbortableRequest(
       'GET',
       url,
@@ -430,12 +445,9 @@ class OrganizationsClient {
     }
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
-      return (value as List<Object?>)
-          .map(
-            (item) =>
-                models.UserSummaryDto.fromJson(item as Map<String, Object?>),
-          )
-          .toList();
+      return models.OrganizationAdminPageDto.fromJson(
+        value as Map<String, Object?>,
+      );
     });
   }
 
@@ -699,8 +711,8 @@ class OrganizationsClient {
     });
   }
 
-  /// The teams linked to the organization, by slug.
-  Future<List<models.TeamLinkDto>> listOrganizationTeams({
+  /// The teams linked to the organization, a page at a time, by slug.
+  Future<models.TeamLinkPageDto> listOrganizationTeams({
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
@@ -725,14 +737,27 @@ class OrganizationsClient {
 
     /// The organization's ID (a UUID).
     required String id,
+
+    /// The previous page's `next`.
+    String? after,
+
+    /// Linked teams per page: 1 to 500, default 100.
+    int? limit,
   }) async {
     if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
       throw ArgumentError('Invalid path segment.');
     }
     final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
-    final url = Uri.parse(
-      '$base/organizations/${Uri.encodeComponent(id)}/teams',
-    );
+    var url = Uri.parse('$base/organizations/${Uri.encodeComponent(id)}/teams');
+    final query = _httpQuery(<String, Object?>{
+      'after': ?after,
+      'limit': ?limit,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
     final request = http.AbortableRequest(
       'GET',
       url,
@@ -757,11 +782,7 @@ class OrganizationsClient {
     }
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
-      return (value as List<Object?>)
-          .map(
-            (item) => models.TeamLinkDto.fromJson(item as Map<String, Object?>),
-          )
-          .toList();
+      return models.TeamLinkPageDto.fromJson(value as Map<String, Object?>);
     });
   }
 

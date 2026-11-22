@@ -141,6 +141,18 @@ Map<String, Object?> teamPage(List<Object?> teams, {String? next}) => {
   'next': next,
 };
 
+/// `GET /organizations/{id}/admins`: a page of [admins].
+Map<String, Object?> adminPage(List<Object?> admins, {String? next}) => {
+  'admins': admins,
+  'next': next,
+};
+
+/// `GET /organizations/{id}/teams`: a page of [links].
+Map<String, Object?> linkPage(List<Object?> links, {String? next}) => {
+  'links': links,
+  'next': next,
+};
+
 /// `GET /teams/{id}/members`: a page of [members].
 Map<String, Object?> memberPage(List<Object?> members, {String? next}) => {
   'members': members,

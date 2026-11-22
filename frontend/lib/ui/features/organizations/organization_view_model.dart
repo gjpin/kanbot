@@ -8,12 +8,18 @@ import 'package:kanbot/ui/core/loadable.dart';
 import 'package:kanbot/ui/core/view_model.dart';
 import 'package:kanbot/utils/result.dart';
 
-/// An organization with its admins and the teams that have access.
+/// An organization with the admins and the teams that have access loaded
+/// so far. A list's `next`, when set, means there are more
+/// ([OrganizationViewModel.loadMoreAdmins],
+/// [OrganizationViewModel.loadMoreLinks]).
 typedef OrganizationDetails = ({
   Organization organization,
-  List<UserSummary> admins,
-  List<TeamLink> links,
+  ListPage<UserSummary> admins,
+  ListPage<TeamLink> links,
 });
+
+/// The lists of an organization that come a page at a time.
+enum _List { admins, links }
 
 /// One organization: its settings, admins and team links.
 class OrganizationViewModel extends ViewModel {
@@ -61,6 +67,87 @@ class OrganizationViewModel extends ViewModel {
       (_, _, Failure(:final error)) => LoadFailed(error),
     };
     notifyListeners();
+  }
+
+  final Set<_List> _loadingMore = {};
+
+  /// Whether the next page of admins is loading.
+  bool get loadingMoreAdmins => _loadingMore.contains(_List.admins);
+
+  /// Whether the next page of linked teams is loading.
+  bool get loadingMoreLinks => _loadingMore.contains(_List.links);
+
+  /// Appends the next page of admins, if there is one.
+  Future<Result<void>> loadMoreAdmins() => _loadMore(
+    _List.admins,
+    (details) => details.admins,
+    (after) => _organizations.admins(id, after: after),
+    (details, admins) => (
+      organization: details.organization,
+      admins: admins,
+      links: details.links,
+    ),
+  );
+
+  /// Appends the next page of linked teams, if there is one.
+  Future<Result<void>> loadMoreLinks() => _loadMore(
+    _List.links,
+    (details) => details.links,
+    (after) => _organizations.teamLinks(id, after: after),
+    (details, links) => (
+      organization: details.organization,
+      admins: details.admins,
+      links: links,
+    ),
+  );
+
+  /// Appends the next page of [list] (read with [pageOf], fetched with
+  /// [fetch], put back with [replace]). A page that arrives after a reload
+  /// is dropped: the reload has newer data. The page is appended to the
+  /// details as they are when it arrives, so the other list's pages loaded
+  /// meanwhile stay.
+  Future<Result<void>> _loadMore<T>(
+    _List list,
+    ListPage<T> Function(OrganizationDetails details) pageOf,
+    Future<Result<ListPage<T>>> Function(String after) fetch,
+    OrganizationDetails Function(OrganizationDetails details, ListPage<T> page)
+    replace,
+  ) async {
+    final current = _details;
+    if (_loadingMore.contains(list) ||
+        current is! Loaded<OrganizationDetails>) {
+      return const Ok(null);
+    }
+    final after = pageOf(current.value).next;
+    if (after == null) return const Ok(null);
+    final generation = _generation;
+    _loadingMore.add(list);
+    notifyListeners();
+    final result = await fetch(after);
+    _loadingMore.remove(list);
+    final latest = _details;
+    if (generation != _generation || latest is! Loaded<OrganizationDetails>) {
+      notifyListeners();
+      return const Ok(null);
+    }
+    switch (result) {
+      case Ok(:final value):
+        final loaded = pageOf(latest.value);
+        _details = Loaded(
+          replace(
+            latest.value,
+            ListPage(
+              items: [...loaded.items, ...value.items],
+              next: value.next,
+            ),
+          ),
+        );
+        notifyListeners();
+        return const Ok(null);
+      case Failure(:final error):
+        notifyListeners();
+        return Failure(error);
+    }
   }
 
   /// Bumped on every reload, so controls showing a choice (a role, an

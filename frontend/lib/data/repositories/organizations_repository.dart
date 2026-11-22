@@ -79,12 +79,16 @@ class OrganizationsRepository {
   Future<Result<void>> delete(String id) =>
       apiResult(() => _client.deleteOrganization(id: id));
 
-  Future<Result<List<UserSummary>>> admins(String id) => apiResult(
-    () async =>
-        (await _client.listOrganizationAdmins(id: id))
-            .map(userSummaryFrom)
-            .toList(),
-  );
+  /// A page of the organization's admins, after [after] (a previous
+  /// page's `next`).
+  Future<Result<ListPage<UserSummary>>> admins(String id, {String? after}) =>
+      apiResult(() async {
+        final page = await _client.listOrganizationAdmins(id: id, after: after);
+        return ListPage(
+          items: page.admins.map(userSummaryFrom).toList(),
+          next: page.next,
+        );
+      });
 
   Future<Result<void>> addAdmin(String id, String userId) =>
       apiResult(() => _client.addOrganizationAdmin(id: id, userId: userId));
@@ -92,12 +96,16 @@ class OrganizationsRepository {
   Future<Result<void>> removeAdmin(String id, String userId) =>
       apiResult(() => _client.removeOrganizationAdmin(id: id, userId: userId));
 
-  Future<Result<List<TeamLink>>> teamLinks(String id) => apiResult(
-    () async =>
-        (await _client.listOrganizationTeams(id: id))
-            .map(teamLinkFrom)
-            .toList(),
-  );
+  /// A page of the teams linked to the organization, after [after] (a
+  /// previous page's `next`).
+  Future<Result<ListPage<TeamLink>>> teamLinks(String id, {String? after}) =>
+      apiResult(() async {
+        final page = await _client.listOrganizationTeams(id: id, after: after);
+        return ListPage(
+          items: page.links.map(teamLinkFrom).toList(),
+          next: page.next,
+        );
+      });
 
   /// Links [teamId] with [access], or changes its access.
   Future<Result<void>> linkTeam(String id, String teamId, Access access) =>

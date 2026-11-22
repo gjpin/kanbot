@@ -97,22 +97,30 @@ void main() {
 
     test('admins and team links', () async {
       backend
-        ..on('GET', '/organizations/$orgId/admins', [
-          user(),
-          user(id: orgId, name: 'Eve', disabled: true),
-        ])
+        ..on(
+          'GET',
+          '/organizations/$orgId/admins',
+          adminPage([
+            user(),
+            user(id: orgId, name: 'Eve', disabled: true),
+          ], next: orgId),
+        )
         ..on('PUT', '/organizations/$orgId/admins/$bobId', null, status: 204)
         ..on('DELETE', '/organizations/$orgId/admins/$bobId', null, status: 204)
-        ..on('GET', '/organizations/$orgId/teams', [
-          {
-            'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
-            'access': 'write',
-          },
-          {
-            'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
-            'access': 'owner',
-          },
-        ])
+        ..on(
+          'GET',
+          '/organizations/$orgId/teams',
+          linkPage([
+            {
+              'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
+              'access': 'write',
+            },
+            {
+              'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
+              'access': 'owner',
+            },
+          ], next: 'platform'),
+        )
         ..on('PUT', '/organizations/$orgId/teams/$teamId', null, status: 204)
         ..on(
           'DELETE',
@@ -123,19 +131,36 @@ void main() {
       final repository = testDependencies(backend: backend).organizations;
 
       final admins = ok(await repository.admins(orgId));
-      expect(admins.map((admin) => (admin.displayName, admin.disabled)), [
+      expect(admins.items.map((admin) => (admin.displayName, admin.disabled)), [
         ('Bob', false),
         ('Eve', true),
       ]);
+      expect(admins.next, orgId);
+      ok(await repository.admins(orgId, after: orgId));
+      expect(
+        backend
+            .sent('GET', '/organizations/$orgId/admins')
+            .map((request) => request.url.queryParameters['after']),
+        [null, orgId],
+      );
       ok(await repository.addAdmin(orgId, bobId));
       ok(await repository.removeAdmin(orgId, bobId));
-      final links = ok(await repository.teamLinks(orgId));
+      final page = ok(await repository.teamLinks(orgId));
+      final links = page.items;
       expect(links.first.access, Access.write);
       // Organization readers do not learn a linked team's group.
       expect(links.first.team.idpGroup, isNull);
       expect(links.first.team.name, 'Platform');
       // An access this app version does not know reads as the lowest.
       expect(links.last.access, Access.read);
+      expect(page.next, 'platform');
+      ok(await repository.teamLinks(orgId, after: 'platform'));
+      expect(
+        backend
+            .sent('GET', '/organizations/$orgId/teams')
+            .map((request) => request.url.queryParameters['after']),
+        [null, 'platform'],
+      );
       ok(await repository.linkTeam(orgId, teamId, Access.write));
       expect(
         body(backend.sent('PUT', '/organizations/$orgId/teams/$teamId').single),

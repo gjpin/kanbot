@@ -54,16 +54,21 @@ void main() {
           permissions: ['manage', 'manage_admins', 'manage_team_links'],
         ),
       )
-      ..on('GET', '/organizations/$orgId/admins', [
-        user(),
-        user(id: teamId, name: 'Eve', disabled: true),
-      ])
-      ..on('GET', '/organizations/$orgId/teams', [
-        {
-          'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
-          'access': 'write',
-        },
-      ]);
+      ..on(
+        'GET',
+        '/organizations/$orgId/admins',
+        adminPage([user(), user(id: teamId, name: 'Eve', disabled: true)]),
+      )
+      ..on(
+        'GET',
+        '/organizations/$orgId/teams',
+        linkPage([
+          {
+            'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
+            'access': 'write',
+          },
+        ]),
+      );
     await pumpApp(
       tester,
       await signedIn(backend),

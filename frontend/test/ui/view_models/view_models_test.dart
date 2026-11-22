@@ -97,7 +97,7 @@ void main() {
       test('one organization', () async {
         final backend = FakeBackend()
           ..on('GET', '/organizations/$orgId', organization())
-          ..on('GET', '/organizations/$orgId/admins', <Object?>[]);
+          ..on('GET', '/organizations/$orgId/admins', adminPage(<Object?>[]));
         breakAll(backend, ['/organizations/$orgId/teams'], breakage);
         final dependencies = await signedIn(backend);
         final viewModel = OrganizationViewModel(
@@ -166,8 +166,8 @@ void main() {
           headers: {'content-type': 'application/json'},
         );
       })
-      ..on('GET', '/organizations/$orgId/admins', <Object?>[])
-      ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
+      ..on('GET', '/organizations/$orgId/admins', adminPage(<Object?>[]))
+      ..on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]));
     final dependencies = await signedIn(backend);
     final viewModel = OrganizationViewModel(
       id: orgId,
@@ -240,8 +240,8 @@ void main() {
     final removed = Completer<void>();
     final backend = FakeBackend()
       ..on('GET', '/organizations/$orgId', organization())
-      ..on('GET', '/organizations/$orgId/admins', [user()])
-      ..on('GET', '/organizations/$orgId/teams', <Object?>[])
+      ..on('GET', '/organizations/$orgId/admins', adminPage([user()]))
+      ..on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]))
       ..handle('DELETE', '/organizations/$orgId/admins/$bobId', (_) async {
         await removed.future;
         return http.Response('', 204);
@@ -253,8 +253,11 @@ void main() {
       teams: dependencies.teams,
     );
     await viewModel.load();
-    final bob =
-        (viewModel.details as Loaded<OrganizationDetails>).value.admins.single;
+    final bob = (viewModel.details as Loaded<OrganizationDetails>)
+        .value
+        .admins
+        .items
+        .single;
     expect(viewModel.busy, isFalse);
 
     final removing = viewModel.removeAdmin(bob);
@@ -263,5 +266,108 @@ void main() {
     expect(await removing, isA<Ok<void>>());
 
     expect(viewModel.busy, isFalse);
+  });
+
+  test('more admins and more teams load side by side', () async {
+    final pages = Completer<void>();
+    Future<http.Response> json(Object? body) async => http.Response(
+      jsonEncode(body),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+    final backend = FakeBackend()
+      ..on('GET', '/organizations/$orgId', organization())
+      ..handle('GET', '/organizations/$orgId/admins', (request) async {
+        if (request.url.queryParameters['after'] == null) {
+          return json(adminPage([user()], next: bobId));
+        }
+        await pages.future;
+        return json(adminPage([user(id: teamId, name: 'Eve')]));
+      })
+      ..handle('GET', '/organizations/$orgId/teams', (request) async {
+        if (request.url.queryParameters['after'] == null) {
+          return json(
+            linkPage([
+              {'team': teamSummary(), 'access': 'read'},
+            ], next: 'platform'),
+          );
+        }
+        await pages.future;
+        return json(
+          linkPage([
+            {'team': teamSummary(id: bobId, name: 'Zeta'), 'access': 'write'},
+          ]),
+        );
+      });
+    final dependencies = await signedIn(backend);
+    final viewModel = OrganizationViewModel(
+      id: orgId,
+      organizations: dependencies.organizations,
+      teams: dependencies.teams,
+    );
+    await viewModel.load();
+
+    final admins = viewModel.loadMoreAdmins();
+    final links = viewModel.loadMoreLinks();
+    expect(
+      (viewModel.loadingMoreAdmins, viewModel.loadingMoreLinks),
+      (true, true),
+    );
+    pages.complete();
+    expect(await admins, isA<Ok<void>>());
+    expect(await links, isA<Ok<void>>());
+
+    expect(
+      (viewModel.loadingMoreAdmins, viewModel.loadingMoreLinks),
+      (false, false),
+    );
+    final details = (viewModel.details as Loaded<OrganizationDetails>).value;
+    expect(details.admins.items.map((admin) => admin.displayName), [
+      'Bob',
+      'Eve',
+    ]);
+    expect(details.admins.next, isNull);
+    expect(details.links.items.map((link) => link.team.name), [
+      'Platform',
+      'Zeta',
+    ]);
+    expect(details.links.next, isNull);
+  });
+
+  test('a page of admins that arrives after a reload is dropped', () async {
+    final pageTwo = Completer<void>();
+    final backend = FakeBackend()
+      ..on('GET', '/organizations/$orgId', organization())
+      ..on('GET', '/organizations/$orgId/teams', linkPage([]))
+      ..handle('GET', '/organizations/$orgId/admins', (request) async {
+        final Map<String, Object?> page;
+        if (request.url.queryParameters['after'] == null) {
+          page = adminPage([user()], next: bobId);
+        } else {
+          await pageTwo.future;
+          page = adminPage([user(id: teamId, name: 'Eve')]);
+        }
+        return http.Response(
+          jsonEncode(page),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+    final dependencies = await signedIn(backend);
+    final viewModel = OrganizationViewModel(
+      id: orgId,
+      organizations: dependencies.organizations,
+      teams: dependencies.teams,
+    );
+    await viewModel.load();
+
+    final more = viewModel.loadMoreAdmins();
+    await viewModel.load();
+    pageTwo.complete();
+    await more;
+
+    final details = (viewModel.details as Loaded<OrganizationDetails>).value;
+    expect(details.admins.items.map((admin) => admin.displayName), ['Bob']);
+    expect(details.admins.next, bobId);
   });
 }

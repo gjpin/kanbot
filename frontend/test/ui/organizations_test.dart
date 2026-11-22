@@ -27,8 +27,8 @@ void main() {
           ]),
         )
         ..on('GET', '/organizations/$orgId', organization())
-        ..on('GET', '/organizations/$orgId/admins', <Object?>[])
-        ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
+        ..on('GET', '/organizations/$orgId/admins', adminPage(<Object?>[]))
+        ..on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]));
       await pumpApp(tester, await signedIn(backend));
 
       expect(find.text(Messages.newOrganization), findsNothing);
@@ -138,8 +138,8 @@ void main() {
       backend
         ..on('POST', '/organizations', organization(), status: 201)
         ..on('GET', '/organizations/$orgId', organization())
-        ..on('GET', '/organizations/$orgId/admins', <Object?>[])
-        ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
+        ..on('GET', '/organizations/$orgId/admins', adminPage(<Object?>[]))
+        ..on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]));
       await tester.enterText(fields.at(1), 'acme');
       await tester.tap(find.text(Messages.create));
       await tester.pumpAndSettle();
@@ -160,10 +160,14 @@ void main() {
           openShellWorkspace: openShellWorkspace,
         ),
       )
-      ..on('GET', '/organizations/$orgId/admins', [user()])
-      ..on('GET', '/organizations/$orgId/teams', [
-        {'team': teamSummary(), 'access': 'write'},
-      ]);
+      ..on('GET', '/organizations/$orgId/admins', adminPage([user()]))
+      ..on(
+        'GET',
+        '/organizations/$orgId/teams',
+        linkPage([
+          {'team': teamSummary(), 'access': 'write'},
+        ]),
+      );
 
     testWidgets('another organization is another page', (tester) async {
       const otherId = '33333333-3333-4333-8333-333333333333';
@@ -173,8 +177,8 @@ void main() {
           '/organizations/$otherId',
           organization(id: otherId, name: 'Globex'),
         )
-        ..on('GET', '/organizations/$otherId/admins', <Object?>[])
-        ..on('GET', '/organizations/$otherId/teams', <Object?>[]);
+        ..on('GET', '/organizations/$otherId/admins', adminPage(<Object?>[]))
+        ..on('GET', '/organizations/$otherId/teams', linkPage(<Object?>[]));
       await pumpApp(
         tester,
         await signedIn(backend),
@@ -187,6 +191,64 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Globex'), findsWidgets);
       expect(find.text('Acme'), findsNothing);
+    });
+
+    testWidgets('long admin and team lists load a page at a time', (
+      tester,
+    ) async {
+      http.Response json(Object? body) => http.Response(
+        jsonEncode(body),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+      final backend = backendFor()
+        ..handle(
+          'GET',
+          '/organizations/$orgId/admins',
+          (request) => json(
+            request.url.queryParameters['after'] == bobId
+                ? adminPage([user(id: teamId, name: 'Eve')])
+                : adminPage([user()], next: bobId),
+          ),
+        )
+        ..handle(
+          'GET',
+          '/organizations/$orgId/teams',
+          (request) => json(
+            request.url.queryParameters['after'] == 'platform'
+                ? linkPage([
+                    {
+                      'team': teamSummary(id: bobId, name: 'Zeta'),
+                      'access': 'read',
+                    },
+                  ])
+                : linkPage([
+                    {'team': teamSummary(), 'access': 'write'},
+                  ], next: 'platform'),
+          ),
+        );
+      await pumpApp(
+        tester,
+        await signedIn(backend),
+        location: Routes.organization(orgId),
+      );
+      expect(find.text('Bob'), findsOneWidget);
+      expect(find.text('Eve'), findsNothing);
+      expect(find.text('Zeta'), findsNothing);
+
+      await tester.tap(find.text(Messages.moreAdmins));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text(Messages.moreTeams));
+      await tester.tap(find.text(Messages.moreTeams));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Bob'), findsOneWidget);
+      expect(find.text('Eve'), findsOneWidget);
+      expect(find.text('Platform'), findsOneWidget);
+      expect(find.text('Zeta'), findsOneWidget);
+      // The last pages: nothing more to load.
+      expect(find.text(Messages.moreAdmins), findsNothing);
+      expect(find.text(Messages.moreTeams), findsNothing);
     });
 
     testWidgets('readers see the organization, and no controls', (
@@ -400,7 +462,7 @@ void main() {
       );
       expect(find.byType(AccessSelect), findsOneWidget);
 
-      backend.on('GET', '/organizations/$orgId/teams', <Object?>[]);
+      backend.on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]));
       await tester.tap(find.text(Messages.remove));
       await tester.pumpAndSettle();
 

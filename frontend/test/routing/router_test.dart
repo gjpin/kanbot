@@ -287,8 +287,8 @@ void main() {
         ..on('GET', '/auth/config', authConfig())
         ..on('GET', '/me', me())
         ..on('GET', '/organizations/$orgId', organization())
-        ..on('GET', '/organizations/$orgId/admins', <Object?>[])
-        ..on('GET', '/organizations/$orgId/teams', <Object?>[]);
+        ..on('GET', '/organizations/$orgId/admins', adminPage(<Object?>[]))
+        ..on('GET', '/organizations/$orgId/teams', linkPage(<Object?>[]));
       await pumpApp(
         tester,
         await signedIn(backend),

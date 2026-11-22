@@ -207,7 +207,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
                       )
                     : null,
                 children: [
-                  for (final admin in value.admins)
+                  for (final admin in value.admins.items)
                     ListRow(
                       label: displayName(admin),
                       trailing: [
@@ -229,6 +229,14 @@ class _OrganizationPageState extends State<OrganizationPage> {
                           ),
                       ],
                     ),
+                  if (value.admins.next != null)
+                    ShadButton.ghost(
+                      onPressed: _viewModel.loadingMoreAdmins
+                          ? null
+                          : () async =>
+                                _report(await _viewModel.loadMoreAdmins()),
+                      child: const Text(Messages.moreAdmins),
+                    ),
                 ],
               ),
               Section(
@@ -244,7 +252,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
                       )
                     : null,
                 children: [
-                  for (final link in value.links)
+                  for (final link in value.links.items)
                     ListRow(
                       label: link.team.name,
                       onTap: () => context.go(Routes.team(link.team.id)),
@@ -284,6 +292,14 @@ class _OrganizationPageState extends State<OrganizationPage> {
                                 child: Text(_access(link.access)),
                               ),
                             ],
+                    ),
+                  if (value.links.next != null)
+                    ShadButton.ghost(
+                      onPressed: _viewModel.loadingMoreLinks
+                          ? null
+                          : () async =>
+                                _report(await _viewModel.loadMoreLinks()),
+                      child: const Text(Messages.moreTeams),
                     ),
                 ],
               ),
