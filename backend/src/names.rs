@@ -1,6 +1,6 @@
 //! The slugs and names of organizations and teams.
 
-use crate::error::FieldError;
+use crate::error::{AppError, FieldError};
 
 /// Collects `result`'s error as a field error at `pointer` in `errors`.
 /// `Some(value)` if `result` is valid.
@@ -12,6 +12,19 @@ pub fn checked<T>(
     result
         .map_err(|error| errors.push(FieldError::new(pointer, error.code())))
         .ok()
+}
+
+/// A list's `after` parameter, the previous page's `next`: a slug.
+///
+/// # Errors
+///
+/// [`AppError::Validation`] (`/after`: `invalid`) if it is not one.
+pub fn after(raw: Option<&str>) -> Result<Option<Slug>, AppError> {
+    raw.map(|raw| {
+        Slug::parse(raw)
+            .map_err(|_| AppError::Validation(vec![FieldError::new("/after", "invalid")]))
+    })
+    .transpose()
 }
 
 /// A URL-safe identifier: 1 to 63 lowercase ASCII letters, digits and

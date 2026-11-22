@@ -12,9 +12,10 @@ use crate::{
     authz::{
         model::{Action, Actor, Decision, Resource},
         policies::Policies,
-        service::{self as authz, allowed_actions},
+        service::{self as authz, VisiblePage, allowed_actions},
     },
     error::AppError,
+    names::Slug,
     teams::{
         model::{Member, MemberCursor, MembershipSource, Team, TeamChanges, TeamId, TeamRole},
         repo,
@@ -46,18 +47,25 @@ fn entry(
     NewEntry::new(actor.user.id, action, Target::Team(id), decision, details)
 }
 
-/// The teams `actor` may see, by slug.
+/// A page of the teams `actor` may see, by slug, after `after` (see
+/// [`authz::visible_teams`]).
 ///
 /// # Errors
 ///
 /// A database error.
-pub async fn list(db: &PgPool, policies: &Policies, actor: &Actor) -> Result<Vec<Team>, AppError> {
-    let ids: Vec<uuid::Uuid> = authz::visible_teams(db, policies, actor)
-        .await?
-        .iter()
-        .map(TeamId::as_uuid)
-        .collect();
-    Ok(repo::list(db, &ids).await?)
+pub async fn list(
+    db: &PgPool,
+    policies: &Policies,
+    actor: &Actor,
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<VisiblePage<Team>, AppError> {
+    let page = authz::visible_teams(db, policies, actor, after, limit).await?;
+    let ids: Vec<uuid::Uuid> = page.items.iter().map(TeamId::as_uuid).collect();
+    Ok(VisiblePage {
+        items: repo::list(db, &ids).await?,
+        next: page.next,
+    })
 }
 
 /// The team, and the actions `actor` may do to it besides seeing it.

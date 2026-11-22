@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id, t.slug\n        FROM teams t\n        WHERE ($2\n               OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)\n               OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1))\n          AND ($3::text IS NULL OR t.slug > $3)\n        ORDER BY t.slug\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "slug"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3bbbc42ae17f25f8f8338b7f7fe1a869713ce04b6949a6cf4ebe53adbe9e8984"
+}

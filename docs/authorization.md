@@ -127,9 +127,10 @@ policy IDs.
 - A custom policy can never widen access by mistake: grants stay in the data,
   where the app shows them.
 - Lists stay correct. `GET /organizations` and `GET /teams` first select, with
-  SQL, every candidate the built-in permits could allow, then ask Cedar about
-  each. A `forbid` can only remove candidates; a custom `permit` could allow one
-  the SQL never selected.
+  SQL, a page of the candidates the built-in permits could allow, then ask
+  Cedar about each (and select more while a `forbid` leaves the page short). A
+  `forbid` can only remove candidates; a custom `permit` could allow one the SQL
+  never selected.
 
 ### What a policy can use
 

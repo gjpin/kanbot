@@ -532,16 +532,34 @@
         ],
         "summary": "The organizations the caller may read, by slug.",
         "operationId": "list_organizations",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The previous page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Organizations per page: 1 to 500, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The organizations.",
+            "description": "A page of the organizations.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/OrganizationSummaryDto"
-                  }
+                  "$ref": "#/components/schemas/OrganizationPageDto"
                 }
               }
             }
@@ -558,6 +576,16 @@
           },
           "403": {
             "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`after` is not a page's `next` (`/after`: `invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1562,16 +1590,34 @@
         ],
         "summary": "The teams the caller may see, by slug: their own, or all of them for\nplatform and organization admins.",
         "operationId": "list_teams",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The previous page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Teams per page: 1 to 500, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The teams.",
+            "description": "A page of the teams.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TeamSummaryDto"
-                  }
+                  "$ref": "#/components/schemas/TeamPageDto"
                 }
               }
             }
@@ -1588,6 +1634,16 @@
           },
           "403": {
             "description": "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`after` is not a page's `next` (`/after`: `invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2744,6 +2800,28 @@
           }
         }
       },
+      "OrganizationPageDto": {
+        "type": "object",
+        "description": "A page of the organizations the caller may read.",
+        "required": [
+          "organizations"
+        ],
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` for the next page; `null` on the last one."
+          },
+          "organizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrganizationSummaryDto"
+            }
+          }
+        }
+      },
       "OrganizationPermissionDto": {
         "type": "string",
         "description": "Something the caller may do to an organization besides reading it.\nThe app shows only the controls the user can use; the server checks\nevery request anyway.",
@@ -2940,6 +3018,28 @@
           },
           "team": {
             "$ref": "#/components/schemas/LinkedTeamDto"
+          }
+        }
+      },
+      "TeamPageDto": {
+        "type": "object",
+        "description": "A page of the teams the caller may see.",
+        "required": [
+          "teams"
+        ],
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` for the next page; `null` on the last one."
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamSummaryDto"
+            }
           }
         }
       },

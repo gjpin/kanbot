@@ -10,11 +10,12 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, FieldError},
     http::{extract::Caller, problem::Problem},
+    names,
     state::AppState,
     teams::{
         dto::{
             MemberChangeDto, MemberDto, MemberPageDto, MemberQuery, NewTeamDto, TeamChangesDto,
-            TeamDto, TeamSummaryDto,
+            TeamDto, TeamPageDto, TeamQuery, TeamSummaryDto,
         },
         model::{IdpGroupChange, MemberCursor, Team, TeamChanges, TeamId},
         service,
@@ -29,9 +30,12 @@ use crate::{
     path = "/teams",
     operation_id = "list_teams",
     tag = "teams",
+    params(TeamQuery),
     security(("bearer" = []), ("session" = [])),
     responses(
-        (status = OK, description = "The teams.", body = Vec<TeamSummaryDto>),
+        (status = OK, description = "A page of the teams.", body = TeamPageDto),
+        (status = UNPROCESSABLE_ENTITY, description = "`after` is not a page's `next` (`/after`: `invalid`).",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
@@ -41,9 +45,14 @@ use crate::{
 pub(super) async fn list(
     State(state): State<AppState>,
     Caller(actor): Caller,
-) -> Result<Json<Vec<TeamSummaryDto>>, AppError> {
-    let teams = service::list(&state.db, &state.authz, &actor).await?;
-    Ok(Json(teams.into_iter().map(TeamSummaryDto::from).collect()))
+    Query(query): Query<TeamQuery>,
+) -> Result<Json<TeamPageDto>, AppError> {
+    let after = names::after(query.after.as_deref())?;
+    let page = service::list(&state.db, &state.authz, &actor, after.as_ref(), query.limit).await?;
+    Ok(Json(TeamPageDto {
+        teams: page.items.into_iter().map(TeamSummaryDto::from).collect(),
+        next: page.next.map(|slug| slug.as_str().to_owned()),
+    }))
 }
 
 /// Creates a team, with the caller as its maintainer. Platform admins and

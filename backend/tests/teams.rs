@@ -231,8 +231,10 @@ async fn a_token_without_the_groups_claim_keeps_the_memberships(pool: PgPool) {
     assert_eq!(memberships(&pool, alice).await, []);
 }
 
-fn team_slugs(list: &Value) -> Vec<&str> {
-    list.as_array()
+/// The slugs of a page of `GET /teams`.
+fn team_slugs(page: &Value) -> Vec<&str> {
+    page["teams"]
+        .as_array()
         .unwrap()
         .iter()
         .map(|item| item["slug"].as_str().unwrap())
@@ -332,7 +334,7 @@ async fn maintainers_manage_members(pool: PgPool) {
         api.get(&format!("/teams/{team}"), &bob).await.0,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(api.get("/teams", &bob).await.1, json!([]));
+    assert_eq!(team_slugs(&api.get("/teams", &bob).await.1), [""; 0]);
 
     let (status, _) = api
         .put(
@@ -626,7 +628,7 @@ async fn organization_admins_see_every_team(pool: PgPool) {
     api.team(&root, "a-team").await;
     let carol = user("carol", &[]);
     let carol_id = api.user_id(&carol).await;
-    assert_eq!(api.get("/teams", &carol).await.1, json!([]));
+    assert_eq!(team_slugs(&api.get("/teams", &carol).await.1), [""; 0]);
     api.put(
         &format!("/organizations/00000000-0000-0000-0000-000000000001/admins/{carol_id}"),
         &root,
@@ -745,6 +747,31 @@ async fn the_last_maintainer_stays(pool: PgPool) {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = api.delete(&member(bob_id), &bob).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+async fn teams_come_a_page_at_a_time(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    for slug in ["zeta", "alpha", "mid"] {
+        api.team(&root, slug).await;
+    }
+    let (status, page) = api.get("/teams?limit=2", &root).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(team_slugs(&page), ["alpha", "mid"]);
+    assert_eq!(page["next"], "mid");
+    let (_, page) = api.get("/teams?limit=2&after=mid", &root).await;
+    assert_eq!(team_slugs(&page), ["zeta"]);
+    assert_eq!(page["next"], Value::Null);
+    let (_, page) = api.get("/teams?limit=3", &root).await;
+    assert_eq!(page["next"], Value::Null, "no next after the last one");
+
+    let (status, body) = api.get("/teams?after=-mid", &root).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/after", "code": "invalid" }])
+    );
 }
 
 #[sqlx::test]

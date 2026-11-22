@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use uuid::Uuid;
@@ -14,11 +14,13 @@ use crate::{
         extract::{Caller, UserAccessToken},
         problem::Problem,
     },
+    names,
     openshell::model::WorkspaceName,
     organizations::{
         dto::{
             NewOrganizationDto, OpenShellLinkDto, OrganizationChangesDto, OrganizationDto,
-            OrganizationSummaryDto, TeamLinkChangeDto, TeamLinkDto,
+            OrganizationPageDto, OrganizationQuery, OrganizationSummaryDto, TeamLinkChangeDto,
+            TeamLinkDto,
         },
         model::{Organization, OrganizationChanges, OrganizationId},
         service,
@@ -43,9 +45,12 @@ fn without_unavailable(state: &AppState, mut permissions: Vec<Action>) -> Vec<Ac
     path = "/organizations",
     operation_id = "list_organizations",
     tag = "organizations",
+    params(OrganizationQuery),
     security(("bearer" = []), ("session" = [])),
     responses(
-        (status = OK, description = "The organizations.", body = Vec<OrganizationSummaryDto>),
+        (status = OK, description = "A page of the organizations.", body = OrganizationPageDto),
+        (status = UNPROCESSABLE_ENTITY, description = "`after` is not a page's `next` (`/after`: `invalid`).",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
@@ -55,14 +60,18 @@ fn without_unavailable(state: &AppState, mut permissions: Vec<Action>) -> Vec<Ac
 pub(super) async fn list(
     State(state): State<AppState>,
     Caller(actor): Caller,
-) -> Result<Json<Vec<OrganizationSummaryDto>>, AppError> {
-    let organizations = service::list(&state.db, &state.authz, &actor).await?;
-    Ok(Json(
-        organizations
+    Query(query): Query<OrganizationQuery>,
+) -> Result<Json<OrganizationPageDto>, AppError> {
+    let after = names::after(query.after.as_deref())?;
+    let page = service::list(&state.db, &state.authz, &actor, after.as_ref(), query.limit).await?;
+    Ok(Json(OrganizationPageDto {
+        organizations: page
+            .items
             .into_iter()
             .map(OrganizationSummaryDto::from)
             .collect(),
-    ))
+        next: page.next.map(|slug| slug.as_str().to_owned()),
+    }))
 }
 
 /// Creates an organization. Platform admins only.

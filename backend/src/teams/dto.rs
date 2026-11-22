@@ -26,6 +26,25 @@ pub struct TeamSummaryDto {
     pub idp_group: Option<String>,
 }
 
+/// A page of the teams the caller may see.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TeamPageDto {
+    pub teams: Vec<TeamSummaryDto>,
+    /// Pass as `after` for the next page; `null` on the last one.
+    pub next: Option<String>,
+}
+
+/// `GET /teams` parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct TeamQuery {
+    /// The previous page's `next`.
+    pub after: Option<String>,
+    /// Teams per page: 1 to 500, default 100.
+    pub limit: Option<i64>,
+}
+
 /// A team, and what the caller may do to it.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TeamDto {

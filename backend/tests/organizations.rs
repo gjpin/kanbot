@@ -132,8 +132,10 @@ async fn audit_actions(pool: &PgPool) -> Vec<(String, Vec<String>, Value)> {
     .collect()
 }
 
-fn slugs(list: &Value) -> Vec<&str> {
-    list.as_array()
+/// The slugs of a page of `GET /organizations`.
+fn slugs(page: &Value) -> Vec<&str> {
+    page["organizations"]
+        .as_array()
         .unwrap()
         .iter()
         .map(|item| item["slug"].as_str().unwrap())
@@ -178,6 +180,29 @@ async fn platform_admins_create_organizations(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn organizations_come_a_page_at_a_time(pool: PgPool) {
+    let api = Api::new(pool);
+    let root = admin("root");
+    for slug in ["acme", "zeta"] {
+        api.organization(&root, slug).await;
+    }
+    let (status, page) = api.get("/organizations?limit=2", &root).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(slugs(&page), ["acme", "default"]);
+    assert_eq!(page["next"], "default");
+    let (_, page) = api.get("/organizations?limit=2&after=default", &root).await;
+    assert_eq!(slugs(&page), ["zeta"]);
+    assert_eq!(page["next"], Value::Null);
+
+    let (status, body) = api.get("/organizations?after=Not%20a%20slug", &root).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/after", "code": "invalid" }])
+    );
+}
+
+#[sqlx::test]
 async fn plain_users_cannot_create_or_see_organizations(pool: PgPool) {
     let api = Api::new(pool.clone());
     let bob = user("bob", &[]);
@@ -192,7 +217,7 @@ async fn plain_users_cannot_create_or_see_organizations(pool: PgPool) {
     assert_eq!(body["code"], "forbidden");
     let (status, list) = api.get("/organizations", &bob).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list, json!([]));
+    assert_eq!(list, json!({ "organizations": [], "next": null }));
     let (status, _) = api
         .get(&format!("/organizations/{DEFAULT_ORGANIZATION}"), &bob)
         .await;

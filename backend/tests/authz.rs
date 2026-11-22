@@ -12,6 +12,7 @@ use kanbot_backend::{
         service,
     },
     error::AppError,
+    names::Slug,
     organizations::model::OrganizationId,
     teams::model::TeamId,
     users::model::{AuthenticatedUser, UserId},
@@ -373,6 +374,30 @@ async fn load_world(
     (users, teams, organizations)
 }
 
+/// Every page of a list, checking that each page but the last is full.
+async fn every_page<T>(
+    limit: i64,
+    page: impl AsyncFn(Option<&Slug>) -> (Vec<T>, Option<Slug>),
+) -> Vec<T> {
+    let limit = usize::try_from(limit).unwrap();
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let (items, next) = page(after.as_ref()).await;
+        let last = next.is_none();
+        if last {
+            assert!(items.len() <= limit);
+        } else {
+            assert_eq!(items.len(), limit, "only the last page is short");
+        }
+        all.extend(items);
+        if last {
+            return all;
+        }
+        after = next;
+    }
+}
+
 async fn check_visible(pool: &PgPool, policies: &Policies, world: &World) {
     let (users, teams, organizations) = load_world(pool, world).await;
     for (index, (user, role)) in users.iter().enumerate() {
@@ -396,9 +421,19 @@ async fn check_visible(pool: &PgPool, policies: &Policies, world: &World) {
                 allowed.push(organization);
             }
         }
-        let mut visible = service::visible_organizations(pool, policies, &actor)
-            .await
-            .unwrap();
+        // Pages of 1 to 3, so that forbids also remove candidates mid-page.
+        let limit = match index % 3 {
+            0 => 1,
+            1 => 2,
+            _ => 3,
+        };
+        let mut visible = every_page(limit, async |after| {
+            let page = service::visible_organizations(pool, policies, &actor, after, Some(limit))
+                .await
+                .unwrap();
+            (page.items, page.next)
+        })
+        .await;
         allowed.sort();
         visible.sort();
         assert_eq!(visible, allowed, "organizations of user {index}: {world:?}");
@@ -420,9 +455,13 @@ async fn check_visible(pool: &PgPool, policies: &Policies, world: &World) {
                 allowed.push(team);
             }
         }
-        let mut visible = service::visible_teams(pool, policies, &actor)
-            .await
-            .unwrap();
+        let mut visible = every_page(limit, async |after| {
+            let page = service::visible_teams(pool, policies, &actor, after, Some(limit))
+                .await
+                .unwrap();
+            (page.items, page.next)
+        })
+        .await;
         allowed.sort();
         visible.sort();
         assert_eq!(visible, allowed, "teams of user {index}: {world:?}");
@@ -508,9 +547,10 @@ async fn visible_lists_are_sorted_by_slug(pool: PgPool) {
             }
         }
     };
-    let organizations = service::visible_organizations(&pool, &policies, &admin)
+    let organizations = service::visible_organizations(&pool, &policies, &admin, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     let mut listed = Vec::new();
     for id in organizations {
         listed.push(
@@ -523,9 +563,10 @@ async fn visible_lists_are_sorted_by_slug(pool: PgPool) {
     assert_eq!(listed, slugs("organizations").await);
     assert_eq!(listed, ["alpha", "default", "mid", "zeta"]);
 
-    let teams = service::visible_teams(&pool, &policies, &admin)
+    let teams = service::visible_teams(&pool, &policies, &admin, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     let mut listed = Vec::new();
     for id in teams {
         listed.push(

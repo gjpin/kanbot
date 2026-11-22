@@ -1,7 +1,7 @@
 //! Authorization decisions for the other features. Every feature that
 //! touches organization data asks here; none checks roles itself.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -14,6 +14,7 @@ use crate::{
         repo,
     },
     error::AppError,
+    names::Slug,
     organizations::model::OrganizationId,
     teams::model::TeamId,
 };
@@ -344,7 +345,104 @@ async fn filter_visible(
 // `tests/authz.rs` checks, for random data, that the result equals Cedar's
 // decision on every organization and team.
 
-/// The organizations `actor` may read, by slug.
+/// Organizations or teams per page of a list, by default.
+pub const DEFAULT_PAGE: i64 = 100;
+
+/// At most.
+pub const MAX_PAGE: i64 = 500;
+
+/// A page of what an actor may see, by slug.
+#[derive(Debug, PartialEq, Eq)]
+pub struct VisiblePage<T> {
+    pub items: Vec<T>,
+    /// Where the next page starts: the last item's slug. `None` on the
+    /// last page.
+    pub next: Option<Slug>,
+}
+
+/// What a paged list lists.
+#[derive(Clone, Copy)]
+enum Listed {
+    Organizations,
+    Teams,
+}
+
+/// Up to `limit` (default [`DEFAULT_PAGE`], at most [`MAX_PAGE`]) of the
+/// organizations or teams after `after` that `actor` may see. A forbid can
+/// remove candidates, so this asks for more until the page is full: `next`
+/// is always a slug the actor may see.
+async fn visible_page(
+    db: &PgPool,
+    policies: &Policies,
+    actor: &Actor,
+    listed: Listed,
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<VisiblePage<Resource>, AppError> {
+    let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
+    let platform_admin = actor.user.role == PlatformRole::Admin;
+    let mut after = after.cloned();
+    let mut page: Vec<(Resource, Slug)> = Vec::new();
+    loop {
+        // One more than needed tells whether there are more.
+        let wanted = limit.saturating_sub(i64::try_from(page.len()).unwrap_or(limit));
+        let after_slug = after.as_ref().map(Slug::as_str);
+        let mut batch: Vec<(Resource, Slug)> = match listed {
+            Listed::Organizations => repo::candidate_organizations(
+                db,
+                actor.user.id,
+                platform_admin,
+                after_slug,
+                wanted.saturating_add(1),
+            )
+            .await?
+            .into_iter()
+            .map(|(id, slug)| (Resource::Organization(OrganizationId::from_uuid(id)), slug))
+            .collect(),
+            Listed::Teams => repo::candidate_teams(
+                db,
+                actor.user.id,
+                platform_admin,
+                after_slug,
+                wanted.saturating_add(1),
+            )
+            .await?
+            .into_iter()
+            .map(|(id, slug)| (Resource::Team(TeamId::from_uuid(id)), slug))
+            .collect(),
+        };
+        let more = usize::try_from(wanted).is_ok_and(|wanted| batch.len() > wanted);
+        if more {
+            batch.pop();
+        }
+        after = batch.last().map(|(_, slug)| slug.clone());
+        let visible: HashSet<Resource> = filter_visible(
+            db,
+            policies,
+            actor,
+            batch.iter().map(|(resource, _)| *resource).collect(),
+        )
+        .await?
+        .into_iter()
+        .collect();
+        page.extend(
+            batch
+                .into_iter()
+                .filter(|(resource, _)| visible.contains(resource)),
+        );
+        let full = usize::try_from(limit).is_ok_and(|limit| page.len() >= limit);
+        if !more || full {
+            let next = page.last().filter(|_| more).map(|(_, slug)| slug.clone());
+            return Ok(VisiblePage {
+                items: page.into_iter().map(|(resource, _)| resource).collect(),
+                next,
+            });
+        }
+    }
+}
+
+/// A page of the organizations `actor` may read, by slug (see
+/// [`visible_page`]).
 ///
 /// # Errors
 ///
@@ -353,25 +451,24 @@ pub async fn visible_organizations(
     db: &PgPool,
     policies: &Policies,
     actor: &Actor,
-) -> Result<Vec<OrganizationId>, AppError> {
-    let candidates =
-        repo::candidate_organizations(db, actor.user.id, actor.user.role == PlatformRole::Admin)
-            .await?;
-    let candidates = candidates
-        .into_iter()
-        .map(|id| Resource::Organization(OrganizationId::from_uuid(id)))
-        .collect();
-    Ok(filter_visible(db, policies, actor, candidates)
-        .await?
-        .into_iter()
-        .filter_map(|resource| match resource {
-            Resource::Organization(id) => Some(id),
-            Resource::Platform | Resource::Team(_) => None,
-        })
-        .collect())
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<VisiblePage<OrganizationId>, AppError> {
+    let page = visible_page(db, policies, actor, Listed::Organizations, after, limit).await?;
+    Ok(VisiblePage {
+        items: page
+            .items
+            .into_iter()
+            .filter_map(|resource| match resource {
+                Resource::Organization(id) => Some(id),
+                Resource::Platform | Resource::Team(_) => None,
+            })
+            .collect(),
+        next: page.next,
+    })
 }
 
-/// The teams `actor` may see, by slug.
+/// A page of the teams `actor` may see, by slug (see [`visible_page`]).
 ///
 /// # Errors
 ///
@@ -380,19 +477,19 @@ pub async fn visible_teams(
     db: &PgPool,
     policies: &Policies,
     actor: &Actor,
-) -> Result<Vec<TeamId>, AppError> {
-    let candidates =
-        repo::candidate_teams(db, actor.user.id, actor.user.role == PlatformRole::Admin).await?;
-    let candidates = candidates
-        .into_iter()
-        .map(|id| Resource::Team(TeamId::from_uuid(id)))
-        .collect();
-    Ok(filter_visible(db, policies, actor, candidates)
-        .await?
-        .into_iter()
-        .filter_map(|resource| match resource {
-            Resource::Team(id) => Some(id),
-            Resource::Platform | Resource::Organization(_) => None,
-        })
-        .collect())
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<VisiblePage<TeamId>, AppError> {
+    let page = visible_page(db, policies, actor, Listed::Teams, after, limit).await?;
+    Ok(VisiblePage {
+        items: page
+            .items
+            .into_iter()
+            .filter_map(|resource| match resource {
+                Resource::Team(id) => Some(id),
+                Resource::Platform | Resource::Organization(_) => None,
+            })
+            .collect(),
+        next: page.next,
+    })
 }

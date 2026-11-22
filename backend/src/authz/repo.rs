@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     authz::model::{OrganizationFacts, TeamFacts, UserFacts},
+    names::Slug,
     organizations::model::{Access, OrganizationId},
     teams::model::TeamId,
     users::model::UserId,
@@ -159,57 +160,82 @@ pub(super) async fn organization_facts(
         .collect())
 }
 
+fn slugged(id: Uuid, slug: &str) -> Result<(Uuid, Slug), sqlx::Error> {
+    Slug::parse(slug)
+        .map(|slug| (id, slug))
+        .map_err(|_| sqlx::Error::Decode("slug".into()))
+}
+
 /// Every organization the built-in permits could let the user read: all
 /// of them for a platform admin, else those they administer or that one
-/// of their teams is linked to. By slug.
+/// of their teams is linked to. Up to `limit`, by slug, after `after`;
+/// with their slugs.
 #[tracing::instrument(skip_all, fields(user.id = %user.as_uuid()))]
 pub(super) async fn candidate_organizations(
     db: &PgPool,
     user: UserId,
     platform_admin: bool,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar!(
+    after: Option<&str>,
+    limit: i64,
+) -> Result<Vec<(Uuid, Slug)>, sqlx::Error> {
+    sqlx::query!(
         r#"
-        SELECT o.id
+        SELECT o.id, o.slug
         FROM organizations o
-        WHERE $2
-           OR o.id IN (SELECT organization_id FROM organization_admins WHERE user_id = $1)
-           OR o.id IN (
-               SELECT l.organization_id
-               FROM organization_teams l
-               JOIN team_members m ON m.team_id = l.team_id
-               WHERE m.user_id = $1
-           )
+        WHERE ($2
+               OR o.id IN (SELECT organization_id FROM organization_admins WHERE user_id = $1)
+               OR o.id IN (
+                   SELECT l.organization_id
+                   FROM organization_teams l
+                   JOIN team_members m ON m.team_id = l.team_id
+                   WHERE m.user_id = $1
+               ))
+          AND ($3::text IS NULL OR o.slug > $3)
         ORDER BY o.slug
+        LIMIT $4
         "#,
         user.as_uuid(),
         platform_admin,
+        after,
+        limit,
     )
     .fetch_all(db)
-    .await
+    .await?
+    .into_iter()
+    .map(|row| slugged(row.id, &row.slug))
+    .collect()
 }
 
 /// Every team the built-in permits could let the user see: all of them
-/// for a platform admin or an organization admin, else their own. By
-/// slug.
+/// for a platform admin or an organization admin, else their own. Up to
+/// `limit`, by slug, after `after`; with their slugs.
 #[tracing::instrument(skip_all, fields(user.id = %user.as_uuid()))]
 pub(super) async fn candidate_teams(
     db: &PgPool,
     user: UserId,
     platform_admin: bool,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar!(
+    after: Option<&str>,
+    limit: i64,
+) -> Result<Vec<(Uuid, Slug)>, sqlx::Error> {
+    sqlx::query!(
         r#"
-        SELECT t.id
+        SELECT t.id, t.slug
         FROM teams t
-        WHERE $2
-           OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)
-           OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1)
+        WHERE ($2
+               OR EXISTS (SELECT 1 FROM organization_admins WHERE user_id = $1)
+               OR t.id IN (SELECT team_id FROM team_members WHERE user_id = $1))
+          AND ($3::text IS NULL OR t.slug > $3)
         ORDER BY t.slug
+        LIMIT $4
         "#,
         user.as_uuid(),
         platform_admin,
+        after,
+        limit,
     )
     .fetch_all(db)
-    .await
+    .await?
+    .into_iter()
+    .map(|row| slugged(row.id, &row.slug))
+    .collect()
 }

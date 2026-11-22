@@ -776,7 +776,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - [x] **4.6 API** (audit `action`s are event names such as `organization.team_linked`; responses list the caller's `permissions`; explicit, unique operation IDs; `DELETE /teams/{id}/idp_group` added in phase 5 because the generated client cannot send a `null`) (all through `authz::can`, all documented in OpenAPI, all
   writing the audit log):
   - **Organizations:**
-    - `GET /organizations` (visible ones), `POST /organizations`;
+    - `GET /organizations` (visible ones, by slug, in pages: `after`/`next`), `POST /organizations`;
     - `GET`, `PATCH` and `DELETE /organizations/{id}` (delete removes links and
       admins; the Default organization cannot be deleted);
     - `GET /organizations/{id}/admins`, and `PUT` or `DELETE
@@ -784,7 +784,7 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
     - `GET /organizations/{id}/teams`, `PUT /organizations/{id}/teams/{team_id}`
       (`{ access }`), `DELETE /organizations/{id}/teams/{team_id}`.
   - **Teams:**
-    - `GET /teams`, `POST /teams`;
+    - `GET /teams` (in pages, as organizations), `POST /teams`;
     - `GET`, `PATCH` and `DELETE /teams/{id}` (`PATCH` of `idp_group` is platform
       admin only);
     - `GET /teams/{id}/members`, `PUT /teams/{id}/members/{user_id}`

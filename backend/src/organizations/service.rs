@@ -12,9 +12,10 @@ use crate::{
     authz::{
         model::{Action, Actor, Decision, Resource},
         policies::Policies,
-        service::{self as authz, allowed_actions},
+        service::{self as authz, VisiblePage, allowed_actions},
     },
     error::AppError,
+    names::Slug,
     organizations::{
         model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
         repo,
@@ -42,7 +43,8 @@ fn entry(
     )
 }
 
-/// The organizations `actor` may read, by slug.
+/// A page of the organizations `actor` may read, by slug, after `after`
+/// (see [`authz::visible_organizations`]).
 ///
 /// # Errors
 ///
@@ -51,13 +53,15 @@ pub async fn list(
     db: &PgPool,
     policies: &Policies,
     actor: &Actor,
-) -> Result<Vec<Organization>, AppError> {
-    let ids: Vec<uuid::Uuid> = authz::visible_organizations(db, policies, actor)
-        .await?
-        .iter()
-        .map(OrganizationId::as_uuid)
-        .collect();
-    Ok(repo::list(db, &ids).await?)
+    after: Option<&Slug>,
+    limit: Option<i64>,
+) -> Result<VisiblePage<Organization>, AppError> {
+    let page = authz::visible_organizations(db, policies, actor, after, limit).await?;
+    let ids: Vec<uuid::Uuid> = page.items.iter().map(OrganizationId::as_uuid).collect();
+    Ok(VisiblePage {
+        items: repo::list(db, &ids).await?,
+        next: page.next,
+    })
 }
 
 /// The organization, and the actions `actor` may do to it besides

@@ -1,7 +1,7 @@
 //! Request and response types of the `/organizations` routes.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
@@ -18,6 +18,25 @@ pub struct OrganizationSummaryDto {
     pub id: Uuid,
     pub slug: String,
     pub name: String,
+}
+
+/// A page of the organizations the caller may read.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrganizationPageDto {
+    pub organizations: Vec<OrganizationSummaryDto>,
+    /// Pass as `after` for the next page; `null` on the last one.
+    pub next: Option<String>,
+}
+
+/// `GET /organizations` parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationQuery {
+    /// The previous page's `next`.
+    pub after: Option<String>,
+    /// Organizations per page: 1 to 500, default 100.
+    pub limit: Option<i64>,
 }
 
 /// An organization, and what the caller may do to it.
