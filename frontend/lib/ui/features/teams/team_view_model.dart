@@ -25,7 +25,12 @@ class TeamViewModel extends ViewModel {
       _details = const Loading();
       notifyListeners();
     }
-    final (team, members) = await (_teams.get(id), _teams.members(id)).wait;
+    // In parallel; a contract break is rethrown as itself (not wrapped).
+    final teamLoad = _teams.get(id);
+    final membersLoad = _teams.members(id);
+    await Future.wait([teamLoad, membersLoad]);
+    final team = await teamLoad;
+    final members = await membersLoad;
     _details = switch ((team, members)) {
       (Ok(value: final t), Ok(value: final m)) => Loaded((
         team: t,

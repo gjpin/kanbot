@@ -102,6 +102,8 @@ jobs:
       - run: flutter pub get --enforce-lockfile
       - name: Sign in end to end
         run: sh integration_test/run_linux.sh
+      - name: Scrolling performance (audit log, scripted server)
+        run: xvfb-run -a flutter test integration_test/scroll_performance_test.dart -d linux
       - name: Backend log
         if: failure()
         run: cat "$RUNNER_TEMP/backend.log"

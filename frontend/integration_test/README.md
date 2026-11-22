@@ -32,3 +32,16 @@ sh ../frontend/integration_test/run_linux.sh
 ```
 
 CI runs it in the `linux-sign-in` job of `.github/workflows/frontend.yml`.
+
+## Scrolling performance
+
+`scroll_performance_test.dart` scrolls the audit log (the app's longest
+list) against a scripted server, inside `traceAction`, and checks the list is
+built lazily. It needs no stack, only a desktop:
+
+```sh
+xvfb-run -a flutter test integration_test/scroll_performance_test.dart -d linux
+```
+
+CI runs it in the `linux-sign-in` job. The timings it records only mean
+something in profile mode on a real device (`frontend/AGENTS.md` §6).

@@ -35,11 +35,14 @@ class OrganizationViewModel extends ViewModel {
       _details = const Loading();
       notifyListeners();
     }
-    final (organization, admins, links) = await (
-      _organizations.get(id),
-      _organizations.admins(id),
-      _organizations.teamLinks(id),
-    ).wait;
+    // In parallel; a contract break is rethrown as itself (not wrapped).
+    final organizationLoad = _organizations.get(id);
+    final adminsLoad = _organizations.admins(id);
+    final linksLoad = _organizations.teamLinks(id);
+    await Future.wait([organizationLoad, adminsLoad, linksLoad]);
+    final organization = await organizationLoad;
+    final admins = await adminsLoad;
+    final links = await linksLoad;
     _details = switch ((organization, admins, links)) {
       (Ok(value: final o), Ok(value: final a), Ok(value: final l)) => Loaded((
         organization: o,
