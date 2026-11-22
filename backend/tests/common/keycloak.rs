@@ -53,8 +53,28 @@ fn cookies(response: &reqwest::Response) -> Vec<String> {
 ///
 /// # Panics
 ///
-/// If Keycloak is unreachable or answers unexpectedly.
+/// If Keycloak is unreachable, refuses the login or answers unexpectedly.
 pub async fn authorize(username: &str, password: &str, authorization_url: Url) -> Url {
+    let response = submit_login(username, password, authorization_url).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FOUND,
+        "Keycloak refused the login"
+    );
+    Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap()
+}
+
+/// Submits Keycloak's login form for `username` with `password`, at the
+/// page `authorization_url` leads to; Keycloak's answer.
+///
+/// # Panics
+///
+/// If Keycloak is unreachable or its login page is not as expected.
+pub async fn submit_login(
+    username: &str,
+    password: &str,
+    authorization_url: Url,
+) -> reqwest::Response {
     let client = client();
     let page = client
         .get(authorization_url)
@@ -71,7 +91,7 @@ pub async fn authorize(username: &str, password: &str, authorization_url: Url) -
         .and_then(|rest| rest.split('"').next())
         .expect("the login form")
         .replace("&amp;", "&");
-    let response = client
+    client
         .post(action)
         .header(header::COOKIE, cookie)
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -82,13 +102,7 @@ pub async fn authorize(username: &str, password: &str, authorization_url: Url) -
         ]))
         .send()
         .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::FOUND,
-        "Keycloak refused the login"
-    );
-    Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap()
+        .unwrap()
 }
 
 /// An access token for `username`, through the authorization code flow

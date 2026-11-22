@@ -103,14 +103,25 @@ async fn forward(
         );
     }
     let response_type = response.headers().get(header::CONTENT_TYPE).cloned();
-    let body = response.bytes().await.map_err(|error| {
+    // In chunks, stopping at the cap: a collector (or proxy) sending a huge
+    // or endless body must not fill the memory.
+    let mut response = response;
+    let mut body = Vec::new();
+    let mut too_large = false;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
         tracing::warn!(%error, signal, "telemetry collector response failed");
         AppError::Unavailable
-    })?;
-    let body = if body.len() > MAX_RESPONSE_BYTES {
+    })? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            too_large = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let body = if too_large {
         Bytes::new()
     } else {
-        body
+        Bytes::from(body)
     };
     let mut response = (status, body).into_response();
     if let Some(response_type) = response_type {

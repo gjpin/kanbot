@@ -139,11 +139,12 @@ async fn a_wrong_password_is_refused_by_keycloak(pool: PgPool) {
         .unwrap();
     let authorize =
         reqwest::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let result = tokio::spawn(keycloak::authorize("alice", "wrong-password", authorize)).await;
-    assert!(
-        result.is_err(),
-        "Keycloak must not redirect after a wrong password"
-    );
+    let refused = keycloak::submit_login("alice", "wrong-password", authorize).await;
+    // The login page again, with Keycloak's error: no redirect, no code.
+    assert_eq!(refused.status(), reqwest::StatusCode::OK);
+    assert!(refused.headers().get(header::LOCATION).is_none());
+    let page = refused.text().await.unwrap();
+    assert!(page.contains("Invalid username or password"), "{page}");
 }
 
 #[sqlx::test]

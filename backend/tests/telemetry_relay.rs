@@ -587,3 +587,37 @@ async fn rate_limits_each_user(pool: PgPool) {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
+
+#[sqlx::test]
+async fn an_endless_collector_response_is_cut_off(pool: PgPool) {
+    // The collector answers 200 and then never stops sending: kanbot reads
+    // up to its cap, drops the body, and answers at once.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = socket.read(&mut request).await;
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+            .await
+            .unwrap();
+        let chunk = [b"4000\r\n".as_slice(), &[b'x'; 0x4000], b"\r\n"].concat();
+        // Until the relay hangs up.
+        while socket.write_all(&chunk).await.is_ok() {}
+    });
+    let upstream: Url = format!("http://{addr}").parse().unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app(&pool, upstream)
+            .await
+            .oneshot(export("traces", "application/x-protobuf", "batch")),
+    )
+    .await
+    .expect("answered without reading the whole body")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_of(response).await, Vec::<u8>::new());
+}
