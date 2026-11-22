@@ -70,22 +70,17 @@ jobs:
       - name: Tests with coverage threshold
         run: cargo llvm-cov --all-features --locked --fail-under-lines "$COVERAGE_MIN_LINES"
 
-  # Every Cargo workspace, with backend/deny.toml. The fuzz targets are
-  # never shipped, and libfuzzer-sys is partly NCSA-licensed, which
-  # deny.toml does not allow: their licenses are not checked.
+  # Every Cargo workspace, with backend/deny.toml.
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - manifest: backend/Cargo.toml
-            checks: ""
-          - manifest: backend/openshell-api/codegen/Cargo.toml
-            checks: ""
-          - manifest: backend/fuzz/Cargo.toml
-            checks: advisories bans sources
+        manifest:
+          - backend/Cargo.toml
+          - backend/openshell-api/codegen/Cargo.toml
+          - backend/fuzz/Cargo.toml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,7 +89,6 @@ jobs:
         with:
           manifest-path: ${{ matrix.manifest }}
           command: check
-          command-arguments: ${{ matrix.checks }}
 
   migrations:
     if: github.event_name == 'pull_request'

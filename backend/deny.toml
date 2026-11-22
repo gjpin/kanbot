@@ -23,6 +23,13 @@ allow = [
     "Unicode-3.0",
 ]
 
+# libfuzzer-sys (fuzz/ only, never shipped) bundles LLVM's libFuzzer, which
+# is NCSA-licensed. The exception names that one crate, so NCSA stays
+# disallowed everywhere else.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
+
 [licenses.private]
 # Our own crates are `publish = false` and carry no license field.
 ignore = true
