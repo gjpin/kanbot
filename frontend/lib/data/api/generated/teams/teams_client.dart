@@ -5,15 +5,12 @@ import 'dart:convert' as convert;
 import 'package:http/http.dart' as http;
 
 import 'package:kanbot/data/api/generated/http_request_options.dart';
-import 'package:kanbot/data/api/generated/organizations/models/team_summary_dto.dart'
-    as models
-    show TeamSummaryDto;
 import 'package:kanbot/data/api/generated/teams/models/member_change_dto.dart'
     as models
     show MemberChangeDto;
-import 'package:kanbot/data/api/generated/teams/models/member_dto.dart'
+import 'package:kanbot/data/api/generated/teams/models/member_page_dto.dart'
     as models
-    show MemberDto;
+    show MemberPageDto;
 import 'package:kanbot/data/api/generated/teams/models/new_team_dto.dart'
     as models
     show NewTeamDto;
@@ -23,6 +20,9 @@ import 'package:kanbot/data/api/generated/teams/models/team_changes_dto.dart'
 import 'package:kanbot/data/api/generated/teams/models/team_dto.dart'
     as models
     show TeamDto;
+import 'package:kanbot/data/api/generated/teams/models/team_summary_dto.dart'
+    as models
+    show TeamSummaryDto;
 
 class TeamsClient {
   TeamsClient(this._transport, {required this.baseUrl, this.prepareRequest});
@@ -32,6 +32,28 @@ class TeamsClient {
   final Uri baseUrl;
 
   final void Function(http.BaseRequest, Map<String, Object?>)? prepareRequest;
+
+  static String _httpQuery(Map<String, Object?> fields) {
+    final entries = <String>[];
+    void add(String key, Object? value) {
+      if (value is Iterable) {
+        for (final item in value) {
+          add(key, item);
+        }
+      } else if (value is Map) {
+        for (final entry in value.entries) {
+          add('$key[${entry.key}]', entry.value);
+        }
+      } else {
+        entries.add(
+          '${Uri.encodeQueryComponent(key)}=${Uri.encodeQueryComponent(value?.toString() ?? '')}',
+        );
+      }
+    }
+
+    fields.forEach(add);
+    return entries.join('&');
+  }
 
   /// The teams the caller may see, by slug: their own, or all of them for
   /// platform and organization admins.
@@ -395,8 +417,9 @@ class TeamsClient {
     });
   }
 
-  /// The team's members: maintainers first, then by display name.
-  Future<List<models.MemberDto>> listTeamMembers({
+  /// The team's members, a page at a time: maintainers first, then by
+  /// display name.
+  Future<models.MemberPageDto> listTeamMembers({
     Map<String, Object?> extra = const {
       'openapi.security': [
         {'bearer': <String>[]},
@@ -421,12 +444,27 @@ class TeamsClient {
 
     /// The team's ID (a UUID).
     required String id,
+
+    /// The previous page's `next`.
+    String? after,
+
+    /// Members per page: 1 to 500, default 100.
+    int? limit,
   }) async {
     if (const {'', '.', '..'}.contains(Uri.encodeComponent(id))) {
       throw ArgumentError('Invalid path segment.');
     }
     final base = baseUrl.toString().replaceFirst(RegExp(r'/+$'), '');
-    final url = Uri.parse('$base/teams/${Uri.encodeComponent(id)}/members');
+    var url = Uri.parse('$base/teams/${Uri.encodeComponent(id)}/members');
+    final query = _httpQuery(<String, Object?>{
+      'after': ?after,
+      'limit': ?limit,
+    });
+    if (query.isNotEmpty) {
+      url = url.replace(
+        query: [url.query, query].where((s) => s.isNotEmpty).join('&'),
+      );
+    }
     final request = http.AbortableRequest(
       'GET',
       url,
@@ -451,11 +489,7 @@ class TeamsClient {
     }
     return await convert.utf8.decoder.bind(response.stream).join().then((text) {
       final Object? value = convert.jsonDecode(text);
-      return (value as List<Object?>)
-          .map(
-            (item) => models.MemberDto.fromJson(item as Map<String, Object?>),
-          )
-          .toList();
+      return models.MemberPageDto.fromJson(value as Map<String, Object?>);
     });
   }
 

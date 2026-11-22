@@ -74,8 +74,25 @@ pub async fn set_telemetry_opt_in(db: &PgPool, id: UserId, opt_in: bool) -> Resu
 /// [`AppError::NotFound`] if the user does not exist, or a database
 /// error.
 pub async fn disable(db: &PgPool, id: UserId) -> Result<(), AppError> {
-    if repo::disable(db, id).await? {
-        tracing::info!(user.id = %id.as_uuid(), "user disabled");
+    let mut tx = db.begin().await?;
+    if !repo::disable(&mut tx, id).await? {
+        return Err(AppError::NotFound);
+    }
+    crate::sessions::service::end_user_sessions(&mut tx, id).await?;
+    tx.commit().await?;
+    tracing::info!(user.id = %id.as_uuid(), "user disabled");
+    Ok(())
+}
+
+/// Refuses a user who does not exist or is disabled, as someone to add to
+/// an organization or a team: [`AppError::NotFound`], as `GET /users`
+/// does not list them either.
+///
+/// # Errors
+///
+/// [`AppError::NotFound`], or a database error.
+pub async fn require_active(db: &PgPool, id: UserId) -> Result<(), AppError> {
+    if repo::is_active(db, id).await? {
         Ok(())
     } else {
         Err(AppError::NotFound)
@@ -88,7 +105,8 @@ pub async fn disable(db: &PgPool, id: UserId) -> Result<(), AppError> {
 ///
 /// A database error.
 pub async fn end_sessions(db: &PgPool, id: UserId) -> Result<(), AppError> {
-    let ended = repo::delete_sessions(db, id).await?;
+    let mut conn = db.acquire().await?;
+    let ended = crate::sessions::service::end_user_sessions(&mut conn, id).await?;
     tracing::info!(
         user.id = %id.as_uuid(),
         sessions = i64::try_from(ended).unwrap_or(i64::MAX),

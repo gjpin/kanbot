@@ -121,7 +121,14 @@ Map<String, Object?> team({
   'permissions': permissions,
 };
 
-Map<String, Object?> user({String id = bobId, String? name = 'Bob'}) => {
-  'id': id,
-  'display_name': name,
+Map<String, Object?> user({
+  String id = bobId,
+  String? name = 'Bob',
+  bool disabled = false,
+}) => {'id': id, 'display_name': name, 'disabled': disabled};
+
+/// `GET /teams/{id}/members`: a page of [members].
+Map<String, Object?> memberPage(List<Object?> members, {String? next}) => {
+  'members': members,
+  'next': next,
 };

@@ -53,10 +53,16 @@ class TeamsRepository {
   Future<Result<void>> delete(String id) =>
       apiResult(() => _client.deleteTeam(id: id));
 
-  Future<Result<List<Member>>> members(String id) => apiResult(
-    () async =>
-        (await _client.listTeamMembers(id: id)).map(memberFrom).toList(),
-  );
+  /// A page of the team's members, after [after] (a previous page's
+  /// `next`).
+  Future<Result<MemberPage>> members(String id, {String? after}) =>
+      apiResult(() async {
+        final page = await _client.listTeamMembers(id: id, after: after);
+        return MemberPage(
+          members: page.members.map(memberFrom).toList(),
+          next: page.next,
+        );
+      });
 
   /// Adds [userId] with [role], or changes their role.
   Future<Result<void>> setMember(String id, String userId, TeamRole role) =>

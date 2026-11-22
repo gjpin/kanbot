@@ -82,23 +82,41 @@ pub(super) async fn insert(db: &mut PgConnection, new: &Organization) -> Result<
     Ok(())
 }
 
-/// Applies `changes`. `None` if the organization does not exist.
+/// Applies `changes`, and says whether anything changed (changing a value
+/// to itself writes nothing). `None` if the organization does not exist.
 #[tracing::instrument(skip_all, fields(organization.id = %id.as_uuid()))]
 pub(super) async fn update(
     db: &mut PgConnection,
     id: OrganizationId,
     changes: &OrganizationChanges,
-) -> Result<Option<Organization>, sqlx::Error> {
-    sqlx::query!(
+) -> Result<Option<(Organization, bool)>, sqlx::Error> {
+    let slug = changes.slug.as_ref().map(Slug::as_str);
+    let name = changes.name.as_ref().map(Name::as_str);
+    let updated = sqlx::query!(
         r#"
         UPDATE organizations
         SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND (slug <> COALESCE($2, slug) OR name <> COALESCE($3, name))
         RETURNING id, slug, name, openshell_workspace
         "#,
         id.as_uuid(),
-        changes.slug.as_ref().map(Slug::as_str),
-        changes.name.as_ref().map(Name::as_str),
+        slug,
+        name,
+    )
+    .fetch_optional(&mut *db)
+    .await?;
+    if let Some(row) = updated {
+        let organization = organization(
+            row.id,
+            &row.slug,
+            &row.name,
+            row.openshell_workspace.as_deref(),
+        )?;
+        return Ok(Some((organization, true)));
+    }
+    sqlx::query!(
+        "SELECT id, slug, name, openshell_workspace FROM organizations WHERE id = $1",
+        id.as_uuid()
     )
     .fetch_optional(db)
     .await?
@@ -109,6 +127,7 @@ pub(super) async fn update(
             &row.name,
             row.openshell_workspace.as_deref(),
         )
+        .map(|organization| (organization, false))
     })
     .transpose()
 }
@@ -134,7 +153,7 @@ pub(super) async fn admins(
 ) -> Result<Vec<UserSummary>, sqlx::Error> {
     Ok(sqlx::query!(
         r#"
-        SELECT u.id, u.display_name
+        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS "disabled!"
         FROM organization_admins a
         JOIN users u ON u.id = a.user_id
         WHERE a.organization_id = $1
@@ -148,6 +167,7 @@ pub(super) async fn admins(
     .map(|row| UserSummary {
         id: UserId::from_uuid(row.id),
         display_name: row.display_name,
+        disabled: row.disabled,
     })
     .collect())
 }
@@ -237,32 +257,23 @@ pub(super) async fn set_team_link(
     id: OrganizationId,
     team: TeamId,
     access: Access,
-) -> Result<Option<Access>, sqlx::Error> {
-    let previous = sqlx::query_scalar!(
-        r#"
-        SELECT access FROM organization_teams
-        WHERE organization_id = $1 AND team_id = $2
-        FOR UPDATE
-        "#,
-        id.as_uuid(),
-        team.as_uuid()
-    )
-    .fetch_optional(&mut *db)
-    .await?
-    .map(|access| Access::parse(&access).ok_or_else(|| decode("organization_teams.access")))
-    .transpose()?;
-    sqlx::query!(
+) -> Result<bool, sqlx::Error> {
+    // One statement: of two concurrent identical links, one changes the
+    // row and the other sees it unchanged, so the change is audited once.
+    Ok(sqlx::query_scalar!(
         r#"
         INSERT INTO organization_teams (organization_id, team_id, access) VALUES ($1, $2, $3)
         ON CONFLICT (organization_id, team_id) DO UPDATE SET access = EXCLUDED.access
+            WHERE organization_teams.access <> EXCLUDED.access
+        RETURNING access
         "#,
         id.as_uuid(),
         team.as_uuid(),
         access.as_str()
     )
-    .execute(db)
-    .await?;
-    Ok(previous)
+    .fetch_optional(db)
+    .await?
+    .is_some())
 }
 
 /// `false` if `team` was not linked.

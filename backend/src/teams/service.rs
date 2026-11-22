@@ -16,10 +16,10 @@ use crate::{
     },
     error::AppError,
     teams::{
-        model::{Member, MembershipSource, Team, TeamChanges, TeamId, TeamRole},
+        model::{Member, MemberCursor, MembershipSource, Team, TeamChanges, TeamId, TeamRole},
         repo,
     },
-    users::model::UserId,
+    users::{model::UserId, service as users},
 };
 
 /// Brings the user's memberships of IdP-synced teams (`teams.idp_group`)
@@ -124,8 +124,8 @@ pub async fn create(
 }
 
 /// Renames the team, changes its slug, or sets or clears its identity
-/// provider group
-/// (which needs `setTeamIdpGroup`, platform admins only).
+/// provider group (which needs `setTeamIdpGroup`, platform admins only).
+/// A change to the same values is not recorded.
 ///
 /// # Errors
 ///
@@ -140,27 +140,22 @@ pub async fn update(
     changes: &TeamChanges,
 ) -> Result<Team, AppError> {
     let resource = Resource::Team(id);
-    let mut policy_ids = Vec::new();
+    let mut needed = Vec::new();
     if changes.idp_group.is_some() {
-        let decision =
-            authz::require(db, policies, actor, Action::SetTeamIdpGroup, resource).await?;
-        policy_ids.extend(decision.policy_ids);
+        needed.push(Action::SetTeamIdpGroup);
     }
     if changes.slug.is_some() || changes.name.is_some() || changes.idp_group.is_none() {
-        let decision = authz::require(db, policies, actor, Action::ManageTeam, resource).await?;
-        policy_ids.extend(decision.policy_ids);
+        needed.push(Action::ManageTeam);
     }
-    policy_ids.sort();
-    policy_ids.dedup();
-    let decision = Decision {
-        allowed: true,
-        policy_ids,
-    };
+    let decision = authz::require_all(db, policies, actor, &needed, resource).await?;
     let mut tx = db.begin().await?;
-    let updated = repo::update(&mut tx, id, changes)
+    let (updated, modified) = repo::update(&mut tx, id, changes)
         .await
         .map_err(AppError::from_write)?
         .ok_or(AppError::NotFound)?;
+    if !modified {
+        return Ok(updated);
+    }
     audit::record(
         &mut tx,
         &entry(
@@ -204,7 +199,20 @@ pub async fn delete(
     Ok(())
 }
 
-/// The team's members.
+/// Members shown when the caller does not say.
+pub const DEFAULT_MEMBER_PAGE: i64 = 100;
+/// Most members one page holds: an identity provider group can have
+/// thousands.
+pub const MAX_MEMBER_PAGE: i64 = 500;
+
+/// A page of a team's members, and where the next one starts.
+pub struct MemberPage {
+    pub members: Vec<Member>,
+    pub next: Option<MemberCursor>,
+}
+
+/// Up to `limit` (default [`DEFAULT_MEMBER_PAGE`], at most
+/// [`MAX_MEMBER_PAGE`]) of the team's members after `after`.
 ///
 /// # Errors
 ///
@@ -215,36 +223,57 @@ pub async fn members(
     policies: &Policies,
     actor: &Actor,
     id: TeamId,
-) -> Result<Vec<Member>, AppError> {
+    after: Option<&MemberCursor>,
+    limit: Option<i64>,
+) -> Result<MemberPage, AppError> {
     authz::require(db, policies, actor, Action::ViewTeam, Resource::Team(id)).await?;
-    Ok(repo::members(db, id).await?)
+    let limit = limit
+        .unwrap_or(DEFAULT_MEMBER_PAGE)
+        .clamp(1, MAX_MEMBER_PAGE);
+    let mut members = repo::members(db, id, after, limit.saturating_add(1)).await?;
+    let more = usize::try_from(limit).is_ok_and(|limit| members.len() > limit);
+    if more {
+        members.pop();
+    }
+    let next = members.last().filter(|_| more).map(MemberCursor::after);
+    Ok(MemberPage { members, next })
 }
 
-/// Locks the membership for a change. Members of a synced team, and
-/// memberships the sync added, come from the identity provider:
-/// [`AppError::Conflict`].
+/// Locks the membership for a change. The members of a synced team come
+/// from the identity provider: [`AppError::Conflict`]. A membership the
+/// sync left in a team that is no longer synced is editable like any
+/// other. The last maintainer of a team cannot be removed or made a
+/// member (`demoted`): the team would be left without one
+/// ([`AppError::Conflict`]); add another maintainer first.
 async fn editable(
     tx: &mut sqlx::PgConnection,
     id: TeamId,
     user: UserId,
-) -> Result<Option<MembershipSource>, AppError> {
-    let (synced, source) = repo::lock_membership(tx, id, user)
+    demoted: bool,
+) -> Result<Option<(MembershipSource, TeamRole)>, AppError> {
+    let locked = repo::lock_membership(tx, id, user)
         .await?
         .ok_or(AppError::NotFound)?;
-    if synced || source == Some(MembershipSource::Idp) {
+    if locked.synced {
         return Err(AppError::Conflict);
     }
-    Ok(source)
+    let last_maintainer =
+        matches!(locked.membership, Some((_, TeamRole::Maintainer))) && locked.maintainers <= 1;
+    if demoted && last_maintainer {
+        return Err(AppError::Conflict);
+    }
+    Ok(locked.membership)
 }
 
 /// Adds `user` to the team with `role`, or changes their role.
 ///
 /// # Errors
 ///
-/// [`AppError::NotFound`] if the team or the user does not exist,
-/// [`AppError::Forbidden`] unless `actor` may `manageTeamMembers`,
-/// [`AppError::Conflict`] if the membership comes from the identity
-/// provider, or a database error.
+/// [`AppError::NotFound`] if the team or the user does not exist (or the
+/// user is disabled), [`AppError::Forbidden`] unless `actor` may
+/// `manageTeamMembers`, [`AppError::Conflict`] if the team is synced with
+/// an identity provider group or this would demote its last maintainer, or
+/// a database error.
 pub async fn set_member(
     db: &PgPool,
     policies: &Policies,
@@ -261,8 +290,9 @@ pub async fn set_member(
         Resource::Team(id),
     )
     .await?;
+    users::require_active(db, user).await?;
     let mut tx = db.begin().await?;
-    editable(&mut tx, id, user).await?;
+    editable(&mut tx, id, user, role != TeamRole::Maintainer).await?;
     let previous = repo::set_member(&mut tx, id, user, role)
         .await
         .map_err(AppError::from_write)?;
@@ -289,8 +319,9 @@ pub async fn set_member(
 ///
 /// [`AppError::NotFound`] if the team does not exist or `user` is not a
 /// member, [`AppError::Forbidden`] unless `actor` may
-/// `manageTeamMembers`, [`AppError::Conflict`] if the membership comes
-/// from the identity provider, or a database error.
+/// `manageTeamMembers`, [`AppError::Conflict`] if the team is synced with
+/// an identity provider group or `user` is its last maintainer, or a
+/// database error.
 pub async fn remove_member(
     db: &PgPool,
     policies: &Policies,
@@ -307,7 +338,7 @@ pub async fn remove_member(
     )
     .await?;
     let mut tx = db.begin().await?;
-    if editable(&mut tx, id, user).await?.is_none()
+    if editable(&mut tx, id, user, true).await?.is_none()
         || !repo::remove_member(&mut tx, id, user).await?
     {
         return Err(AppError::NotFound);

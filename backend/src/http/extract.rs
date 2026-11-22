@@ -7,7 +7,6 @@ use crate::{
     authz::model::{Actor, Via},
     error::AppError,
     http::client_ip::ClientIp,
-    sessions::model::Platform,
     users::model::AuthenticatedUser,
 };
 
@@ -43,15 +42,13 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let AuthUser(user) = AuthUser::from_request_parts(parts, state).await?;
+        // How this request was authenticated: a web session's token sent as
+        // a bearer header is a session token, not the browser's cookie.
         let via = match parts.extensions.get::<CurrentSession>() {
             Some(CurrentSession {
-                kind: Platform::Web,
-                ..
+                from_cookie: true, ..
             }) => Via::Web,
-            Some(CurrentSession {
-                kind: Platform::Native,
-                ..
-            }) => Via::Native,
+            Some(CurrentSession { .. }) => Via::Native,
             None => Via::Bearer,
         };
         let ClientIp(ip) = *parts
@@ -96,7 +93,7 @@ mod tests {
     use axum::http::Request;
 
     use super::*;
-    use crate::{auth::token::PlatformRole, users::model::UserId};
+    use crate::{auth::token::PlatformRole, sessions::model::Platform, users::model::UserId};
 
     fn parts(user: Option<AuthenticatedUser>) -> Parts {
         let mut request = Request::new(());
@@ -137,16 +134,18 @@ mod tests {
         let ip: std::net::IpAddr = "2001:db8::7".parse().unwrap();
         for (session, via) in [
             (None, Via::Bearer),
-            (Some(Platform::Web), Via::Web),
-            (Some(Platform::Native), Via::Native),
+            (Some((Platform::Web, true)), Via::Web),
+            (Some((Platform::Native, false)), Via::Native),
+            // A web session's token in a bearer header is not the cookie.
+            (Some((Platform::Web, false)), Via::Native),
         ] {
             let mut parts = parts(Some(alice.clone()));
             parts.extensions.insert(ClientIp(ip));
-            if let Some(kind) = session {
+            if let Some((kind, from_cookie)) = session {
                 parts.extensions.insert(CurrentSession {
                     id: uuid::Uuid::new_v4(),
                     kind,
-                    from_cookie: kind == Platform::Web,
+                    from_cookie,
                 });
             }
             let Caller(actor) = Caller::from_request_parts(&mut parts, &()).await.unwrap();

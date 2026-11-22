@@ -28,7 +28,7 @@ async fn platform_admins_read_the_audit_log_newest_first(pool: PgPool) {
     assert_eq!(newest["target_id"], json!(created[2]));
     assert_eq!(
         newest["actor"],
-        json!({ "id": root_id, "display_name": "root (display)" })
+        json!({ "id": root_id, "display_name": "root (display)", "disabled": false })
     );
     assert_eq!(newest["policy_ids"], json!(["builtin.platform-admins"]));
     assert_eq!(newest["details"], json!({}));
@@ -51,6 +51,11 @@ async fn platform_admins_read_the_audit_log_newest_first(pool: PgPool) {
     assert_eq!(second["entries"].as_array().unwrap().len(), 1);
     assert_eq!(second["entries"][0]["target_id"], json!(created[0]));
     assert_eq!(second["next_before"], Value::Null);
+
+    // A page that ends exactly at the last entry says there is no more.
+    let (_, exact) = api.get("/audit?limit=3", &root).await;
+    assert_eq!(exact["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(exact["next_before"], Value::Null);
 
     // Out-of-range limits are clamped.
     let (_, one) = api.get("/audit?limit=0", &root).await;

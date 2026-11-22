@@ -161,6 +161,10 @@ class _TeamPageState extends State<TeamPage> {
                       ListRow(
                         label: displayName(member.user),
                         trailing: [
+                          if (member.user.disabled)
+                            const ShadBadge.destructive(
+                              child: Text(Messages.disabledUser),
+                            ),
                           if (manage &&
                               member.source == MembershipSource.manual) ...[
                             ShadSelect<TeamRole>(
@@ -200,6 +204,12 @@ class _TeamPageState extends State<TeamPage> {
                               ),
                           ],
                         ],
+                      ),
+                    if (value.next != null)
+                      ShadButton.ghost(
+                        onPressed: () async =>
+                            _report(await _viewModel.loadMore()),
+                        child: const Text(Messages.moreMembers),
                       ),
                   ],
                 ),

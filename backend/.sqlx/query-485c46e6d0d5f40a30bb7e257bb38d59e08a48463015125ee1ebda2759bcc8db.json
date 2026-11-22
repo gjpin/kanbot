@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT source FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+  "query": "SELECT source, role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,17 @@
             "name": "source"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "team_members",
+            "name": "role"
+          }
+        }
       }
     ],
     "parameters": {
@@ -22,8 +33,9 @@
       ]
     },
     "nullable": [
+      false,
       false
     ]
   },
-  "hash": "c374a4ed516bb1f2bd787b09796d663eda2d07018b9d32a51ccc163277cf4cb4"
+  "hash": "485c46e6d0d5f40a30bb7e257bb38d59e08a48463015125ee1ebda2759bcc8db"
 }

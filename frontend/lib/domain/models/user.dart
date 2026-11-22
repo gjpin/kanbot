@@ -36,19 +36,28 @@ final class User {
 
 /// Another user, as lists show them.
 final class UserSummary {
-  const UserSummary({required this.id, required this.displayName});
+  const UserSummary({
+    required this.id,
+    required this.displayName,
+    this.disabled = false,
+  });
 
   final String id;
 
   /// From the identity provider. Personal data: never log it.
   final String? displayName;
 
+  /// Disabled in kanbot: listed where they still are, so they can be
+  /// removed; they cannot be added anywhere.
+  final bool disabled;
+
   @override
   bool operator ==(Object other) =>
       other is UserSummary &&
       other.id == id &&
-      other.displayName == displayName;
+      other.displayName == displayName &&
+      other.disabled == disabled;
 
   @override
-  int get hashCode => Object.hash(id, displayName);
+  int get hashCode => Object.hash(id, displayName, disabled);
 }

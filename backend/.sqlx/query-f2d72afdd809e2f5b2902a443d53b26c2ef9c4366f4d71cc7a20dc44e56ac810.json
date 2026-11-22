@@ -1,28 +1,28 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT idp_group FROM teams WHERE id = $1 FOR UPDATE",
+  "query": "SELECT id FROM teams WHERE idp_group = ANY($1) ORDER BY id FOR SHARE",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "idp_group",
-        "type_info": "Text",
+        "name": "id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "teams",
-            "name": "idp_group"
+            "name": "id"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "TextArray"
       ]
     },
     "nullable": [
-      true
+      false
     ]
   },
-  "hash": "35dce10c4c143dae112421f09c1b1bc9da178f8024dd82b9c1e843c4c3aab46c"
+  "hash": "f2d72afdd809e2f5b2902a443d53b26c2ef9c4366f4d71cc7a20dc44e56ac810"
 }

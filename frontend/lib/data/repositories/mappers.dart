@@ -35,8 +35,11 @@ User userFrom(api.Me me) => User(
   },
 );
 
-UserSummary userSummaryFrom(api.UserSummaryDto user) =>
-    UserSummary(id: user.id, displayName: user.displayName);
+UserSummary userSummaryFrom(api.UserSummaryDto user) => UserSummary(
+  id: user.id,
+  displayName: user.displayName,
+  disabled: user.disabled,
+);
 
 ServerInfo serverInfoFrom(api.AuthConfig config) => ServerInfo(
   loginUrl: Uri.parse(config.loginUrl),
@@ -82,8 +85,17 @@ api.AccessDto accessTo(Access access) => switch (access) {
   Access.write => api.AccessDto.write,
 };
 
-TeamLink teamLinkFrom(api.TeamLinkDto dto) =>
-    TeamLink(team: teamSummaryFrom(dto.team), access: accessFrom(dto.access));
+/// An organization's readers do not learn a linked team's identity
+/// provider group.
+TeamLink teamLinkFrom(api.TeamLinkDto dto) => TeamLink(
+  team: TeamSummary(
+    id: dto.team.id,
+    slug: dto.team.slug,
+    name: dto.team.name,
+    idpGroup: null,
+  ),
+  access: accessFrom(dto.access),
+);
 
 TeamSummary teamSummaryFrom(api.TeamSummaryDto dto) => TeamSummary(
   id: dto.id,

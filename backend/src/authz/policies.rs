@@ -2,6 +2,8 @@
 
 use std::str::FromStr;
 
+use opentelemetry::{KeyValue, global, metrics::Counter};
+
 use cedar_policy::{
     AuthorizationError, Authorizer, Decision as CedarDecision, Effect, PolicyId, PolicySet,
     Request, Schema, ValidationMode, Validator,
@@ -44,6 +46,10 @@ pub enum PolicyError {
     },
     #[error("policies do not validate against the schema: {0}")]
     Validation(String),
+    /// Cedar's warnings, such as a policy that can never apply (a forbid
+    /// that silently never fires): refused like errors.
+    #[error("policies have warnings, for example a policy that can never apply: {0}")]
+    Warnings(String),
     #[error(
         "AUTHZ_POLICY_FILE: policy {0} is a permit; only forbid policies may be added \
          (grants are teams, links and admins)"
@@ -73,7 +79,7 @@ impl Policies {
         add_named(
             &mut policies,
             "built-in policies",
-            BUILTIN_POLICIES,
+            &parse("built-in policies", BUILTIN_POLICIES)?,
             BUILTIN_PREFIX,
         )?;
         let built = Self { schema, policies };
@@ -91,10 +97,7 @@ impl Policies {
     /// against the schema.
     pub fn with_deployer(text: &str) -> Result<Self, PolicyError> {
         let mut built = Self::builtin()?;
-        let parsed = PolicySet::from_str(text).map_err(|error| PolicyError::Parse {
-            source_name: DEPLOYER_SOURCE,
-            message: error.to_string(),
-        })?;
+        let parsed = parse(DEPLOYER_SOURCE, text)?;
         if parsed.templates().next().is_some() {
             return Err(PolicyError::Template);
         }
@@ -108,7 +111,12 @@ impl Policies {
                 }));
             }
         }
-        add_named(&mut built.policies, DEPLOYER_SOURCE, text, DEPLOYER_PREFIX)?;
+        add_named(
+            &mut built.policies,
+            DEPLOYER_SOURCE,
+            &parsed,
+            DEPLOYER_PREFIX,
+        )?;
         built.validate()?;
         Ok(built)
     }
@@ -129,21 +137,31 @@ impl Policies {
     fn validate(&self) -> Result<(), PolicyError> {
         let result =
             Validator::new(self.schema.clone()).validate(&self.policies, ValidationMode::Strict);
-        if result.validation_passed() {
-            Ok(())
-        } else {
-            Err(PolicyError::Validation(
+        if !result.validation_passed() {
+            return Err(PolicyError::Validation(
                 result
                     .validation_errors()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("; "),
-            ))
+            ));
+        }
+        let warnings: Vec<String> = result
+            .validation_warnings()
+            .map(ToString::to_string)
+            .collect();
+        if warnings.is_empty() {
+            Ok(())
+        } else {
+            Err(PolicyError::Warnings(warnings.join("; ")))
         }
     }
 
     /// The decisions on `requests` by `actor`, with `facts` from the
-    /// database (one entity set for all of them).
+    /// database (one entity set for all of them). A policy that fails to
+    /// evaluate denies the request (Cedar would skip it, so a broken
+    /// forbid would let everything through): fail closed, logged and
+    /// counted (`kanbot.authz.policy.errors`).
     ///
     /// # Errors
     ///
@@ -171,23 +189,40 @@ impl Policies {
                 )
                 .map_err(|error| EntityError(error.to_string()))?;
                 let response = authorizer.is_authorized(&request, &self.policies, &entities);
+                let mut failed = Vec::new();
                 for error in response.diagnostics().errors() {
                     // The policy only: the error's message can quote
                     // attribute values, such as a user's groups.
                     let AuthorizationError::PolicyEvaluationError(error) = error;
+                    let policy = error.policy_id().to_string();
                     tracing::warn!(
-                        policy.id = %error.policy_id(),
+                        policy.id = %policy,
                         action = action.name(),
-                        "policy evaluation error"
+                        "policy evaluation error: denied"
                     );
+                    policy_errors().add(
+                        1,
+                        &[
+                            KeyValue::new("policy.id", policy.clone()),
+                            KeyValue::new("action", action.name()),
+                        ],
+                    );
+                    failed.push(policy);
                 }
-                Ok(Decision {
-                    allowed: response.decision() == CedarDecision::Allow,
-                    policy_ids: response
+                let evaluated = failed.is_empty();
+                let mut policy_ids: Vec<String> = if evaluated {
+                    response
                         .diagnostics()
                         .reason()
                         .map(ToString::to_string)
-                        .collect(),
+                        .collect()
+                } else {
+                    failed
+                };
+                policy_ids.sort();
+                Ok(Decision {
+                    allowed: evaluated && response.decision() == CedarDecision::Allow,
+                    policy_ids,
                 })
             })
             .collect()
@@ -212,20 +247,34 @@ impl Policies {
     }
 }
 
-/// Parses `text` and adds each policy to `set` as `<prefix><@id>`.
+/// `kanbot.authz.policy.errors`: policies that failed to evaluate, by
+/// policy ID (a fixed set) and action.
+fn policy_errors() -> Counter<u64> {
+    global::meter(crate::telemetry::SCOPE)
+        .u64_counter("kanbot.authz.policy.errors")
+        .with_unit("{error}")
+        .with_description("Policies that failed to evaluate; each denied its request.")
+        .build()
+}
+
+fn parse(source_name: &'static str, text: &str) -> Result<PolicySet, PolicyError> {
+    PolicySet::from_str(text).map_err(|error| PolicyError::Parse {
+        source_name,
+        message: error.to_string(),
+    })
+}
+
+/// Adds each policy of `parsed` to `set` as `<prefix><@id>`.
 fn add_named(
     set: &mut PolicySet,
     source_name: &'static str,
-    text: &str,
+    parsed: &PolicySet,
     prefix: &str,
 ) -> Result<(), PolicyError> {
-    let parsed = PolicySet::from_str(text).map_err(|error| PolicyError::Parse {
-        source_name,
-        message: error.to_string(),
-    })?;
     for (index, policy) in parsed.policies().enumerate() {
         let id = policy
             .annotation("id")
+            .filter(|id| !id.trim().is_empty())
             .ok_or(PolicyError::MissingId { source_name, index })?;
         let named = policy.new_id(PolicyId::new(format!("{prefix}{id}")));
         set.add(named).map_err(|_| PolicyError::DuplicateId {

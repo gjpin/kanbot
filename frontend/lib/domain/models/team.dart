@@ -61,3 +61,13 @@ final class Member {
   final TeamRole role;
   final MembershipSource source;
 }
+
+/// A page of a team's members; [next] fetches the following one.
+final class MemberPage {
+  const MemberPage({required this.members, this.next});
+
+  final List<Member> members;
+
+  /// Opaque: where the next page starts, or `null` on the last one.
+  final String? next;
+}

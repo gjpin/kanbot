@@ -45,6 +45,9 @@ pub struct UserSummaryDto {
     pub id: Uuid,
     /// From the identity provider.
     pub display_name: Option<String>,
+    /// Disabled in kanbot: they cannot sign in, and cannot be added
+    /// anywhere; remove them where they are listed.
+    pub disabled: bool,
 }
 
 /// `GET /users` parameters.
@@ -103,6 +106,7 @@ impl From<UserSummary> for UserSummaryDto {
         Self {
             id: user.id.as_uuid(),
             display_name: user.display_name,
+            disabled: user.disabled,
         }
     }
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/messages.dart';
 import 'package:kanbot/ui/features/teams/team_page.dart';
@@ -26,10 +27,12 @@ void main() {
     ..on(
       'GET',
       '/teams/$teamId/members',
-      members ??
-          [
-            {'user': user(), 'role': 'maintainer', 'source': 'manual'},
-          ],
+      memberPage(
+        members ??
+            [
+              {'user': user(), 'role': 'maintainer', 'source': 'manual'},
+            ],
+      ),
     );
 
   testWidgets('teams list, with the create button for those allowed', (
@@ -38,7 +41,7 @@ void main() {
     final backend = FakeBackend()
       ..on('GET', '/teams', [teamSummary(idpGroup: 'platform-team')])
       ..on('GET', '/teams/$teamId', team())
-      ..on('GET', '/teams/$teamId/members', <Object?>[]);
+      ..on('GET', '/teams/$teamId/members', memberPage([]));
     await pumpApp(
       tester,
       await signedIn(backend, user: me(permissions: ['create_team'])),
@@ -56,7 +59,7 @@ void main() {
       ..on('GET', '/teams', <Object?>[])
       ..on('POST', '/teams', team(), status: 201)
       ..on('GET', '/teams/$teamId', team())
-      ..on('GET', '/teams/$teamId/members', <Object?>[]);
+      ..on('GET', '/teams/$teamId/members', memberPage([]));
     await pumpApp(
       tester,
       await signedIn(backend, user: me(permissions: ['create_team'])),
@@ -130,6 +133,52 @@ void main() {
     expect(
       backend.sent('DELETE', '/teams/$teamId/members/$bobId'),
       hasLength(1),
+    );
+  });
+
+  testWidgets('long member lists load a page at a time', (tester) async {
+    final backend = backendFor()
+      ..handle('GET', '/teams/$teamId/members', (request) {
+        final after = request.url.queryParameters['after'];
+        final page = after == null
+            ? memberPage([
+                {'user': user(), 'role': 'maintainer', 'source': 'manual'},
+              ], next: 'page-2')
+            : memberPage([
+                {
+                  'user': user(id: orgId, name: 'Eve', disabled: true),
+                  'role': 'member',
+                  'source': 'manual',
+                },
+              ]);
+        return http.Response(
+          jsonEncode(page),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+    await pumpApp(
+      tester,
+      await signedIn(backend),
+      location: Routes.team(teamId),
+    );
+    expect(find.text('Bob'), findsOneWidget);
+    expect(find.text('Eve'), findsNothing);
+
+    await tester.tap(find.text(Messages.moreMembers));
+    await tester.pumpAndSettle();
+    expect(find.text('Bob'), findsOneWidget);
+    expect(find.text('Eve'), findsOneWidget);
+    // A disabled member is marked, so a maintainer can remove them.
+    expect(find.text(Messages.disabledUser), findsOneWidget);
+    expect(find.text(Messages.moreMembers), findsNothing, reason: 'last page');
+    expect(
+      backend
+          .sent('GET', '/teams/$teamId/members')
+          .last
+          .url
+          .queryParameters['after'],
+      'page-2',
     );
   });
 

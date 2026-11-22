@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     names::{Name, NameError, Slug},
-    users::model::UserSummary,
+    users::model::{UserId, UserSummary},
 };
 
 /// A team's ID.
@@ -173,4 +173,96 @@ pub struct Member {
     pub user: UserSummary,
     pub role: TeamRole,
     pub source: MembershipSource,
+}
+
+/// Where a page of a team's members ends: the sort key of its last member
+/// (maintainers first, then by display name, unnamed last, then by ID).
+/// Opaque to clients.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberCursor {
+    pub maintainer: bool,
+    pub display_name: Option<String>,
+    pub user: UserId,
+}
+
+impl MemberCursor {
+    /// The cursor of `member`.
+    #[must_use]
+    pub fn after(member: &Member) -> Self {
+        Self {
+            maintainer: member.role == TeamRole::Maintainer,
+            display_name: member.user.display_name.clone(),
+            user: member.user.id,
+        }
+    }
+
+    /// The opaque form: base64url of `<m|-><n|->:<user id>:<name>`.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let text = format!(
+            "{}{}:{}:{}",
+            if self.maintainer { 'm' } else { '-' },
+            if self.display_name.is_some() {
+                'n'
+            } else {
+                '-'
+            },
+            self.user.as_uuid(),
+            self.display_name.as_deref().unwrap_or_default()
+        );
+        crate::base64::encode_url(text.as_bytes())
+    }
+
+    /// Reads [`MemberCursor::encode`]'s form. `None` for anything else.
+    #[must_use]
+    pub fn decode(raw: &str) -> Option<Self> {
+        let text = String::from_utf8(crate::base64::decode_url(raw)?).ok()?;
+        let (flags, rest) = text.split_once(':')?;
+        let (user, name) = rest.split_once(':')?;
+        let (maintainer, named) = match flags {
+            "mn" => (true, true),
+            "m-" => (true, false),
+            "-n" => (false, true),
+            "--" => (false, false),
+            _ => return None,
+        };
+        if !named && !name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            maintainer,
+            display_name: named.then(|| name.to_owned()),
+            user: UserId::from_uuid(user.parse().ok()?),
+        })
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn cursors_survive_their_opaque_form(
+            maintainer: bool,
+            name in proptest::option::of("\\PC{0,40}"),
+            id: u128,
+        ) {
+            let cursor = MemberCursor {
+                maintainer,
+                display_name: name,
+                user: UserId::from_uuid(Uuid::from_u128(id)),
+            };
+            prop_assert_eq!(MemberCursor::decode(&cursor.encode()), Some(cursor));
+        }
+
+        #[test]
+        fn anything_else_is_no_cursor(raw in "\\PC{0,60}") {
+            if let Some(cursor) = MemberCursor::decode(&raw) {
+                prop_assert_eq!(cursor.encode(), raw);
+            }
+        }
+    }
 }

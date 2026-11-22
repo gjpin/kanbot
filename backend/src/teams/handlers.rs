@@ -2,18 +2,21 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
+    error::{AppError, FieldError},
     http::{extract::Caller, problem::Problem},
     state::AppState,
     teams::{
-        dto::{MemberChangeDto, MemberDto, NewTeamDto, TeamChangesDto, TeamDto, TeamSummaryDto},
-        model::{IdpGroupChange, Team, TeamChanges, TeamId},
+        dto::{
+            MemberChangeDto, MemberDto, MemberPageDto, MemberQuery, NewTeamDto, TeamChangesDto,
+            TeamDto, TeamSummaryDto,
+        },
+        model::{IdpGroupChange, MemberCursor, Team, TeamChanges, TeamId},
         service,
     },
     users::model::UserId,
@@ -167,16 +170,21 @@ pub(super) async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The team's members: maintainers first, then by display name.
+/// The team's members, a page at a time: maintainers first, then by
+/// display name.
 #[utoipa::path(
     get,
     path = "/teams/{id}/members",
     operation_id = "list_team_members",
     tag = "teams",
-    params(("id" = String, Path, description = "The team's ID (a UUID).")),
+    params(("id" = String, Path, description = "The team's ID (a UUID)."), MemberQuery),
     security(("bearer" = []), ("session" = [])),
     responses(
-        (status = OK, description = "The members.", body = Vec<MemberDto>),
+        (status = OK, description = "A page of the members.", body = MemberPageDto),
+        (status = BAD_REQUEST, description = "Malformed parameters.",
+         body = Problem, content_type = "application/problem+json"),
+        (status = UNPROCESSABLE_ENTITY, description = "`after` is not a page's `next` (`/after`: `invalid`).",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "The user has no kanbot role (`forbidden`) or is disabled (`account_disabled`).",
@@ -189,9 +197,29 @@ pub(super) async fn members(
     State(state): State<AppState>,
     Caller(actor): Caller,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberDto>>, AppError> {
-    let members = service::members(&state.db, &state.authz, &actor, TeamId::from_uuid(id)).await?;
-    Ok(Json(members.into_iter().map(MemberDto::from).collect()))
+    Query(query): Query<MemberQuery>,
+) -> Result<Json<MemberPageDto>, AppError> {
+    let after = query
+        .after
+        .as_deref()
+        .map(|raw| {
+            MemberCursor::decode(raw)
+                .ok_or_else(|| AppError::Validation(vec![FieldError::new("/after", "invalid")]))
+        })
+        .transpose()?;
+    let page = service::members(
+        &state.db,
+        &state.authz,
+        &actor,
+        TeamId::from_uuid(id),
+        after.as_ref(),
+        query.limit,
+    )
+    .await?;
+    Ok(Json(MemberPageDto {
+        members: page.members.into_iter().map(MemberDto::from).collect(),
+        next: page.next.map(|next| next.encode()),
+    }))
 }
 
 /// Adds a user to the team with a role, or changes their role.

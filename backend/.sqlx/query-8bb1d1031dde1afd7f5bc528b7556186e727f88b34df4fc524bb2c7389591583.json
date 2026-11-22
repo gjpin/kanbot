@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE organizations\n        SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()\n        WHERE id = $1\n        RETURNING id, slug, name, openshell_workspace\n        ",
+  "query": "\n        UPDATE organizations\n        SET slug = COALESCE($2, slug), name = COALESCE($3, name), updated_at = now()\n        WHERE id = $1 AND (slug <> COALESCE($2, slug) OR name <> COALESCE($3, name))\n        RETURNING id, slug, name, openshell_workspace\n        ",
   "describe": {
     "columns": [
       {
@@ -62,5 +62,5 @@
       true
     ]
   },
-  "hash": "d63a4c9ae166fcfeb191ec83f17c487781f8d783c06adaaa425bcb08674d19a0"
+  "hash": "8bb1d1031dde1afd7f5bc528b7556186e727f88b34df4fc524bb2c7389591583"
 }

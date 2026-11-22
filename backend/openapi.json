@@ -46,6 +46,16 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed parameters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No valid credentials.",
             "content": {
@@ -1978,7 +1988,7 @@
         "tags": [
           "teams"
         ],
-        "summary": "The team's members: maintainers first, then by display name.",
+        "summary": "The team's members, a page at a time: maintainers first, then by\ndisplay name.",
         "operationId": "list_team_members",
         "parameters": [
           {
@@ -1989,18 +1999,44 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The previous page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Members per page: 1 to 500, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The members.",
+            "description": "A page of the members.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MemberDto"
-                  }
+                  "$ref": "#/components/schemas/MemberPageDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed parameters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2027,6 +2063,16 @@
           },
           "404": {
             "description": "No such team, or not allowed to see it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`after` is not a page's `next` (`/after`: `invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2260,6 +2306,16 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed parameters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No valid credentials.",
             "content": {
@@ -2281,7 +2337,7 @@
             }
           },
           "422": {
-            "description": "`query` is longer than 100 characters.",
+            "description": "`query` is longer than 100 characters (`too_long`) or holds a control character (`invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2448,6 +2504,27 @@
           }
         }
       },
+      "LinkedTeamDto": {
+        "type": "object",
+        "description": "A team linked to an organization, as the organization's readers see\nit: not its identity provider group, which only those who may see the\nteam learn (`GET /teams/{id}`).",
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
       "LogoutResponse": {
         "type": "object",
         "description": "The outcome of a sign-out.",
@@ -2528,6 +2605,28 @@
           },
           "user": {
             "$ref": "#/components/schemas/UserSummaryDto"
+          }
+        }
+      },
+      "MemberPageDto": {
+        "type": "object",
+        "description": "A page of a team's members.",
+        "required": [
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberDto"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` for the next page; `null` on the last one."
           }
         }
       },
@@ -2840,7 +2939,7 @@
             "$ref": "#/components/schemas/AccessDto"
           },
           "team": {
-            "$ref": "#/components/schemas/TeamSummaryDto"
+            "$ref": "#/components/schemas/LinkedTeamDto"
           }
         }
       },
@@ -2930,9 +3029,14 @@
         "type": "object",
         "description": "A user, as other users see them.",
         "required": [
-          "id"
+          "id",
+          "disabled"
         ],
         "properties": {
+          "disabled": {
+            "type": "boolean",
+            "description": "Disabled in kanbot: they cannot sign in, and cannot be added\nanywhere; remove them where they are listed."
+          },
           "display_name": {
             "type": [
               "string",

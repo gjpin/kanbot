@@ -15,8 +15,6 @@ use crate::{
     state::AppState,
 };
 
-const DEFAULT_PAGE: i64 = 50;
-
 /// The audit log, newest first. Platform admins only.
 #[utoipa::path(
     get,
@@ -27,6 +25,8 @@ const DEFAULT_PAGE: i64 = 50;
     security(("bearer" = []), ("session" = [])),
     responses(
         (status = OK, description = "A page of the audit log.", body = AuditPage),
+        (status = BAD_REQUEST, description = "Malformed parameters.",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "Not allowed to read the audit log.",
@@ -38,13 +38,9 @@ pub(super) async fn list(
     Caller(actor): Caller,
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<AuditPage>, AppError> {
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
-    let entries = service::list(&state.db, &state.authz, &actor, query.before, limit).await?;
-    let full =
-        i64::try_from(entries.len()).is_ok_and(|len| len == limit.clamp(1, service::MAX_PAGE));
-    let next_before = entries.last().filter(|_| full).map(|entry| entry.id);
+    let page = service::list(&state.db, &state.authz, &actor, query.before, query.limit).await?;
     Ok(Json(AuditPage {
-        entries: entries.into_iter().map(AuditEntryDto::from).collect(),
-        next_before,
+        entries: page.entries.into_iter().map(AuditEntryDto::from).collect(),
+        next_before: page.next_before,
     }))
 }

@@ -376,12 +376,17 @@ fn decide_all_answers_each_request_in_order() {
 #[test]
 fn policies_need_unique_ids() {
     let mut set = PolicySet::new();
+    let named = |set: &mut PolicySet, text: &str| {
+        add_named(set, "test", &parse("test", text).unwrap(), "x.")
+    };
     assert!(matches!(
-        add_named(
+        named(&mut set, "permit (principal, action, resource);"),
+        Err(PolicyError::MissingId { index: 0, .. })
+    ));
+    assert!(matches!(
+        named(
             &mut set,
-            "test",
-            "permit (principal, action, resource);",
-            "x."
+            r#"@id("  ") permit (principal, action, resource);"#
         ),
         Err(PolicyError::MissingId { index: 0, .. })
     ));
@@ -390,13 +395,66 @@ fn policies_need_unique_ids() {
         @id("a") forbid (principal, action, resource);
     "#;
     assert!(matches!(
-        add_named(&mut set, "test", twice, "x."),
+        named(&mut set, twice),
         Err(PolicyError::DuplicateId { ref id, .. }) if id == "a"
     ));
     assert!(matches!(
-        add_named(&mut set, "test", "permit (", "x."),
+        parse("test", "permit ("),
         Err(PolicyError::Parse { .. })
     ));
+}
+
+#[test]
+fn a_forbid_that_can_never_apply_is_refused() {
+    // `write` applies to organizations only: as written, this forbid
+    // would never fire. Cedar calls that a warning; kanbot refuses it.
+    let impossible = r#"
+        @id("never")
+        forbid (principal, action == Kanbot::Action::"write", resource is Kanbot::Team);
+    "#;
+    assert!(matches!(
+        Policies::with_deployer(impossible),
+        Err(PolicyError::Warnings(_))
+    ));
+}
+
+#[test]
+fn a_policy_that_fails_to_evaluate_denies() {
+    // Integer overflow is an evaluation error that validation cannot see.
+    // Cedar skips a failing policy, so this broken forbid would let
+    // everything through; kanbot denies instead.
+    let policies = Policies::with_deployer(
+        r#"
+        @id("broken")
+        forbid (principal, action, resource)
+        when { 9223372036854775807 + 1 > 0 };
+        "#,
+    )
+    .unwrap();
+    let admin = actor(PlatformRole::Admin);
+    let decision = policies
+        .decide(
+            &admin,
+            &Facts::default(),
+            Action::CreateTeam,
+            Resource::Platform,
+        )
+        .unwrap();
+    assert!(!decision.allowed);
+    assert_eq!(decision.policy_ids, ["deployer.broken"]);
+    // Without the broken policy, the same request is allowed.
+    assert!(
+        Policies::builtin()
+            .unwrap()
+            .decide(
+                &admin,
+                &Facts::default(),
+                Action::CreateTeam,
+                Resource::Platform
+            )
+            .unwrap()
+            .allowed
+    );
 }
 
 /// A writer in the `contractors` group, and an organization they write to.

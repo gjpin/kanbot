@@ -50,12 +50,14 @@ impl Slug {
         if raw.is_empty() {
             return Err(NameError::Required);
         }
-        if raw.len() > MAX_SLUG_CHARS {
-            return Err(NameError::TooLong);
-        }
+        // Characters first: a long slug of other characters is invalid, not
+        // just too long.
         let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
         if !raw.bytes().all(allowed) || raw.starts_with('-') || raw.ends_with('-') {
             return Err(NameError::Invalid);
+        }
+        if raw.len() > MAX_SLUG_CHARS {
+            return Err(NameError::TooLong);
         }
         Ok(Self(raw.to_owned()))
     }
@@ -119,9 +121,11 @@ mod tests {
             assert_eq!(Slug::parse(valid).unwrap().as_str(), valid);
         }
         let long = "a".repeat(64);
+        let long_and_wrong = "é".repeat(40);
         for (invalid, error) in [
             ("", NameError::Required),
             (long.as_str(), NameError::TooLong),
+            (long_and_wrong.as_str(), NameError::Invalid),
             ("-a", NameError::Invalid),
             ("a-", NameError::Invalid),
             ("A", NameError::Invalid),

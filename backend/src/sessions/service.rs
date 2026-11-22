@@ -965,6 +965,19 @@ fn revoke_in_background(
     });
 }
 
+/// Ends every session of `user` (disabled), on `db` (which may be a
+/// transaction). Returns how many there were.
+///
+/// # Errors
+///
+/// A database error.
+pub async fn end_user_sessions(
+    db: &mut sqlx::PgConnection,
+    user: crate::users::model::UserId,
+) -> Result<u64, AppError> {
+    Ok(repo::delete_user_sessions(db, user.as_uuid()).await?)
+}
+
 /// Rows deleted per statement by [`cleanup`].
 pub const CLEANUP_BATCH: i64 = 1000;
 /// How long one run may delete: short statements, but no limit on how

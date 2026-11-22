@@ -5,35 +5,72 @@ use uuid::Uuid;
 
 use crate::{
     names::{Name, Slug},
-    teams::model::{IdpGroup, Member, MembershipSource, Team, TeamChanges, TeamId, TeamRole},
+    teams::model::{
+        IdpGroup, Member, MemberCursor, MembershipSource, Team, TeamChanges, TeamId, TeamRole,
+    },
     users::model::{UserId, UserSummary},
 };
 
 /// Makes the user's `idp` memberships match `groups`: a member of every
 /// team whose `idp_group` is in `groups`, and of no other team through
-/// the sync. Writes nothing when they already match. Returns how many
-/// memberships were added and removed.
+/// the sync. Returns how many memberships were added and removed.
+///
+/// A read-only check comes first, so the common case (nothing changed)
+/// writes and locks nothing. A change runs in a transaction that locks the
+/// user (concurrent syncs of one user cannot merge two group lists) and
+/// the wanted teams `FOR SHARE`: a concurrent change of a team's group
+/// ([`update`], which locks the team `FOR UPDATE`) is waited for and seen,
+/// so no membership is added for a group the team no longer has.
 #[tracing::instrument(skip_all, fields(user.id = %user.as_uuid()))]
 pub(super) async fn sync_idp_groups(
     db: &PgPool,
     user: UserId,
     groups: &[String],
 ) -> Result<(i64, i64), sqlx::Error> {
+    let in_sync = sqlx::query_scalar!(
+        r#"
+        SELECT
+            COALESCE((SELECT array_agg(id ORDER BY id) FROM teams WHERE idp_group = ANY($2)), '{}')
+            = COALESCE((SELECT array_agg(team_id ORDER BY team_id) FROM team_members
+                        WHERE user_id = $1 AND source = 'idp'), '{}')
+            AS "in_sync!"
+        "#,
+        user.as_uuid(),
+        groups,
+    )
+    .fetch_one(db)
+    .await?;
+    if in_sync {
+        return Ok((0, 0));
+    }
+    let mut tx = db.begin().await?;
+    let exists = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE",
+        user.as_uuid()
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if exists.is_none() {
+        return Ok((0, 0));
+    }
+    let wanted = sqlx::query_scalar!(
+        "SELECT id FROM teams WHERE idp_group = ANY($1) ORDER BY id FOR SHARE",
+        groups,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     let row = sqlx::query!(
         r#"
-        WITH wanted AS (
-            SELECT id FROM teams WHERE idp_group = ANY($2)
-        ),
-        removed AS (
+        WITH removed AS (
             DELETE FROM team_members m
             WHERE m.user_id = $1
               AND m.source = 'idp'
-              AND m.team_id NOT IN (SELECT id FROM wanted)
+              AND m.team_id <> ALL($2)
             RETURNING m.team_id
         ),
         added AS (
             INSERT INTO team_members (team_id, user_id, role, source)
-            SELECT id, $1, 'member', 'idp' FROM wanted
+            SELECT id, $1, 'member', 'idp' FROM unnest($2::uuid[]) AS wanted(id)
             ON CONFLICT (team_id, user_id) DO NOTHING
             RETURNING team_id
         )
@@ -42,10 +79,11 @@ pub(super) async fn sync_idp_groups(
             (SELECT count(*) FROM removed) AS "removed!"
         "#,
         user.as_uuid(),
-        groups,
+        &wanted,
     )
-    .fetch_one(db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok((row.added, row.removed))
 }
 
@@ -120,29 +158,49 @@ pub(super) async fn insert(
     Ok(())
 }
 
-/// Applies `changes`. When the identity provider group changes, the memberships it
-/// replaces go: all of them when a group is set (the sync adds the
-/// group's members back as they sign in), the synced ones when it is
-/// cleared. `None` if the team does not exist.
+/// Applies `changes`, and says whether anything changed (changing a value
+/// to itself writes nothing). When the identity provider group changes,
+/// the memberships it replaces go: all of them when a group is set (the
+/// sync adds the group's members back as they sign in), the synced ones
+/// when it is cleared. `None` if the team does not exist.
 #[tracing::instrument(skip_all, fields(team.id = %id.as_uuid()))]
 pub(super) async fn update(
     db: &mut PgConnection,
     id: TeamId,
     changes: &TeamChanges,
-) -> Result<Option<Team>, sqlx::Error> {
+) -> Result<Option<(Team, bool)>, sqlx::Error> {
     let new_group = changes
         .idp_group
         .as_ref()
         .map(|change| change.group().map(IdpGroup::as_str));
-    let previous = sqlx::query_scalar!(
-        "SELECT idp_group FROM teams WHERE id = $1 FOR UPDATE",
+    let current = sqlx::query!(
+        "SELECT id, slug, name, idp_group FROM teams WHERE id = $1 FOR UPDATE",
         id.as_uuid()
     )
     .fetch_optional(&mut *db)
     .await?;
-    let Some(previous) = previous else {
+    let Some(current) = current else {
         return Ok(None);
     };
+    let previous = current.idp_group.clone();
+    let modified = changes
+        .slug
+        .as_ref()
+        .is_some_and(|slug| slug.as_str() != current.slug)
+        || changes
+            .name
+            .as_ref()
+            .is_some_and(|name| name.as_str() != current.name)
+        || new_group.is_some_and(|group| group != previous.as_deref());
+    if !modified {
+        let unchanged = team(
+            current.id,
+            &current.slug,
+            &current.name,
+            current.idp_group.as_deref(),
+        )?;
+        return Ok(Some((unchanged, false)));
+    }
     let row = sqlx::query!(
         r#"
         UPDATE teams
@@ -172,7 +230,7 @@ pub(super) async fn update(
         .execute(db)
         .await?;
     }
-    team(row.id, &row.slug, &row.name, row.idp_group.as_deref()).map(Some)
+    team(row.id, &row.slug, &row.name, row.idp_group.as_deref()).map(|team| Some((team, true)))
 }
 
 /// Deletes the team, its memberships and its links. `false` if it did
@@ -188,18 +246,35 @@ pub(super) async fn delete(db: &mut PgConnection, id: TeamId) -> Result<bool, sq
     )
 }
 
-/// The team's members: maintainers first, then by display name.
+/// Up to `limit` of the team's members after `after`: maintainers first,
+/// then by display name (unnamed last), then by ID.
 #[tracing::instrument(skip_all, fields(team.id = %id.as_uuid()))]
-pub(super) async fn members(db: &PgPool, id: TeamId) -> Result<Vec<Member>, sqlx::Error> {
+pub(super) async fn members(
+    db: &PgPool,
+    id: TeamId,
+    after: Option<&MemberCursor>,
+    limit: i64,
+) -> Result<Vec<Member>, sqlx::Error> {
     sqlx::query!(
         r#"
-        SELECT u.id, u.display_name, m.role, m.source
+        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS "disabled!", m.role, m.source
         FROM team_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.team_id = $1
-        ORDER BY m.role = 'maintainer' DESC, u.display_name NULLS LAST, u.id
+          AND ($2::bool IS NULL
+               OR (m.role <> 'maintainer', u.display_name IS NULL,
+                   COALESCE(u.display_name, ''), u.id)
+                  > (NOT $2, $3, $4, $5))
+        ORDER BY m.role <> 'maintainer', u.display_name IS NULL,
+                 COALESCE(u.display_name, ''), u.id
+        LIMIT $6
         "#,
-        id.as_uuid()
+        id.as_uuid(),
+        after.map(|after| after.maintainer),
+        after.map(|after| after.display_name.is_none()),
+        after.map(|after| after.display_name.clone().unwrap_or_default()),
+        after.map(|after| after.user.as_uuid()),
+        limit,
     )
     .fetch_all(db)
     .await?
@@ -209,6 +284,7 @@ pub(super) async fn members(db: &PgPool, id: TeamId) -> Result<Vec<Member>, sqlx
             user: UserSummary {
                 id: UserId::from_uuid(row.id),
                 display_name: row.display_name,
+                disabled: row.disabled,
             },
             role: TeamRole::parse(&row.role).ok_or_else(|| decode("team_members.role"))?,
             source: MembershipSource::parse(&row.source)
@@ -218,15 +294,25 @@ pub(super) async fn members(db: &PgPool, id: TeamId) -> Result<Vec<Member>, sqlx
     .collect()
 }
 
-/// Whether the team is synced with an identity provider group, and the source of
-/// `user`'s membership, if any; both locked until the transaction ends.
-/// `None` if the team does not exist.
+/// A membership locked for a change.
+pub(super) struct LockedMembership {
+    /// The team is synced with an identity provider group.
+    pub synced: bool,
+    /// The user's membership, if any: its source and role.
+    pub membership: Option<(MembershipSource, TeamRole)>,
+    /// How many maintainers the team has.
+    pub maintainers: i64,
+}
+
+/// The team (whether it is synced, and its maintainer count) and `user`'s
+/// membership, if any; locked until the transaction ends, so changes of a
+/// team's members are serialized. `None` if the team does not exist.
 #[tracing::instrument(skip_all, fields(team.id = %id.as_uuid(), user.id = %user.as_uuid()))]
 pub(super) async fn lock_membership(
     db: &mut PgConnection,
     id: TeamId,
     user: UserId,
-) -> Result<Option<(bool, Option<MembershipSource>)>, sqlx::Error> {
+) -> Result<Option<LockedMembership>, sqlx::Error> {
     let Some(synced) = sqlx::query_scalar!(
         r#"SELECT idp_group IS NOT NULL AS "synced!" FROM teams WHERE id = $1 FOR UPDATE"#,
         id.as_uuid()
@@ -236,20 +322,37 @@ pub(super) async fn lock_membership(
     else {
         return Ok(None);
     };
-    let source = sqlx::query_scalar!(
-        "SELECT source FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+    let membership = sqlx::query!(
+        "SELECT source, role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
         id.as_uuid(),
         user.as_uuid()
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *db)
     .await?
-    .map(|source| MembershipSource::parse(&source).ok_or_else(|| decode("team_members.source")))
+    .map(|row| {
+        Ok::<_, sqlx::Error>((
+            MembershipSource::parse(&row.source).ok_or_else(|| decode("team_members.source"))?,
+            TeamRole::parse(&row.role).ok_or_else(|| decode("team_members.role"))?,
+        ))
+    })
     .transpose()?;
-    Ok(Some((synced, source)))
+    let maintainers = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM team_members
+           WHERE team_id = $1 AND role = 'maintainer'"#,
+        id.as_uuid()
+    )
+    .fetch_one(db)
+    .await?;
+    Ok(Some(LockedMembership {
+        synced,
+        membership,
+        maintainers,
+    }))
 }
 
-/// Adds `user` as a manual member with `role`, or changes their role.
-/// Returns the previous role, if they were a member.
+/// Adds `user` as a manual member with `role`, or changes their role (a
+/// membership the sync left behind becomes manual). Returns the previous
+/// role, if they were a member.
 #[tracing::instrument(skip_all, fields(team.id = %id.as_uuid(), user.id = %user.as_uuid()))]
 pub(super) async fn set_member(
     db: &mut PgConnection,
@@ -269,7 +372,7 @@ pub(super) async fn set_member(
     sqlx::query!(
         r#"
         INSERT INTO team_members (team_id, user_id, role, source) VALUES ($1, $2, $3, 'manual')
-        ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role
+        ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role, source = 'manual'
         "#,
         id.as_uuid(),
         user.as_uuid(),

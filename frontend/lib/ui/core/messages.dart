@@ -57,6 +57,7 @@ abstract final class Messages {
   static const String create = 'Create';
   static const String delete = 'Delete';
   static const String remove = 'Remove';
+  static const String disabledUser = 'Disabled';
   static const String add = 'Add';
   static const String saved = 'Saved.';
   static const String nothingHere = 'Nothing here yet.';
@@ -88,6 +89,7 @@ abstract final class Messages {
   static const String newTeam = 'New team';
   static const String members = 'Members';
   static const String addMember = 'Add member';
+  static const String moreMembers = 'More members';
   static const String member = 'Member';
   static const String maintainer = 'Maintainer';
   static const String fromIdentityProvider = 'From identity provider';

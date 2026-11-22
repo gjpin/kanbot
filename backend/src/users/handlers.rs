@@ -77,11 +77,13 @@ pub(super) async fn update_preferences(
     security(("bearer" = []), ("session" = [])),
     responses(
         (status = OK, description = "The matching users.", body = Vec<UserSummaryDto>),
+        (status = BAD_REQUEST, description = "Malformed parameters.",
+         body = Problem, content_type = "application/problem+json"),
         (status = UNAUTHORIZED, description = "No valid credentials.",
          body = Problem, content_type = "application/problem+json"),
         (status = FORBIDDEN, description = "Only platform admins, organization admins and team maintainers may search users.",
          body = Problem, content_type = "application/problem+json"),
-        (status = UNPROCESSABLE_ENTITY, description = "`query` is longer than 100 characters.",
+        (status = UNPROCESSABLE_ENTITY, description = "`query` is longer than 100 characters (`too_long`) or holds a control character (`invalid`).",
          body = Problem, content_type = "application/problem+json"),
     ),
 )]

@@ -98,7 +98,7 @@ void main() {
   testWidgets('reports navigation by route template, not path', (tester) async {
     final backend = FakeBackend()
       ..on('GET', '/teams/$teamId', team())
-      ..on('GET', '/teams/$teamId/members', <Object?>[]);
+      ..on('GET', '/teams/$teamId/members', memberPage([]));
     final dependencies = await signedIn(backend);
     final router = createRouter(
       dependencies: dependencies,

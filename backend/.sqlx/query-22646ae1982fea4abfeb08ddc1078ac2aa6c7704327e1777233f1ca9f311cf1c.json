@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            COALESCE((SELECT array_agg(id ORDER BY id) FROM teams WHERE idp_group = ANY($2)), '{}')\n            = COALESCE((SELECT array_agg(team_id ORDER BY team_id) FROM team_members\n                        WHERE user_id = $1 AND source = 'idp'), '{}')\n            AS \"in_sync!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_sync!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "22646ae1982fea4abfeb08ddc1078ac2aa6c7704327e1777233f1ca9f311cf1c"
+}

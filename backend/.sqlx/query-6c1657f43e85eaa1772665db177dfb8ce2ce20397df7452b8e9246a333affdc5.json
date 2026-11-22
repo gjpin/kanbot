@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.display_name\n        FROM organization_admins a\n        JOIN users u ON u.id = a.user_id\n        WHERE a.organization_id = $1\n        ORDER BY u.display_name NULLS LAST, u.id\n        ",
+  "query": "\n        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS \"disabled!\"\n        FROM organization_admins a\n        JOIN users u ON u.id = a.user_id\n        WHERE a.organization_id = $1\n        ORDER BY u.display_name NULLS LAST, u.id\n        ",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,12 @@
             "name": "display_name"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "disabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -33,8 +39,9 @@
     },
     "nullable": [
       false,
-      true
+      true,
+      null
     ]
   },
-  "hash": "4e3dd88dc6ddd10a5d30872b77eb695844f3344e52adf3f92df98a6a540d3f38"
+  "hash": "6c1657f43e85eaa1772665db177dfb8ce2ce20397df7452b8e9246a333affdc5"
 }

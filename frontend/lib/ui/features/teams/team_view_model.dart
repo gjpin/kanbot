@@ -5,8 +5,9 @@ import 'package:kanbot/domain/models/user.dart';
 import 'package:kanbot/ui/core/loadable.dart';
 import 'package:kanbot/utils/result.dart';
 
-/// A team and its members.
-typedef TeamDetails = ({Team team, List<Member> members});
+/// A team and the members loaded so far; `next`, when set, means there
+/// are more ([TeamViewModel.loadMore]).
+typedef TeamDetails = ({Team team, List<Member> members, String? next});
 
 /// One team: its settings, identity provider group and members.
 class TeamViewModel extends ChangeNotifier {
@@ -27,11 +28,42 @@ class TeamViewModel extends ChangeNotifier {
     final team = await _teams.get(id);
     final members = await _teams.members(id);
     _details = switch ((team, members)) {
-      (Ok(value: final t), Ok(value: final m)) => Loaded((team: t, members: m)),
+      (Ok(value: final t), Ok(value: final m)) => Loaded((
+        team: t,
+        members: m.members,
+        next: m.next,
+      )),
       (Failure(:final error), _) ||
       (_, Failure(:final error)) => LoadFailed(error),
     };
     notifyListeners();
+  }
+
+  bool _loadingMore = false;
+
+  /// Appends the next page of members, if there is one.
+  Future<Result<void>> loadMore() async {
+    final current = _details;
+    if (_loadingMore || current is! Loaded<TeamDetails>) {
+      return const Ok(null);
+    }
+    final after = current.value.next;
+    if (after == null) return const Ok(null);
+    _loadingMore = true;
+    final page = await _teams.members(id, after: after);
+    _loadingMore = false;
+    switch (page) {
+      case Ok(:final value):
+        _details = Loaded((
+          team: current.value.team,
+          members: [...current.value.members, ...value.members],
+          next: value.next,
+        ));
+        notifyListeners();
+        return const Ok(null);
+      case Failure(:final error):
+        return Failure(error);
+    }
   }
 
   /// Runs [change], then reloads on success.

@@ -82,12 +82,21 @@ void main() {
 
     test('admins and team links', () async {
       backend
-        ..on('GET', '/organizations/$orgId/admins', [user()])
+        ..on('GET', '/organizations/$orgId/admins', [
+          user(),
+          user(id: orgId, name: 'Eve', disabled: true),
+        ])
         ..on('PUT', '/organizations/$orgId/admins/$bobId', null, status: 204)
         ..on('DELETE', '/organizations/$orgId/admins/$bobId', null, status: 204)
         ..on('GET', '/organizations/$orgId/teams', [
-          {'team': teamSummary(idpGroup: 'g'), 'access': 'write'},
-          {'team': teamSummary(), 'access': 'owner'},
+          {
+            'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
+            'access': 'write',
+          },
+          {
+            'team': {'id': teamId, 'slug': 'platform', 'name': 'Platform'},
+            'access': 'owner',
+          },
         ])
         ..on('PUT', '/organizations/$orgId/teams/$teamId', null, status: 204)
         ..on(
@@ -98,12 +107,18 @@ void main() {
         );
       final repository = testDependencies(backend: backend).organizations;
 
-      expect(ok(await repository.admins(orgId)).single.displayName, 'Bob');
+      final admins = ok(await repository.admins(orgId));
+      expect(admins.map((admin) => (admin.displayName, admin.disabled)), [
+        ('Bob', false),
+        ('Eve', true),
+      ]);
       ok(await repository.addAdmin(orgId, bobId));
       ok(await repository.removeAdmin(orgId, bobId));
       final links = ok(await repository.teamLinks(orgId));
       expect(links.first.access, Access.write);
-      expect(links.first.team.idpGroup, 'g');
+      // Organization readers do not learn a linked team's group.
+      expect(links.first.team.idpGroup, isNull);
+      expect(links.first.team.name, 'Platform');
       // An access this app version does not know reads as the lowest.
       expect(links.last.access, Access.read);
       ok(await repository.linkTeam(orgId, teamId, Access.write));
@@ -174,10 +189,14 @@ void main() {
           '/teams/$teamId',
           team(permissions: ['manage', 'manage_members', 'set_idp_group']),
         )
-        ..on('GET', '/teams/$teamId/members', [
-          {'user': user(), 'role': 'maintainer', 'source': 'manual'},
-          {'user': user(name: null), 'role': 'owner', 'source': 'scim'},
-        ]);
+        ..on(
+          'GET',
+          '/teams/$teamId/members',
+          memberPage([
+            {'user': user(), 'role': 'maintainer', 'source': 'manual'},
+            {'user': user(name: null), 'role': 'owner', 'source': 'scim'},
+          ], next: 'cursor'),
+        );
       final repository = testDependencies(backend: backend).teams;
 
       expect(ok(await repository.list()).single.idpGroup, 'platform-team');
@@ -186,7 +205,9 @@ void main() {
         TeamPermission.manageMembers,
         TeamPermission.setIdpGroup,
       });
-      final members = ok(await repository.members(teamId));
+      final page = ok(await repository.members(teamId));
+      expect(page.next, 'cursor');
+      final members = page.members;
       expect(members.first.role, TeamRole.maintainer);
       expect(members.first.source, MembershipSource.manual);
       // Unknown values read as the least: a member, from the identity

@@ -243,7 +243,9 @@ fn team_slugs(list: &Value) -> Vec<&str> {
 async fn member_list(api: &Api, team: Uuid, token: &str) -> Vec<(String, String, String)> {
     let (status, list) = api.get(&format!("/teams/{team}/members"), token).await;
     assert_eq!(status, StatusCode::OK, "{list}");
-    list.as_array()
+    assert_eq!(list["next"], Value::Null, "one page");
+    list["members"]
+        .as_array()
         .unwrap()
         .iter()
         .map(|member| {
@@ -698,4 +700,232 @@ async fn renaming_and_setting_the_group_needs_both_permissions(pool: PgPool) {
     let (status, body) = api.patch(&uri, &root, json!({ "idp_group": "g" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["idp_group"], "g");
+}
+
+#[sqlx::test]
+async fn the_last_maintainer_stays(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    // root created the team: its only maintainer.
+    let team = api.team(&root, "platform").await;
+    let root_id = api.user_id(&root).await;
+    let bob = user("bob", &[]);
+    let bob_id = api.user_id(&bob).await;
+    let member = |id: Uuid| format!("/teams/{team}/members/{id}");
+
+    let (status, _) = api.delete(&member(root_id), &root).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the team would have no maintainer"
+    );
+    let (status, _) = api
+        .put(&member(root_id), &root, Some(json!({ "role": "member" })))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // With a second maintainer, the first may step down or leave.
+    api.put(
+        &member(bob_id),
+        &root,
+        Some(json!({ "role": "maintainer" })),
+    )
+    .await;
+    let (status, _) = api
+        .put(&member(root_id), &root, Some(json!({ "role": "member" })))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = api.delete(&member(root_id), &root).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = api.delete(&member(bob_id), &bob).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+async fn disabled_users_cannot_be_added(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let bob_id = api.user_id(&user("bob", &[])).await;
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE id = $1", bob_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = api
+        .put(
+            &format!("/teams/{team}/members/{bob_id}"),
+            &root,
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn a_membership_the_sync_left_behind_can_be_removed(pool: PgPool) {
+    // A race with a group change can leave a synced membership in a team
+    // that is no longer synced: it must not be stuck there.
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let bob_id = api.user_id(&user("bob", &[])).await;
+    sqlx::query!(
+        "INSERT INTO team_members (team_id, user_id, role, source) VALUES ($1, $2, 'member', 'idp')",
+        team,
+        bob_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let member = format!("/teams/{team}/members/{bob_id}");
+    let (status, _) = api
+        .put(&member, &root, Some(json!({ "role": "member" })))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let source = sqlx::query_scalar!(
+        "SELECT source FROM team_members WHERE team_id = $1 AND user_id = $2",
+        team,
+        bob_id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(source, "manual");
+    let (status, _) = api.delete(&member, &root).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test]
+async fn a_sync_waits_for_a_group_change_and_sees_it(pool: PgPool) {
+    // A platform admin moves the team from "eng" to "ops" while Bob, in
+    // "eng", makes a request: Bob must not end up in the team.
+    let user = insert_user(&pool).await;
+    let team = insert_team(&pool, "platform", Some("eng")).await;
+    let mut change = pool.begin().await.unwrap();
+    sqlx::query!("SELECT id FROM teams WHERE id = $1 FOR UPDATE", team)
+        .fetch_one(&mut *change)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE teams SET idp_group = 'ops' WHERE id = $1", team)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    let sync = tokio::spawn({
+        let pool = pool.clone();
+        async move { service::sync_idp_groups(&pool, user, &groups(&["eng"])).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!sync.is_finished(), "the sync waits for the change");
+    change.commit().await.unwrap();
+    sync.await.unwrap().unwrap();
+    assert_eq!(memberships(&pool, user).await, []);
+}
+
+#[sqlx::test]
+async fn an_unchanged_update_is_not_recorded(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    let audited = || async {
+        sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM audit_log WHERE action = 'team.updated'"#
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let (status, body) = api
+        .patch(
+            &format!("/teams/{team}"),
+            &root,
+            json!({ "slug": "platform" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(audited().await, 0);
+    api.patch(
+        &format!("/teams/{team}"),
+        &root,
+        json!({ "name": "Platform team" }),
+    )
+    .await;
+    assert_eq!(audited().await, 1);
+}
+
+#[sqlx::test]
+async fn members_come_a_page_at_a_time(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let team = api.team(&root, "platform").await;
+    // Unnamed users sort last; ties by ID.
+    let mut ids = Vec::new();
+    for _ in 0..5 {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, issuer, subject, platform_role) VALUES ($1, 'x', $2, 'user')",
+            id,
+            id.to_string()
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    for (index, name) in ["carol", "alice", "bob"].iter().enumerate() {
+        sqlx::query!(
+            "UPDATE users SET display_name = $2 WHERE id = $1",
+            ids[index],
+            *name
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for id in &ids {
+        sqlx::query!(
+            "INSERT INTO team_members (team_id, user_id, role, source) VALUES ($1, $2, 'member', 'manual')",
+            team,
+            id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let uri = match &after {
+            Some(after) => format!("/teams/{team}/members?limit=2&after={after}"),
+            None => format!("/teams/{team}/members?limit=2"),
+        };
+        let (status, page) = api.get(&uri, &root).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        for member in page["members"].as_array().unwrap() {
+            seen.push(member["user"]["display_name"].clone());
+        }
+        match page["next"].as_str() {
+            Some(next) => after = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    // root, the maintainer, comes first.
+    assert_eq!(
+        seen,
+        [
+            json!("root (display)"),
+            json!("alice"),
+            json!("bob"),
+            json!("carol"),
+            Value::Null,
+            Value::Null,
+        ]
+    );
+    let (status, body) = api
+        .get(&format!("/teams/{team}/members?after=not-a-cursor"), &root)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["errors"],
+        json!([{ "pointer": "/after", "code": "invalid" }])
+    );
 }

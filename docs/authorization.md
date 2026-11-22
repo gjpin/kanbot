@@ -59,6 +59,18 @@ The app asks the server what the user may do (`/me`, `GET /organizations/{id}`,
 `GET /teams/{id}` list `permissions`) and hides the other controls. The server
 checks every request anyway.
 
+Some rules hold whatever the policies say:
+
+- A disabled user cannot be made an organization admin or added to a team
+  (`404`, as `GET /users` does not list them). Where they already are, lists
+  mark them `disabled` so they can be removed.
+- A team keeps at least one maintainer: removing or demoting the last one is
+  `409 conflict`. Add another maintainer first, or delete the team.
+- Linking a team to an organization also needs `viewTeam` on the team: a team
+  someone may not see cannot be probed or linked.
+- The Default organization's slug stays `default`; its name can change.
+- Changing something to the value it already has records nothing.
+
 ### Teams synced with an identity provider group
 
 A platform admin can set a team's `idp_group`. The team's members are then the
@@ -70,6 +82,9 @@ contains that group:
   writes only when something changed.
 - Synced memberships are read-only: changing or removing one, or adding anyone
   to a synced team, is `409 conflict`.
+- A token without the groups claim (another client, a scope not asked for)
+  changes nothing: kanbot keeps the groups of the last token that had the
+  claim. An empty claim does mean no groups.
 - Clearing the group removes the synced members; the team can then be managed
   by hand again.
 - Synced members are plain members. A synced team has no maintainers, so only
@@ -91,7 +106,14 @@ next to the built-in ones. The server refuses to start if the file:
 - contains a `permit` (only `forbid` is allowed);
 - contains a template;
 - has a policy without an `@id("...")` annotation, or two with the same one;
-- does not parse, or does not validate against kanbot's schema (strict mode).
+- does not parse, or does not validate against kanbot's schema (strict mode);
+- has validation warnings, such as a policy that can never apply (a `forbid`
+  that would silently never fire).
+
+A policy that fails to evaluate at runtime (for example an integer overflow)
+denies the request: Cedar would skip it, letting through what the `forbid`
+was meant to stop. Each such failure is logged with the policy ID and counted
+in the `kanbot.authz.policy.errors` metric.
 
 A `forbid` always wins over a `permit`, platform admins included. Each policy's
 ID in the audit log and the logs is `deployer.<@id>`; built-in ones are
@@ -117,7 +139,7 @@ Everything is in the `Kanbot` namespace. The schema is
 | `principal` (`Kanbot::User`) | `platformRole` (`"admin"` or `"user"`), `groups` (set of strings, from `OIDC_GROUPS_CLAIM`), `clientId` (optional: the token's `azp`, `client_id` or `cid`; test with `has`), `organizationAdmin` and `teamMaintainer` (booleans). `principal in Kanbot::Team::"<id>"` tests membership |
 | `resource` | `Kanbot::Organization` (`readers`, `writers`, `admins`), `Kanbot::Team` (`maintainers`) or `Kanbot::Platform::"kanbot"` |
 | `action` | `Kanbot::Action::"<name>"`, the names in the table above |
-| `context` | `via` (`"web"`, `"native"` or `"bearer"`: session cookie, native app session, or an identity provider's access token) and `ip` (the client address, `TRUSTED_PROXIES` applied) |
+| `context` | `via` (`"web"`, `"native"`, `"bearer"` or `"sync"`: the web app's session cookie, a kanbot session token in a bearer header, an identity provider's access token, or the OpenShell membership sync, which has no request) and `ip` (the client address, `TRUSTED_PROXIES` applied; `0.0.0.0` for the sync) |
 
 Write policies about the principal, the resource and the context. Only the
 entities a decision needs are loaded, so a policy that refers to some other

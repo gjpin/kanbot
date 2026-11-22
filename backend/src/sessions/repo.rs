@@ -350,6 +350,20 @@ pub(super) async fn delete_session(
     .await
 }
 
+/// Deletes every session of the user; returns how many.
+#[tracing::instrument(skip_all, fields(user.id = %user_id))]
+pub(super) async fn delete_user_sessions(
+    db: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query!("DELETE FROM sessions WHERE user_id = $1", user_id)
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
+}
+
 /// Deletes up to `limit` expired login attempts; returns how many.
 /// `SKIP LOCKED`: instances cleaning at the same time share the work.
 pub(super) async fn delete_expired_attempts(db: &PgPool, limit: i64) -> Result<u64, sqlx::Error> {

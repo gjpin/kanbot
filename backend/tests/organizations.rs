@@ -354,7 +354,7 @@ async fn organization_admins_manage_their_organization(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         list,
-        json!([{ "id": carol_id, "display_name": "carol (display)" }])
+        json!([{ "id": carol_id, "display_name": "carol (display)", "disabled": false }])
     );
 
     // Carol renames it and adds Dave; Dave removes Carol.
@@ -481,4 +481,141 @@ async fn the_default_organization_cannot_be_deleted(pool: PgPool) {
         .map(|(action, _, _)| action)
         .collect();
     assert_eq!(actions, ["organization.created", "organization.deleted"]);
+}
+
+#[sqlx::test]
+async fn the_default_organization_keeps_its_slug(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let default = format!("/organizations/{DEFAULT_ORGANIZATION}");
+    let (status, _) = api.patch(&default, &root, json!({ "slug": "other" })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Its name may change; its own slug is no change.
+    let (status, body) = api
+        .patch(
+            &default,
+            &root,
+            json!({ "slug": "default", "name": "Everyone" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "Everyone");
+}
+
+#[sqlx::test]
+async fn unchanged_values_are_not_recorded(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let team = api.team(&root, "platform").await;
+    let before = audit_actions(&pool).await.len();
+    let (status, _) = api
+        .patch(
+            &format!("/organizations/{acme}"),
+            &root,
+            json!({ "slug": "acme" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let link = format!("/organizations/{acme}/teams/{team}");
+    api.put(&link, &root, Some(json!({ "access": "read" })))
+        .await;
+    api.put(&link, &root, Some(json!({ "access": "read" })))
+        .await;
+    let actions: Vec<String> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .skip(before)
+        .map(|(action, _, _)| action)
+        .collect();
+    assert_eq!(actions, ["organization.team_linked"]);
+}
+
+#[sqlx::test]
+async fn disabled_admins_are_listed_as_disabled(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let bob = api.user_id(&user("bob", &[])).await;
+    let admins = format!("/organizations/{acme}/admins");
+    api.put(&format!("{admins}/{bob}"), &root, None).await;
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE id = $1", bob)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, list) = api.get(&admins, &root).await;
+    assert_eq!(list[0]["disabled"], true, "{list}");
+    // Linked teams show no identity provider group to the organization's
+    // readers.
+    let team = api.team(&root, "platform").await;
+    api.patch(
+        &format!("/teams/{team}"),
+        &root,
+        json!({ "idp_group": "eng" }),
+    )
+    .await;
+    api.put(
+        &format!("/organizations/{acme}/teams/{team}"),
+        &root,
+        Some(json!({ "access": "read" })),
+    )
+    .await;
+    let (_, links) = api
+        .get(&format!("/organizations/{acme}/teams"), &root)
+        .await;
+    assert_eq!(
+        links[0]["team"],
+        json!({ "id": team, "slug": "platform", "name": links[0]["team"]["name"] })
+    );
+}
+
+#[sqlx::test]
+async fn disabled_users_cannot_become_admins(pool: PgPool) {
+    let api = Api::new(pool.clone());
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let bob = api.user_id(&user("bob", &[])).await;
+    sqlx::query!("UPDATE users SET disabled_at = now() WHERE id = $1", bob)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = api
+        .put(&format!("/organizations/{acme}/admins/{bob}"), &root, None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn linking_a_team_needs_to_see_it(pool: PgPool) {
+    use kanbot_backend::authz::policies::Policies;
+    // Organization admins may see every team, unless a deployer says no:
+    // then they cannot probe or link one either.
+    let policies = Policies::with_deployer(
+        r#"@id("hidden-teams") forbid (principal, action == Kanbot::Action::"viewTeam", resource)
+           unless { principal.platformRole == "admin" };"#,
+    )
+    .unwrap();
+    let api = Api::of(common::app_with_policies(
+        pool.clone(),
+        std::sync::Arc::new(policies),
+    ));
+    let root = admin("root");
+    let acme = api.organization(&root, "acme").await;
+    let team = api.team(&root, "platform").await;
+    let carol = user("carol", &[]);
+    let carol_id = api.user_id(&carol).await;
+    api.put(
+        &format!("/organizations/{acme}/admins/{carol_id}"),
+        &root,
+        None,
+    )
+    .await;
+    let (status, _) = api
+        .put(
+            &format!("/organizations/{acme}/teams/{team}"),
+            &carol,
+            Some(json!({ "access": "read" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

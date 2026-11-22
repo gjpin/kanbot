@@ -1,6 +1,6 @@
 //! Database access for users.
 
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::{
     auth::token::Principal,
@@ -79,35 +79,29 @@ pub(super) async fn set_telemetry_opt_in(
     Ok(result.rows_affected() == 1)
 }
 
-/// Marks the user disabled and deletes their sessions, in one transaction.
-/// `false` if the user does not exist.
+/// Marks the user disabled. `false` if the user does not exist.
 #[tracing::instrument(skip_all, fields(user.id = %id.as_uuid()))]
-pub(super) async fn disable(db: &PgPool, id: UserId) -> Result<bool, sqlx::Error> {
-    let mut tx = db.begin().await?;
-    let found = sqlx::query!(
+pub(super) async fn disable(db: &mut PgConnection, id: UserId) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query!(
         "UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1",
         id.as_uuid()
     )
-    .execute(&mut *tx)
+    .execute(db)
     .await?
     .rows_affected()
-        == 1;
-    sqlx::query!("DELETE FROM sessions WHERE user_id = $1", id.as_uuid())
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(found)
+        == 1)
 }
 
-/// Deletes every session of the user.
+/// Whether the user exists and is not disabled.
 #[tracing::instrument(skip_all, fields(user.id = %id.as_uuid()))]
-pub(super) async fn delete_sessions(db: &PgPool, id: UserId) -> Result<u64, sqlx::Error> {
-    Ok(
-        sqlx::query!("DELETE FROM sessions WHERE user_id = $1", id.as_uuid())
-            .execute(db)
-            .await?
-            .rows_affected(),
+pub(super) async fn is_active(db: &PgPool, id: UserId) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT disabled_at IS NULL AS "active!" FROM users WHERE id = $1"#,
+        id.as_uuid()
     )
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(false))
 }
 
 /// Up to `limit` users who are not disabled and whose display name
@@ -145,6 +139,7 @@ pub(super) async fn search(
         .map(|row| UserSummary {
             id: UserId::from_uuid(row.id),
             display_name: row.display_name,
+            disabled: false,
         })
         .collect())
 }

@@ -41,6 +41,7 @@ pub(super) async fn list(
             to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "at!",
             a.actor_user_id,
             u.display_name,
+            u.disabled_at IS NOT NULL AS "disabled!",
             a.action,
             a.target_type,
             a.target_id,
@@ -48,7 +49,8 @@ pub(super) async fn list(
             a.details::text AS "details!"
         FROM audit_log a
         JOIN users u ON u.id = a.actor_user_id
-        WHERE $1::bigint IS NULL OR a.id < $1
+        -- Not `$1 IS NULL OR ...`: a generic plan could not seek the index.
+        WHERE a.id < COALESCE($1, 9223372036854775807)
         ORDER BY a.id DESC
         LIMIT $2
         "#,
@@ -65,6 +67,7 @@ pub(super) async fn list(
                 actor: UserSummary {
                     id: UserId::from_uuid(row.actor_user_id),
                     display_name: row.display_name,
+                    disabled: row.disabled,
                 },
                 action: row.action,
                 target_type: row.target_type,

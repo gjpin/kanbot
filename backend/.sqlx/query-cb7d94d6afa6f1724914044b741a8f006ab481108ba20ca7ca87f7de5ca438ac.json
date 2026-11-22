@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.display_name, m.role, m.source\n        FROM team_members m\n        JOIN users u ON u.id = m.user_id\n        WHERE m.team_id = $1\n        ORDER BY m.role = 'maintainer' DESC, u.display_name NULLS LAST, u.id\n        ",
+  "query": "\n        SELECT u.id, u.display_name, u.disabled_at IS NOT NULL AS \"disabled!\", m.role, m.source\n        FROM team_members m\n        JOIN users u ON u.id = m.user_id\n        WHERE m.team_id = $1\n          AND ($2::bool IS NULL\n               OR (m.role <> 'maintainer', u.display_name IS NULL,\n                   COALESCE(u.display_name, ''), u.id)\n                  > (NOT $2, $3, $4, $5))\n        ORDER BY m.role <> 'maintainer', u.display_name IS NULL,\n                 COALESCE(u.display_name, ''), u.id\n        LIMIT $6\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,12 @@
       },
       {
         "ordinal": 2,
+        "name": "disabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
         "name": "role",
         "type_info": "Text",
         "origin": {
@@ -37,7 +43,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "source",
         "type_info": "Text",
         "origin": {
@@ -50,15 +56,21 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Bool",
+        "Bool",
+        "Text",
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
       false,
       true,
+      null,
       false,
       false
     ]
   },
-  "hash": "3b3b3d21fde25968a07266ea10f298273aab75eac904252f3cd9aed7e80b5db7"
+  "hash": "cb7d94d6afa6f1724914044b741a8f006ab481108ba20ca7ca87f7de5ca438ac"
 }

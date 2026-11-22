@@ -9,7 +9,6 @@ use crate::{
     error::AppError,
     names::{Name, Slug, checked},
     organizations::model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
-    teams::dto::TeamSummaryDto,
 };
 
 /// An organization in a list.
@@ -95,8 +94,19 @@ pub enum AccessDto {
 /// A team linked to an organization.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TeamLinkDto {
-    pub team: TeamSummaryDto,
+    pub team: LinkedTeamDto,
     pub access: AccessDto,
+}
+
+/// A team linked to an organization, as the organization's readers see
+/// it: not its identity provider group, which only those who may see the
+/// team learn (`GET /teams/{id}`).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LinkedTeamDto {
+    #[schema(value_type = String, format = "uuid")]
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
 }
 
 /// The access to give a linked team.
@@ -199,7 +209,11 @@ impl From<AccessDto> for Access {
 impl From<TeamLink> for TeamLinkDto {
     fn from(link: TeamLink) -> Self {
         Self {
-            team: link.team.into(),
+            team: LinkedTeamDto {
+                id: link.team.id.as_uuid(),
+                slug: link.team.slug.into_string(),
+                name: link.team.name.into_string(),
+            },
             access: match link.access {
                 Access::Read => AccessDto::Read,
                 Access::Write => AccessDto::Write,

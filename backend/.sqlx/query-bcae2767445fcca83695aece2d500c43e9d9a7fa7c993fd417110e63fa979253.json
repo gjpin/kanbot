@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            a.id,\n            to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"at!\",\n            a.actor_user_id,\n            u.display_name,\n            a.action,\n            a.target_type,\n            a.target_id,\n            a.policy_ids,\n            a.details::text AS \"details!\"\n        FROM audit_log a\n        JOIN users u ON u.id = a.actor_user_id\n        WHERE $1::bigint IS NULL OR a.id < $1\n        ORDER BY a.id DESC\n        LIMIT $2\n        ",
+  "query": "\n        SELECT\n            a.id,\n            to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"at!\",\n            a.actor_user_id,\n            u.display_name,\n            u.disabled_at IS NOT NULL AS \"disabled!\",\n            a.action,\n            a.target_type,\n            a.target_id,\n            a.policy_ids,\n            a.details::text AS \"details!\"\n        FROM audit_log a\n        JOIN users u ON u.id = a.actor_user_id\n        -- Not `$1 IS NULL OR ...`: a generic plan could not seek the index.\n        WHERE a.id < COALESCE($1, 9223372036854775807)\n        ORDER BY a.id DESC\n        LIMIT $2\n        ",
   "describe": {
     "columns": [
       {
@@ -44,6 +44,12 @@
       },
       {
         "ordinal": 4,
+        "name": "disabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
         "name": "action",
         "type_info": "Text",
         "origin": {
@@ -54,7 +60,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "target_type",
         "type_info": "Text",
         "origin": {
@@ -65,7 +71,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "target_id",
         "type_info": "Uuid",
         "origin": {
@@ -76,7 +82,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "policy_ids",
         "type_info": "TextArray",
         "origin": {
@@ -87,7 +93,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "details!",
         "type_info": "Text",
         "origin": "Expression"
@@ -104,6 +110,7 @@
       null,
       false,
       true,
+      null,
       false,
       false,
       false,
@@ -111,5 +118,5 @@
       null
     ]
   },
-  "hash": "8ba87d53b9937caa913894233cf8fdddfeb46a920820670b5357e1237383431c"
+  "hash": "bcae2767445fcca83695aece2d500c43e9d9a7fa7c993fd417110e63fa979253"
 }

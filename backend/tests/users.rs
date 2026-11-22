@@ -638,9 +638,9 @@ mod search_and_permissions {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(names(&found), ["alice (display)", "alina (display)"]);
         assert_eq!(
-            found[0].as_object().unwrap().len(),
-            2,
-            "id and display_name only"
+            found[0],
+            json!({ "id": found[0]["id"], "display_name": "alice (display)", "disabled": false }),
+            "id, display name and the disabled flag only"
         );
 
         // LIKE wildcards match only themselves.

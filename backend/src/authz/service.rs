@@ -39,8 +39,16 @@ async fn load(db: &PgPool, actor: &Actor, resources: &[Resource]) -> Result<Fact
     let organizations: Vec<Uuid> = organizations.into_iter().collect();
     Ok(Facts {
         user,
-        teams: repo::team_facts(db, &teams).await?,
-        organizations: repo::organization_facts(db, &organizations).await?,
+        teams: if teams.is_empty() {
+            Vec::new()
+        } else {
+            repo::team_facts(db, &teams).await?
+        },
+        organizations: if organizations.is_empty() {
+            Vec::new()
+        } else {
+            repo::organization_facts(db, &organizations).await?
+        },
     })
 }
 
@@ -140,36 +148,72 @@ pub async fn require(
     action: Action,
     resource: Resource,
 ) -> Result<Decision, AppError> {
-    let mut requests = vec![(action, resource)];
-    let visibility = visibility(resource).filter(|visibility| *visibility != action);
+    require_all(db, policies, actor, &[action], resource).await
+}
+
+/// Like [`require`], for several actions on one resource, decided
+/// together: all must be allowed. The decision lists the policies of all
+/// of them.
+///
+/// # Errors
+///
+/// As [`require`]: `404` unless the actor may see the resource, `403` for
+/// the first action denied.
+pub async fn require_all(
+    db: &PgPool,
+    policies: &Policies,
+    actor: &Actor,
+    actions: &[Action],
+    resource: Resource,
+) -> Result<Decision, AppError> {
+    let mut requests: Vec<(Action, Resource)> =
+        actions.iter().map(|action| (*action, resource)).collect();
+    let visibility = visibility(resource).filter(|visibility| !actions.contains(visibility));
     if let Some(visibility) = visibility {
         requests.push((visibility, resource));
     }
     let decisions = decisions(db, policies, actor, &requests).await?;
-    let mut decisions = decisions.into_iter();
-    let decision = decisions.next().ok_or(AppError::Internal("authz"))?;
-    if decision.allowed {
-        return Ok(decision);
+    let (asked, visible) = decisions.split_at(actions.len().min(decisions.len()));
+    let mut policy_ids = Vec::new();
+    for (action, decision) in actions.iter().zip(asked) {
+        if decision.allowed {
+            policy_ids.extend(decision.policy_ids.iter().cloned());
+            continue;
+        }
+        tracing::info!(
+            user.id = %actor.user.id.as_uuid(),
+            action = action.name(),
+            policy.ids = ?decision.policy_ids,
+            "denied"
+        );
+        let may_know = match visibility {
+            Some(_) => visible.first().is_some_and(|decision| decision.allowed),
+            // The resource is the platform, or the visibility action is
+            // among those asked: knowing it is allowed unless that action
+            // itself was denied.
+            None => !asked.iter().zip(actions).any(|(decision, action)| {
+                !decision.allowed
+                    && matches!(
+                        (action, resource),
+                        (Action::Read, Resource::Organization(_))
+                            | (Action::ViewTeam, Resource::Team(_))
+                    )
+            }),
+        };
+        return Err(if may_know {
+            AppError::Forbidden
+        } else {
+            AppError::NotFound
+        });
     }
-    tracing::info!(
-        user.id = %actor.user.id.as_uuid(),
-        action = action.name(),
-        policy.ids = ?decision.policy_ids,
-        "denied"
-    );
-    let may_know = match visibility {
-        Some(_) => decisions.next().is_some_and(|decision| decision.allowed),
-        // The action is the visibility action itself, or the resource is
-        // the platform.
-        None => !matches!(
-            (action, resource),
-            (Action::Read, Resource::Organization(_)) | (Action::ViewTeam, Resource::Team(_))
-        ),
-    };
-    Err(if may_know {
-        AppError::Forbidden
-    } else {
-        AppError::NotFound
+    if asked.len() != actions.len() {
+        return Err(AppError::Internal("authz"));
+    }
+    policy_ids.sort();
+    policy_ids.dedup();
+    Ok(Decision {
+        allowed: true,
+        policy_ids,
     })
 }
 

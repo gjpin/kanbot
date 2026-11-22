@@ -65,6 +65,9 @@ pub struct UserSummary {
     pub id: UserId,
     /// From the identity provider. Personal data: never log it.
     pub display_name: Option<String>,
+    /// Disabled in kanbot: still listed where they were, so they can be
+    /// removed, but refused everywhere else.
+    pub disabled: bool,
 }
 
 /// A user search: part of a display name, at most 100 characters.

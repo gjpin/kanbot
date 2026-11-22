@@ -20,7 +20,10 @@ use crate::{
         repo,
     },
     teams::model::TeamId,
-    users::model::{UserId, UserSummary},
+    users::{
+        model::{UserId, UserSummary},
+        service as users,
+    },
 };
 
 fn entry(
@@ -129,12 +132,17 @@ pub async fn create(
     Ok(new)
 }
 
-/// Renames the organization or changes its slug.
+/// The Default organization's slug, which never changes.
+const DEFAULT_SLUG: &str = "default";
+
+/// Renames the organization or changes its slug. A change to the same
+/// values is not recorded.
 ///
 /// # Errors
 ///
 /// [`AppError::NotFound`], [`AppError::Forbidden`] (see
-/// [`authz::require`]), [`AppError::Conflict`] if the slug is taken, or a
+/// [`authz::require`]), [`AppError::Conflict`] if the slug is taken or the
+/// organization is the Default one (its slug stays `default`), or a
 /// database error.
 pub async fn update(
     db: &PgPool,
@@ -151,11 +159,22 @@ pub async fn update(
         Resource::Organization(id),
     )
     .await?;
+    if id == OrganizationId::DEFAULT
+        && changes
+            .slug
+            .as_ref()
+            .is_some_and(|slug| slug.as_str() != DEFAULT_SLUG)
+    {
+        return Err(AppError::Conflict);
+    }
     let mut tx = db.begin().await?;
-    let updated = repo::update(&mut tx, id, changes)
+    let (updated, modified) = repo::update(&mut tx, id, changes)
         .await
         .map_err(AppError::from_write)?
         .ok_or(AppError::NotFound)?;
+    if !modified {
+        return Ok(updated);
+    }
     audit::record(
         &mut tx,
         &entry(
@@ -254,6 +273,7 @@ pub async fn add_admin(
         Resource::Organization(id),
     )
     .await?;
+    users::require_active(db, user).await?;
     let mut tx = db.begin().await?;
     if repo::add_admin(&mut tx, id, user)
         .await
@@ -343,9 +363,9 @@ pub async fn team_links(
 ///
 /// # Errors
 ///
-/// [`AppError::NotFound`] if the organization or the team does not exist,
-/// [`AppError::Forbidden`] unless `actor` may `manageTeamLinks`, or a
-/// database error.
+/// [`AppError::NotFound`] if the organization or the team does not exist
+/// (or `actor` may not see the team), [`AppError::Forbidden`] unless
+/// `actor` may `manageTeamLinks`, or a database error.
 pub async fn set_team_link(
     db: &PgPool,
     policies: &Policies,
@@ -362,11 +382,13 @@ pub async fn set_team_link(
         Resource::Organization(id),
     )
     .await?;
+    // A team the actor may not see cannot be probed or linked.
+    authz::require(db, policies, actor, Action::ViewTeam, Resource::Team(team)).await?;
     let mut tx = db.begin().await?;
-    let previous = repo::set_team_link(&mut tx, id, team, access)
+    let changed = repo::set_team_link(&mut tx, id, team, access)
         .await
         .map_err(AppError::from_write)?;
-    if previous != Some(access) {
+    if changed {
         audit::record(
             &mut tx,
             &entry(

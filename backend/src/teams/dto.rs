@@ -1,7 +1,7 @@
 //! Request and response types of the `/teams` routes.
 
 use serde::{Deserialize, Deserializer, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
@@ -123,6 +123,25 @@ pub struct MemberDto {
     pub user: UserSummaryDto,
     pub role: TeamRoleDto,
     pub source: MembershipSourceDto,
+}
+
+/// A page of a team's members.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberPageDto {
+    pub members: Vec<MemberDto>,
+    /// Pass as `after` for the next page; `null` on the last one.
+    pub next: Option<String>,
+}
+
+/// `GET /teams/{id}/members` parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct MemberQuery {
+    /// The previous page's `next`.
+    pub after: Option<String>,
+    /// Members per page: 1 to 500, default 100.
+    pub limit: Option<i64>,
 }
 
 /// The role to give a member.

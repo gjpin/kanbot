@@ -3,6 +3,10 @@
 /// A user, as other users see them.
 class UserSummaryDto {
   const UserSummaryDto({
+    /// Disabled in kanbot: they cannot sign in, and cannot be added
+    /// anywhere; remove them where they are listed.
+    required this.disabled,
+
     /// From the identity provider.
     this.displayName,
     required this.id,
@@ -10,6 +14,7 @@ class UserSummaryDto {
   });
 
   factory UserSummaryDto.fromJson(Map<String, Object?> json) => UserSummaryDto(
+    disabled: json['disabled'] as bool,
     displayName: json.containsKey('display_name')
         ? json['display_name'] as String?
         : null,
@@ -20,18 +25,23 @@ class UserSummaryDto {
     },
   );
 
+  /// Disabled in kanbot: they cannot sign in, and cannot be added
+  /// anywhere; remove them where they are listed.
+  final bool disabled;
+
   /// From the identity provider.
   final String? displayName;
 
   final String id;
 
-  static const _knownKeys = <String>{'display_name', 'id'};
+  static const _knownKeys = <String>{'disabled', 'display_name', 'id'};
 
   final Map<String, Object?> additionalProperties;
 
   Map<String, Object?> toJson() => {
     for (final entry in additionalProperties.entries)
       if (!_knownKeys.contains(entry.key)) entry.key: entry.value,
+    'disabled': disabled,
     if (displayName != null) 'display_name': displayName,
     'id': id,
   };

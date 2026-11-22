@@ -193,6 +193,10 @@ class _OrganizationPageState extends State<OrganizationPage> {
                     ListRow(
                       label: displayName(admin),
                       trailing: [
+                        if (admin.disabled)
+                          const ShadBadge.destructive(
+                            child: Text(Messages.disabledUser),
+                          ),
                         if (value.organization.can(
                           OrganizationPermission.manageAdmins,
                         ))
