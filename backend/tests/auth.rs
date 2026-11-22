@@ -159,6 +159,10 @@ async fn jwks_uri_must_be_an_allowed_url() {
         "ftp://127.0.0.1/jwks".to_owned(),
         "not a url".to_owned(),
         idp.issuer.replace("http://", "http://user:pw@") + "/jwks",
+        idp.issuer.replace("http://", "http://user@") + "/jwks",
+        // url 2.5.8 recursed once per prefix taking its origin
+        // (RUSTSEC-2026-0592).
+        "blob:".repeat(12_000) + &idp.issuer + "/jwks",
     ] {
         let mut document = idp.discovery_document();
         document["jwks_uri"] = json!(jwks_uri);

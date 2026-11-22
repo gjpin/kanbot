@@ -317,12 +317,12 @@ pub async fn discover(
     let jwks_uri = Url::parse(&document.jwks_uri)
         .ok()
         .filter(|url| {
+            config.is_allowed_url(url) && url.username().is_empty() && url.password().is_none()
+        })
+        // Only then the origin: an http(s) URL's is cheap.
+        .filter(|url| {
             let origin = url.origin().ascii_serialization();
-            config.is_allowed_url(url)
-                && url.username().is_empty()
-                && url.password().is_none()
-                && (origin == config.issuer.origin()
-                    || config.jwks_allowed_origins.contains(&origin))
+            origin == config.issuer.origin() || config.jwks_allowed_origins.contains(&origin)
         })
         .ok_or(DiscoveryError::JwksUri)?;
     // Any origin: some identity providers serve these from another host
