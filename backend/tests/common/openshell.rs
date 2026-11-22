@@ -1,7 +1,8 @@
 //! A fake `OpenShell` gateway: a real gRPC server on `127.0.0.1:0` that
 //! implements the workspace membership calls in memory, and records the
-//! bearer token of every call. Tests can hold a call, refuse tokens, add
-//! members behind kanbot's back, and page oddly.
+//! bearer token of every call. Tests can hold a call, refuse tokens, deny
+//! calls or the adding of some subjects, add members behind kanbot's back,
+//! and page oddly.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,9 +59,14 @@ pub struct State {
     pub accepted: BTreeSet<String>,
     /// Workspaces where adding a member fails (`unavailable`).
     pub failing_adds: BTreeSet<String>,
+    /// Subjects the gateway will not add, anywhere (`permission_denied`).
+    pub rejected_adds: BTreeSet<String>,
     /// The next this many calls are `unauthenticated`, whatever their
     /// token.
     pub refuse_next: usize,
+    /// The next this many calls are `permission_denied`, whatever their
+    /// token.
+    pub deny_next: usize,
     /// The workspace of every list call, in order.
     pub lists: Vec<String>,
     /// Members (workspace, subject, role) someone adds right after the
@@ -187,6 +193,10 @@ impl FakeGateway {
             state.refuse_next = state.refuse_next.saturating_sub(1);
             return Err(Status::unauthenticated("token no longer accepted"));
         }
+        if state.deny_next > 0 {
+            state.deny_next = state.deny_next.saturating_sub(1);
+            return Err(Status::permission_denied("not allowed"));
+        }
         if state.accepted.contains(&header) {
             Ok(())
         } else {
@@ -234,6 +244,9 @@ impl OpenShell for FakeGateway {
         let mut state = self.state.lock().unwrap();
         if state.failing_adds.contains(&workspace) {
             return Err(Status::unavailable("try again"));
+        }
+        if state.rejected_adds.contains(&body.principal_subject) {
+            return Err(Status::permission_denied("not this one"));
         }
         let members = state
             .workspaces

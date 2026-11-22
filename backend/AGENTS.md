@@ -247,7 +247,7 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `OIDC_GROUPS_CLAIM` | 4 | value of `OIDC_ROLES_CLAIM` | Dot path to the groups array used for team sync and Cedar `principal.groups` |
 | `AUTHZ_POLICY_FILE` | 4 | none | Deployer Cedar policies. `forbid` only: a file containing any `permit` stops startup |
 | `OPENSHELL_GATEWAY_URL` | 7 | unset (off) | The OpenShell gateway's gRPC endpoint. HTTPS only (`http` on a numeric loopback host with `OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP=true`, tests only) |
-| `OPENSHELL_AUDIENCE` | 7 | required with the gateway | Audience of the gateway's tokens, for example `openshell-gateway`. Must differ from `OIDC_AUDIENCE` |
+| `OPENSHELL_AUDIENCE` | 7 | required with the gateway | Audience of the gateway's tokens, for example `openshell-gateway`. Must differ from `OIDC_AUDIENCE` and `OIDC_CLIENT_ID` |
 | `OPENSHELL_CLIENT_ID`, `OPENSHELL_CLIENT_SECRET` / `OPENSHELL_CLIENT_SECRET_FILE` | 7 | required with the gateway | Kanbot's client for OpenShell tokens (secret). The ID must differ from both audiences |
 | `OPENSHELL_TOKEN_SCOPE` | 7 | none | `scope` to request for the gateway's audience, if the identity provider needs one |
 | `OPENSHELL_TOKEN_EXCHANGE` | 7 | `false` | Exchange the user's token (RFC 8693) for calls a user starts |

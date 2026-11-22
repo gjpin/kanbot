@@ -7,9 +7,11 @@
 //! another way is left alone.
 //!
 //! - One instance syncs at a time: a Postgres advisory lock, held by a
-//!   connection of its own (`lock.rs`) and checked before each workspace.
-//!   A run that lost it stops.
+//!   connection of its own (`lock.rs`) and checked before each workspace
+//!   and each call that changes a membership. A run that lost it stops.
 //! - Each workspace's link is read again just before it syncs.
+//! - Within a workspace, removals come first, and a member that fails on
+//!   their own does not stop the others.
 //! - A workspace that fails is logged and skipped; the others still sync.
 //!   It is retried on its own, later each time it fails again
 //!   (`backoff.rs`).
@@ -24,10 +26,13 @@ mod workspace;
 
 use std::collections::HashSet;
 
+use sqlx::{PgPool, postgres::PgConnectOptions};
+
 use crate::{
     authz::policies::Policies,
     openshell::{
-        OpenShell, credentials::CredentialError, gateway::GatewayError, model::WorkspaceName, repo,
+        OpenShell, ServiceCallError, credentials::CredentialError, gateway::GatewayError,
+        model::WorkspaceName, repo,
     },
     organizations::model::OrganizationId,
 };
@@ -50,6 +55,26 @@ pub enum SyncError {
     /// instance may be syncing, so this run stopped.
     #[error("the sync's lock was lost")]
     LockLost,
+}
+
+impl From<ServiceCallError> for SyncError {
+    fn from(error: ServiceCallError) -> Self {
+        match error {
+            ServiceCallError::Credentials(error) => Self::Credentials(error),
+            ServiceCallError::Gateway(error) => Self::Gateway(error),
+        }
+    }
+}
+
+/// Options for the sync's own connections (the lock's, the listener's):
+/// the pool's, and never ended for being idle, whatever the role or the
+/// server sets (`idle_session_timeout`). The lock's session sits idle
+/// during gateway calls, and ending it would release the lock; the
+/// listener's waits idle for notifications.
+fn own_connection_options(db: &PgPool) -> PgConnectOptions {
+    (*db.connect_options())
+        .clone()
+        .options([("idle_session_timeout", "0")])
 }
 
 /// What one sync did.
@@ -125,12 +150,7 @@ async fn run(
     };
     let outcome = run_locked(db, policies, openshell, issuer, backoff, scope, &mut lock).await;
     // Whatever happened: the work done stands even if releasing fails.
-    if let Err(error) = sqlx::Connection::close(lock.release().await).await {
-        tracing::debug!(
-            error.type = crate::error::database_kind(&error),
-            "openshell: closing the sync's lock connection failed"
-        );
-    }
+    lock::close(lock.release().await).await;
     outcome.map(Some)
 }
 
@@ -166,34 +186,46 @@ async fn run_locked(
     }
     // A token at all, or nothing can run.
     openshell.credentials.service_token().await?;
+    let mut syncing = workspace::Syncing {
+        db,
+        openshell,
+        lock,
+    };
     let mut total = Changes::default();
     for (organization, workspace) in links {
-        lock.check().await?;
-        let outcome =
-            workspace::sync_link(db, policies, openshell, issuer, organization, &workspace).await;
-        total = total.plus(settle(backoff, &workspace, Some(organization), outcome));
+        syncing.lock.check().await?;
+        let mut changes = Changes::default();
+        let outcome = syncing
+            .sync_link(policies, issuer, organization, &workspace, &mut changes)
+            .await;
+        let settled = settle(backoff, &workspace, Some(organization), changes, outcome)?;
+        total = total.plus(settled);
     }
     for workspace in orphans {
-        lock.check().await?;
-        let outcome = workspace::sync_orphan(db, openshell, &workspace).await;
-        total = total.plus(settle(backoff, &workspace, None, outcome));
+        syncing.lock.check().await?;
+        let mut changes = Changes::default();
+        let outcome = syncing.sync_orphan(&workspace, &mut changes).await;
+        total = total.plus(settle(backoff, &workspace, None, changes, outcome)?);
     }
     Ok(total)
 }
 
-/// Counts a workspace's outcome, and starts or ends its wait after a
-/// failure.
+/// Counts a workspace's changes and outcome, and starts or ends its wait
+/// after a failure. A lost lock stops the run: another instance may be
+/// syncing.
 fn settle(
     backoff: &mut Backoff,
     workspace: &WorkspaceName,
     organization: Option<OrganizationId>,
-    outcome: Result<Changes, SyncError>,
-) -> Changes {
+    changes: Changes,
+    outcome: Result<(), SyncError>,
+) -> Result<Changes, SyncError> {
     match outcome {
-        Ok(changes) => {
+        Ok(()) => {
             backoff.succeeded(workspace);
-            changes
+            Ok(changes)
         }
+        Err(SyncError::LockLost) => Err(SyncError::LockLost),
         Err(error) => {
             tracing::warn!(
                 workspace = workspace.as_str(),
@@ -202,10 +234,10 @@ fn settle(
                 "openshell: a workspace could not be synced; the others go on"
             );
             backoff.failed(workspace, tokio::time::Instant::now());
-            Changes {
+            Ok(changes.plus(Changes {
                 failed: 1,
                 ..Changes::default()
-            }
+            }))
         }
     }
 }

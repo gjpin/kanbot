@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pid AS \"pid!\" FROM pg_stat_activity\n               WHERE datname = current_database() AND query LIKE 'LISTEN%'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pid!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "pid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "47a11a2683cf719e103eab2baf4064bb4a3f0e6ee0ddaea1f7b488f5fbc26362"
+}

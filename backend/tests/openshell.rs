@@ -38,6 +38,7 @@ fn config_with(vars: &[(&'static str, &str)]) -> OpenShellConfig {
                 .ok_or(std::env::VarError::NotPresent)
         },
         "kanbot-api",
+        "kanbot",
     )
     .unwrap()
     .unwrap()
@@ -166,6 +167,16 @@ async fn gateway_failures_are_typed() {
         Err(GatewayError::Refused)
     ));
 
+    // Allowed in, but not to do this.
+    fake.accept("gw-token");
+    fake.state.lock().unwrap().deny_next = 1;
+    assert!(matches!(
+        gateway
+            .workspace_exists(&SecretString::from("gw-token"), &workspace("research"))
+            .await,
+        Err(GatewayError::Denied)
+    ));
+
     // Nothing listens there.
     let closed = Gateway::new(&config("http://127.0.0.1:1")).unwrap();
     assert!(matches!(
@@ -174,6 +185,50 @@ async fn gateway_failures_are_typed() {
             .await,
         Err(GatewayError::Unavailable)
     ));
+}
+
+/// A server on loopback that accepts connections and never answers; its
+/// port.
+async fn silent_server() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            let (socket, _) = listener.accept().await.unwrap();
+            held.push(socket);
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_gateway_that_never_answers_fails_in_time() {
+    let port = silent_server().await;
+    let token = SecretString::from("gw-token");
+    // Over TLS, the handshake never ends; without, the answer never comes.
+    let tls = Gateway::new(&config_with(&[
+        (
+            "OPENSHELL_GATEWAY_URL",
+            &format!("https://auth.kanbot.internal:{port}"),
+        ),
+        ("OPENSHELL_CA_FILE", common::authelia::CA_FILE),
+    ]))
+    .unwrap();
+    let plain = Gateway::new(&config(&format!("http://127.0.0.1:{port}"))).unwrap();
+    let research = workspace("research");
+    let started = std::time::Instant::now();
+    let (tls, plain) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(
+            tls.workspace_exists(&token, &research),
+            plain.members(&token, &research),
+        )
+    })
+    .await
+    .expect("no call waits for good");
+    assert!(matches!(tls, Err(GatewayError::Unavailable)), "{tls:?}");
+    assert!(matches!(plain, Err(GatewayError::Unavailable)), "{plain:?}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(9));
 }
 
 #[tokio::test]
@@ -1090,6 +1145,21 @@ mod link_and_sync {
         );
     }
 
+    /// Whether a session listens for the sync's notifications in this
+    /// test's database.
+    async fn listening(pool: &PgPool) -> bool {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS (
+                   SELECT 1 FROM pg_stat_activity
+                   WHERE datname = current_database() AND query LIKE 'LISTEN%'
+                     AND state = 'idle'
+               ) AS "listening!""#
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
     #[sqlx::test]
     async fn linking_wakes_the_background_sync(pool: PgPool) {
         let setup = setup(&pool, false).await;
@@ -1115,7 +1185,15 @@ mod link_and_sync {
             setup.idp.issuer.clone(),
             fast(3_600_000),
         );
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Linked once the sync listens: a fixed wait loses the race under
+        // load, and then the notification.
+        for _ in 0..200 {
+            if listening(&pool).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(listening(&pool).await, "the sync listens");
         let (status, _) = setup
             .api
             .put(
@@ -1280,7 +1358,8 @@ mod link_and_sync {
             .await
             .unwrap();
         let changes = sync_once(&pool, &setup).await;
-        assert_eq!((changes.removed, changes.failed), (1, 0));
+        // Forgetting removes nobody: not counted as a removal.
+        assert_eq!((changes.removed, changes.failed), (0, 0));
         let left = sqlx::query_scalar!(r#"SELECT count(*) AS "n!" FROM openshell_members"#)
             .fetch_one(&pool)
             .await
@@ -1547,6 +1626,108 @@ mod link_and_sync {
     }
 
     #[sqlx::test]
+    async fn a_denied_call_is_not_retried_with_a_new_token(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        admin_of(&pool, ORG, alice).await;
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        // The service account may not list the workspace's members: a
+        // new token would not change that.
+        setup.fake.state.lock().unwrap().deny_next = 1;
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (0, 1));
+        assert_eq!(setup.idp.token_requests().len(), 1, "the token is kept");
+        assert_eq!(
+            setup.fake.state.lock().unwrap().tokens.len(),
+            1,
+            "called once"
+        );
+    }
+
+    #[sqlx::test]
+    async fn linking_replaces_a_refused_service_token_once(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        setup.fake.workspace("research");
+        let root = setup.token("root", &["kanbot-admin"]);
+        let uri = format!("/organizations/{ORG}/openshell_workspace");
+        let body = Some(json!({ "workspace": "research" }));
+        // The gateway stops accepting the cached token (a key rotation).
+        setup.fake.state.lock().unwrap().refuse_next = 1;
+        let (status, _) = setup.api.put(&uri, &root, body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(setup.idp.token_requests().len(), 2, "a new token");
+
+        // A denial is final: no new token, no second call.
+        let (status, _) = setup.api.delete(&uri, &root).await;
+        assert_eq!(status, StatusCode::OK);
+        let calls = setup.fake.state.lock().unwrap().tokens.len();
+        setup.fake.state.lock().unwrap().deny_next = 1;
+        let (status, _) = setup.api.put(&uri, &root, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(setup.idp.token_requests().len(), 2);
+        assert_eq!(
+            setup.fake.state.lock().unwrap().tokens.len(),
+            calls.saturating_add(1)
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_member_the_gateway_will_not_add_holds_up_no_one(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let mut ids = HashMap::new();
+        for subject in ["alice", "bob", "carol", "dave"] {
+            ids.insert(subject, user(&pool, &issuer, subject, false).await);
+        }
+        admin_of(&pool, ORG, ids["alice"]).await;
+        admin_of(&pool, ORG, ids["bob"]).await;
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        sync_once(&pool, &setup).await;
+        assert_eq!(recorded(&pool, "research").await.len(), 2);
+
+        // Bob leaves; Carol, whom the gateway will not add, and Dave join.
+        sqlx::query!(
+            "DELETE FROM organization_admins WHERE user_id = $1",
+            ids["bob"]
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        admin_of(&pool, ORG, ids["carol"]).await;
+        admin_of(&pool, ORG, ids["dave"]).await;
+        setup
+            .fake
+            .state
+            .lock()
+            .unwrap()
+            .rejected_adds
+            .insert("carol".to_owned());
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!(
+            (changes.added, changes.removed, changes.failed),
+            (1, 1, 1),
+            "Bob removed and Dave added; the workspace failed"
+        );
+        assert_eq!(
+            members(&setup.fake),
+            [("alice".to_owned(), 2), ("dave".to_owned(), 2)]
+        );
+        // Kanbot does not claim the member it could not add.
+        assert_eq!(
+            recorded(&pool, "research").await,
+            [pair("alice", "admin"), pair("dave", "admin")]
+        );
+
+        setup.fake.state.lock().unwrap().rejected_adds.clear();
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.removed, changes.failed), (1, 0, 0));
+        assert_eq!(members(&setup.fake).len(), 3);
+    }
+
+    #[sqlx::test]
     async fn a_role_change_whose_add_fails_is_finished_by_the_next_run(pool: PgPool) {
         let setup = setup(&pool, false).await;
         let issuer = setup.idp.issuer.clone();
@@ -1612,6 +1793,11 @@ mod link_and_sync {
             within(run).await.unwrap(),
             Err(sync::SyncError::LockLost)
         ));
+        // Checked again before the add, not only before the next workspace.
+        assert!(
+            members_of(&setup.fake, "alpha").is_empty(),
+            "nothing changed without the lock"
+        );
         assert_eq!(setup.fake.lists_of("beta"), 0, "beta is left alone");
     }
 

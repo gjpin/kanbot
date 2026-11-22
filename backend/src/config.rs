@@ -204,6 +204,7 @@ impl Config {
         let openshell = crate::openshell::config::OpenShellConfig::from_lookup(
             &lookup,
             oidc.audience.as_str(),
+            &sessions.client_id,
         )?;
 
         let rate_limits = rate_limits(&lookup)?;
@@ -777,6 +778,27 @@ mod tests {
         assert!(matches!(
             result,
             Err(ConfigError::Oidc(OidcConfigError::AudienceIsClient))
+        ));
+    }
+
+    #[test]
+    fn refuses_the_sign_in_client_as_the_openshell_audience() {
+        let openshell = |audience: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://db"),
+                ("OPENSHELL_GATEWAY_URL", "https://openshell.example.com"),
+                ("OPENSHELL_AUDIENCE", audience),
+                ("OPENSHELL_CLIENT_ID", "kanbot-openshell"),
+                ("OPENSHELL_CLIENT_SECRET", "s3cret"),
+            ]))
+            .map(|config| config.openshell.is_some())
+        };
+        assert!(matches!(openshell("openshell-gateway"), Ok(true)));
+        assert!(matches!(
+            openshell("kanbot"),
+            Err(ConfigError::OpenShell(
+                crate::openshell::config::OpenShellConfigError::AudienceIsSignInClient
+            ))
         ));
     }
 

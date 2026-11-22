@@ -82,7 +82,7 @@ impl Notifications {
             .max_lifetime(None)
             .idle_timeout(None)
             .acquire_timeout(LISTEN_CONNECT_TIMEOUT)
-            .connect_lazy_with((*db.connect_options()).clone());
+            .connect_lazy_with(super::own_connection_options(db));
         Self {
             pool,
             listener: None,
@@ -93,10 +93,44 @@ impl Notifications {
         }
     }
 
+    /// A listener that never reconnects on its own. With sqlx's eager
+    /// reconnect, `try_recv` reconnects before it returns `Ok(None)` (the
+    /// connection dropped, notifications may be lost); a `try_recv`
+    /// cancelled meanwhile (by `select!`, or the drain's zero timeout)
+    /// would lose that signal, and the next call reconnect silently. Here
+    /// `Ok(None)` comes at once, and [`Self::lost`] reconnects through
+    /// [`Self::changed`], which then reports the gap.
     async fn listen(&self) -> Result<PgListener, sqlx::Error> {
         let mut listener = PgListener::connect_with(&self.pool).await?;
+        listener.eager_reconnect(false);
         listener.listen(CHANNEL).await?;
         Ok(listener)
+    }
+
+    /// The listener's connection dropped (`error`, or `None` when it just
+    /// ended): what comes until listening works again is lost.
+    fn lost(&mut self, error: Option<&sqlx::Error>) {
+        tracing::warn!(
+            error.type = error.map(database_kind),
+            "openshell: change notifications interrupted"
+        );
+        self.listener = None;
+        self.missed = true;
+    }
+
+    /// Takes the notifications that already came, without waiting: the run
+    /// about to start covers them. A connection found dropped is handled
+    /// as in [`Self::changed`].
+    async fn drain(&mut self) {
+        while let Some(listener) = self.listener.as_mut() {
+            match tokio::time::timeout(Duration::ZERO, listener.try_recv()).await {
+                Ok(Ok(Some(_))) => {}
+                // Nothing more yet.
+                Err(_) => return,
+                Ok(Ok(None)) => self.lost(None),
+                Ok(Err(error)) => self.lost(Some(&error)),
+            }
+        }
     }
 
     /// Returns when what the sync reads may have changed: a notification
@@ -105,17 +139,9 @@ impl Notifications {
         loop {
             if let Some(listener) = self.listener.as_mut() {
                 match listener.try_recv().await {
-                    // A notification; or (`None`) the connection dropped
-                    // and is listening again, but what came meanwhile is
-                    // lost.
-                    Ok(_) => return,
-                    Err(error) => {
-                        tracing::warn!(
-                            error.type = database_kind(&error),
-                            "openshell: change notifications interrupted"
-                        );
-                        self.listener = None;
-                    }
+                    Ok(Some(_)) => return,
+                    Ok(None) => self.lost(None),
+                    Err(error) => self.lost(Some(&error)),
                 }
             } else {
                 match self.listen().await {
@@ -183,12 +209,7 @@ pub fn spawn_sync_with(
                 tokio::time::sleep_until(next).await;
             }
             // Changes that came meanwhile are covered by this run.
-            if let Some(listener) = notifications.listener.as_mut() {
-                while let Ok(Ok(Some(_))) =
-                    tokio::time::timeout(Duration::ZERO, listener.try_recv()).await
-                {
-                }
-            }
+            notifications.drain().await;
             last_run = Some(Instant::now());
             let outcome =
                 super::run(&db, &policies, &openshell, &issuer, &mut backoff, scope).await;
@@ -313,5 +334,104 @@ mod tests {
         assert!(error.contains("database.pool_timed_out"), "{error}");
         let lost = logged(&Err(SyncError::LockLost));
         assert!(lost.contains("the sync's lock was lost"), "{lost}");
+    }
+
+    fn quick() -> Timing {
+        Timing {
+            listen_retry: Duration::from_millis(50),
+            listen_retry_max: Duration::from_millis(100),
+            ..Timing::default()
+        }
+    }
+
+    /// The sessions listening in this test's database.
+    async fn listeners(pool: &PgPool) -> Vec<i32> {
+        sqlx::query_scalar!(
+            r#"SELECT pid AS "pid!" FROM pg_stat_activity
+               WHERE datname = current_database() AND query LIKE 'LISTEN%'"#
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Listening, with nothing missed: `changed` waits.
+    async fn listening(pool: &PgPool) -> Notifications {
+        let mut notifications = Notifications::new(pool, &quick());
+        let waited = tokio::time::timeout(Duration::from_millis(300), notifications.changed());
+        assert!(waited.await.is_err(), "nothing changed yet");
+        assert_eq!(listeners(pool).await.len(), 1);
+        notifications
+    }
+
+    /// Ends the listener's session, and waits until its end has reached
+    /// the listener's socket.
+    async fn drop_listener(pool: &PgPool) {
+        let [pid] = listeners(pool).await[..] else {
+            panic!("one listener")
+        };
+        let ended = sqlx::query_scalar!(r#"SELECT pg_terminate_backend($1) AS "ended!""#, pid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert!(ended);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    /// `changed` returns soon: what may have been missed is reported.
+    async fn reports_a_change(notifications: &mut Notifications) {
+        tokio::time::timeout(Duration::from_secs(5), notifications.changed())
+            .await
+            .expect("a change is reported");
+    }
+
+    #[sqlx::test]
+    async fn notifications_wake_the_sync(pool: PgPool) {
+        let mut notifications = listening(&pool).await;
+        sqlx::query!("NOTIFY kanbot_openshell")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reports_a_change(&mut notifications).await;
+    }
+
+    #[sqlx::test]
+    async fn a_connection_lost_while_waiting_is_reported_even_if_the_wait_is_cancelled(
+        pool: PgPool,
+    ) {
+        let mut notifications = listening(&pool).await;
+        drop_listener(&pool).await;
+        // A timer or a retry wins the select! at once.
+        let cancelled = tokio::time::timeout(Duration::ZERO, notifications.changed()).await;
+        assert!(cancelled.is_err());
+        reports_a_change(&mut notifications).await;
+        assert_eq!(listeners(&pool).await.len(), 1, "listening again");
+    }
+
+    #[sqlx::test]
+    async fn a_connection_lost_while_draining_is_reported(pool: PgPool) {
+        let mut notifications = listening(&pool).await;
+        drop_listener(&pool).await;
+        notifications.drain().await;
+        reports_a_change(&mut notifications).await;
+        assert_eq!(listeners(&pool).await.len(), 1, "listening again");
+    }
+
+    #[sqlx::test]
+    async fn the_listener_survives_an_idle_session_timeout(pool: PgPool) {
+        // As if the role or the server ended idle sessions after 600 ms.
+        let options = (*pool.connect_options())
+            .clone()
+            .options([("idle_session_timeout", "600ms")]);
+        let strict = PgPoolOptions::new().connect_lazy_with(options);
+        let mut notifications = listening(&strict).await;
+        let before = listeners(&pool).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(listeners(&pool).await, before, "the same session");
+        sqlx::query!("NOTIFY kanbot_openshell")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reports_a_change(&mut notifications).await;
     }
 }

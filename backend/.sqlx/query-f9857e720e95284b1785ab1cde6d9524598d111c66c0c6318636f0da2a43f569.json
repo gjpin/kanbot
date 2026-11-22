@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "NOTIFY kanbot_openshell",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f9857e720e95284b1785ab1cde6d9524598d111c66c0c6318636f0da2a43f569"
+}

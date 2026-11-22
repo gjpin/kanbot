@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n                   SELECT 1 FROM pg_stat_activity\n                   WHERE datname = current_database() AND query LIKE 'LISTEN%'\n                     AND state = 'idle'\n               ) AS \"listening!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "listening!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b58c12d3b9d0a7a2baae96254631502d543cae96379d060a472f4a6ff46e51b6"
+}

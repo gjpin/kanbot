@@ -35,9 +35,23 @@ OpenShell versions are listed in
 - When an organization is unlinked or deleted, the next sync removes the
   members kanbot added to its workspace.
 - Kanbot records a member before adding them, so a crash or a failed call
-  never leaves a member it added unrecorded (and so never removed).
+  never leaves a member it added unrecorded (and so never removed). When the
+  gateway refuses the add outright (`permission_denied`, `invalid_argument`,
+  `failed_precondition`, or a token refused twice), the member was certainly
+  not added, and the record of someone who was not in the workspace before
+  is dropped again: kanbot never claims a member it did not add. After a
+  timeout or any other failure the add may have happened, so the record
+  stays and the next run settles it.
+- Within a workspace, removals come first, so taking access away never waits
+  on an add. A member the gateway refuses (`permission_denied`, or another
+  answer about that member) is skipped and the other members still sync; the
+  workspace then counts as failed (below). Syncing a workspace stops at once
+  only for what concerns all of it: no token, a token refused even after a
+  new one, an unavailable gateway, a workspace that no longer exists, or the
+  database.
 - When an unlinked workspace no longer exists in OpenShell, kanbot forgets
-  what it had recorded there.
+  what it had recorded there. That removes nobody, so it is not counted as a
+  removal.
 - The sync runs every 5 minutes, and soon after anything it reads changes:
   database triggers notify every instance (Postgres `LISTEN`/`NOTIFY`) when
   admins, team links, team members, a link, or a user's groups, role or
@@ -50,8 +64,13 @@ OpenShell versions are listed in
   up on what was missed.
 - One instance syncs at a time (a Postgres advisory lock); the others skip.
   The lock is held by a connection of its own, outside any transaction, and
-  checked before each workspace: a run whose connection died (and with it
-  the lock) stops, since another instance may have started.
+  checked before each workspace and before each gateway call that changes a
+  membership: a run whose connection died (and with it the lock), or stopped
+  answering for 10 seconds, stops, since another instance may have started.
+- Every gateway call is bounded: 10 seconds in all, connecting, the TLS
+  handshake and reading the answer included. A gateway that accepts
+  connections but never answers fails the call as unavailable; it cannot
+  hold the sync, or its lock.
 - Each workspace's link is read again right before it syncs, so a run never
   applies an organization's members to a workspace that was linked to
   another organization (or unlinked) since the run started, and never empties
@@ -67,7 +86,12 @@ OpenShell versions are listed in
 - **Database connections:** besides its pool (`DATABASE_MAX_CONNECTIONS`),
   each instance keeps one connection open for the notifications and opens
   one more for the lock while it syncs. Allow for two connections per
-  instance more in the database's `max_connections`.
+  instance more in the database's `max_connections`. Both set
+  `idle_session_timeout` to `0` when they connect (PostgreSQL 14 or later),
+  so a role or server setting never ends them while they wait: that would
+  release the lock in the middle of a run. The session advisory lock and
+  `LISTEN` need a direct connection to PostgreSQL, or a session-pooled one;
+  a transaction-pooling proxy (PgBouncer in transaction mode) breaks both.
 - A workspace can be linked to only one organization.
 - **Kanbot learns about groups and roles when users use kanbot.** Someone
   removed from an identity provider group, or who lost their kanbot role,
@@ -106,14 +130,18 @@ token it obtains is verified like any access token (signature with the identity
 provider's keys, issuer, expiry), must carry `OPENSHELL_AUDIENCE` and must not
 carry `OIDC_AUDIENCE`; any other is refused and the call fails. An exchanged
 token must name the same subject as the user's. The configuration refuses equal
-audiences, and an `OPENSHELL_CLIENT_ID` equal to either audience (ID tokens
-issued to it would pass as access tokens).
+audiences, an `OPENSHELL_AUDIENCE` equal to `OIDC_CLIENT_ID` (ID tokens issued
+to kanbot's sign-in client would carry it), and an `OPENSHELL_CLIENT_ID` equal
+to either audience (ID tokens issued to it would pass as access tokens).
 
 - **Sync (kanbot's own calls):** a service account, `client_credentials` with
   `OPENSHELL_CLIENT_ID` and its secret (`client_secret_basic`; kanbot does
   not support `private_key_jwt`). The token is cached until 30 seconds before
   it expires, and taken from the cache for each gateway call. A token the
-  gateway refuses is dropped and the call made once more with a new one. Set
+  gateway does not accept (`unauthenticated`) is dropped and the call made
+  once more with a new one; this holds for linking without token exchange
+  too. A call the gateway denies (`permission_denied`) is not retried, and
+  the token is kept: a new one would be denied too. Set
   `OPENSHELL_TOKEN_SCOPE` if your
   identity provider needs a scope to issue the gateway's audience (Microsoft
   Entra ID: `api://<gateway app>/.default`).
@@ -149,7 +177,7 @@ At the identity provider:
 |---|---|---|
 | `OPENSHELL_GATEWAY_URL` | unset (off) | The gateway's gRPC endpoint, `https://` only |
 | `OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP` | `false` | Allows `http://` on a numeric loopback host. Tests only |
-| `OPENSHELL_AUDIENCE` | required | The gateway's audience, for example `openshell-gateway`; must differ from `OIDC_AUDIENCE` |
+| `OPENSHELL_AUDIENCE` | required | The gateway's audience, for example `openshell-gateway`; must differ from `OIDC_AUDIENCE` and `OIDC_CLIENT_ID` |
 | `OPENSHELL_CLIENT_ID` | required | Kanbot's client for gateway tokens; must differ from both audiences |
 | `OPENSHELL_CLIENT_SECRET` or `OPENSHELL_CLIENT_SECRET_FILE` | required | Its secret (surrounding whitespace, such as a file's final newline, is ignored) |
 | `OPENSHELL_TOKEN_SCOPE` | none | `scope` to request, if the identity provider needs one |

@@ -41,6 +41,11 @@ pub enum OpenShellConfigError {
          issued to it would pass as access tokens"
     )]
     AudienceIsClient,
+    #[error(
+        "OPENSHELL_AUDIENCE must differ from OIDC_CLIENT_ID: ID tokens issued to kanbot's \
+         sign-in client would pass as the gateway's access tokens"
+    )]
+    AudienceIsSignInClient,
 }
 
 /// The `OpenShell` gateway and how kanbot gets tokens for it.
@@ -100,7 +105,8 @@ fn parse_gateway(raw: &str, allow_insecure_http: bool) -> Option<Url> {
 
 impl OpenShellConfig {
     /// Reads `OPENSHELL_*`; `None` when `OPENSHELL_GATEWAY_URL` is unset.
-    /// `kanbot_audience` is `OIDC_AUDIENCE`.
+    /// `kanbot_audience` is `OIDC_AUDIENCE`, `sign_in_client`
+    /// `OIDC_CLIENT_ID`.
     ///
     /// # Errors
     ///
@@ -108,6 +114,7 @@ impl OpenShellConfig {
     pub fn from_lookup(
         lookup: &impl Fn(&'static str) -> Result<String, VarError>,
         kanbot_audience: &str,
+        sign_in_client: &str,
     ) -> Result<Option<Self>, ConfigError> {
         let Some(raw) =
             optional(lookup, "OPENSHELL_GATEWAY_URL")?.filter(|raw| !raw.trim().is_empty())
@@ -129,6 +136,9 @@ impl OpenShellConfig {
         }
         if audience == kanbot_audience {
             return Err(OpenShellConfigError::SameAudience.into());
+        }
+        if audience == sign_in_client {
+            return Err(OpenShellConfigError::AudienceIsSignInClient.into());
         }
         let client_id = required(lookup, "OPENSHELL_CLIENT_ID")?.trim().to_owned();
         if client_id.is_empty() {
@@ -203,6 +213,7 @@ mod tests {
         OpenShellConfig::from_lookup(
             &move |name| vars.get(name).cloned().ok_or(VarError::NotPresent),
             "kanbot-api",
+            "kanbot",
         )
     }
 
@@ -293,6 +304,13 @@ mod tests {
         assert!(matches!(
             with(&[("OPENSHELL_AUDIENCE", "kanbot-api")]),
             Err(ConfigError::OpenShell(OpenShellConfigError::SameAudience))
+        ));
+        // Nor be kanbot's sign-in client, whose ID tokens carry it.
+        assert!(matches!(
+            with(&[("OPENSHELL_AUDIENCE", " kanbot ")]),
+            Err(ConfigError::OpenShell(
+                OpenShellConfigError::AudienceIsSignInClient
+            ))
         ));
         assert!(matches!(
             with(&[("OPENSHELL_AUDIENCE", " ")]),

@@ -4,7 +4,9 @@ use secrecy::SecretString;
 
 use crate::{
     error::{AppError, FieldError},
-    openshell::{OpenShell, gateway::GatewayError, model::MemberRole, model::WorkspaceName},
+    openshell::{
+        OpenShell, ServiceCallError, gateway::GatewayError, model::MemberRole, model::WorkspaceName,
+    },
 };
 
 /// Whether `workspace` may be linked to an organization:
@@ -13,7 +15,8 @@ use crate::{
 ///   workspace in `OpenShell` (asked with their own exchanged token);
 ///   being able to see it is not enough, since the sync then makes the
 ///   organization's admins workspace admins;
-/// - without, it must exist for the service account.
+/// - without, it must exist for the service account (a token the gateway
+///   does not accept is replaced once, as in the sync).
 ///
 /// `user_token` gives the user's own access token; it is only asked for
 /// (a database read for a session) when token exchange is on.
@@ -33,25 +36,25 @@ pub async fn check_link(
     let not_found = || AppError::Validation(vec![FieldError::new("/workspace", "not_found")]);
     let gateway_error = |error: GatewayError| match error {
         GatewayError::NotFound => not_found(),
-        GatewayError::Refused => AppError::Forbidden,
+        GatewayError::Refused | GatewayError::Denied => AppError::Forbidden,
         error => {
             tracing::warn!(%error, "openshell: workspace lookup failed");
             AppError::Unavailable
         }
     };
     if !openshell.credentials.exchanges_tokens() {
-        let token = openshell
-            .credentials
-            .service_token()
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, "openshell: no service token");
-                AppError::Unavailable
-            })?;
-        return match openshell.gateway.workspace_exists(&token, workspace).await {
+        let gateway = &openshell.gateway;
+        let exists = openshell
+            .as_service(|token| async move { gateway.workspace_exists(&token, workspace).await })
+            .await;
+        return match exists {
             Ok(true) => Ok(()),
             Ok(false) => Err(not_found()),
-            Err(error) => Err(gateway_error(error)),
+            Err(ServiceCallError::Credentials(error)) => {
+                tracing::warn!(%error, "openshell: no service token");
+                Err(AppError::Unavailable)
+            }
+            Err(ServiceCallError::Gateway(error)) => Err(gateway_error(error)),
         };
     }
     let user_token = user_token().await?;

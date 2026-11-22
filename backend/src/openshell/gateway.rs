@@ -23,8 +23,14 @@ use crate::openshell::{
     model::{MemberRole, WorkspaceName},
 };
 
+/// Bounds opening the TCP connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-/// Bounds a whole call, connecting and the TLS handshake included.
+/// Bounds each call as a whole ([`bounded`]): connecting, the TLS
+/// handshake, and reading the answer's headers and body. Tonic's own
+/// `Endpoint::timeout` would start only once the connection is ready and
+/// end at the headers, and `connect_timeout` covers only TCP: a gateway that
+/// accepts connections but never answers would hold the sync, and its lock,
+/// for good.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTTP/2 pings keep the connection alive between syncs, and find a dead
 /// one before a call waits on it.
@@ -44,10 +50,14 @@ pub enum GatewayError {
     Setup(#[source] tonic::transport::Error),
     #[error("not found at the gateway")]
     NotFound,
-    /// `unauthenticated` or `permission_denied`: the token is not good
-    /// enough for this call.
+    /// `unauthenticated`: the token is not accepted (expired, revoked, a
+    /// key rotation); a new one may be.
     #[error("refused by the gateway")]
     Refused,
+    /// `permission_denied`: the token is good, but its principal may not
+    /// do this. A new token would not change that.
+    #[error("denied by the gateway")]
+    Denied,
     /// The gateway is unreachable or overloaded; retrying later may work.
     #[error("the gateway is unavailable")]
     Unavailable,
@@ -67,19 +77,44 @@ impl GatewayError {
             Self::Setup(_) => "setup",
             Self::NotFound => "not_found",
             Self::Refused => "refused",
+            Self::Denied => "denied",
             Self::Unavailable => "unavailable",
             Self::Other(_) => "other",
             Self::TooManyMembers => "too_many_members",
             Self::RepeatedPage => "repeated_page",
         }
     }
+
+    /// Whether the gateway certainly did not apply the call: it refused it
+    /// outright, before changing anything. A timeout, an unavailable
+    /// gateway or an internal error leave it unknown.
+    #[must_use]
+    pub const fn not_applied(&self) -> bool {
+        matches!(
+            self,
+            Self::Refused
+                | Self::Denied
+                | Self::Other(Code::InvalidArgument | Code::FailedPrecondition)
+        )
+    }
+}
+
+/// `call`, given at most [`REQUEST_TIMEOUT`]; past it, the gateway is
+/// [`GatewayError::Unavailable`].
+async fn bounded<T>(
+    call: impl Future<Output = Result<T, Status>>,
+) -> Result<Result<T, Status>, GatewayError> {
+    tokio::time::timeout(REQUEST_TIMEOUT, call)
+        .await
+        .map_err(|_| GatewayError::Unavailable)
 }
 
 impl From<Status> for GatewayError {
     fn from(status: Status) -> Self {
         match status.code() {
             Code::NotFound => Self::NotFound,
-            Code::Unauthenticated | Code::PermissionDenied => Self::Refused,
+            Code::Unauthenticated => Self::Refused,
+            Code::PermissionDenied => Self::Denied,
             Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted => {
                 Self::Unavailable
             }
@@ -127,7 +162,7 @@ fn role_to(role: MemberRole) -> i32 {
 
 impl Gateway {
     /// A client of `config.gateway`: TLS with the system roots plus
-    /// `OPENSHELL_CA_FILE`, connect and request timeouts.
+    /// `OPENSHELL_CA_FILE`; each call is bounded ([`REQUEST_TIMEOUT`]).
     ///
     /// # Errors
     ///
@@ -137,7 +172,6 @@ impl Gateway {
         let mut endpoint = Endpoint::from_shared(config.gateway.as_str().to_owned())
             .map_err(GatewayError::Setup)?
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
             .http2_keep_alive_interval(KEEPALIVE_INTERVAL)
             .keep_alive_timeout(KEEPALIVE_TIMEOUT)
             .keep_alive_while_idle(true);
@@ -194,7 +228,7 @@ impl Gateway {
                 name: workspace.as_str().to_owned(),
             },
         )?;
-        match self.client.clone().get_workspace(request).await {
+        match bounded(self.client.clone().get_workspace(request)).await? {
             Ok(_) => Ok(true),
             Err(status) => match GatewayError::from(status) {
                 GatewayError::NotFound => Ok(false),
@@ -224,11 +258,8 @@ impl Gateway {
                     page_token: page_token.clone(),
                 },
             )?;
-            let page = self
-                .client
-                .clone()
-                .list_workspace_members(request)
-                .await?
+            let page = bounded(self.client.clone().list_workspace_members(request))
+                .await??
                 .into_inner();
             members.extend(page.members.into_iter().map(|member| Member {
                 subject: member.principal_subject,
@@ -272,7 +303,7 @@ impl Gateway {
                 request_id: uuid::Uuid::new_v4().to_string(),
             },
         )?;
-        match self.client.clone().add_workspace_member(request).await {
+        match bounded(self.client.clone().add_workspace_member(request)).await? {
             Ok(_) => Ok(Added::Added),
             Err(status) if status.code() == Code::AlreadyExists => Ok(Added::AlreadyMember),
             Err(status) => Err(status.into()),
@@ -299,7 +330,7 @@ impl Gateway {
                 request_id: uuid::Uuid::new_v4().to_string(),
             },
         )?;
-        self.client.clone().remove_workspace_member(request).await?;
+        bounded(self.client.clone().remove_workspace_member(request)).await??;
         Ok(())
     }
 }
@@ -313,7 +344,7 @@ mod tests {
         for (code, expected) in [
             (Code::NotFound, "not found at the gateway"),
             (Code::Unauthenticated, "refused by the gateway"),
-            (Code::PermissionDenied, "refused by the gateway"),
+            (Code::PermissionDenied, "denied by the gateway"),
             (Code::Unavailable, "the gateway is unavailable"),
             (Code::DeadlineExceeded, "the gateway is unavailable"),
             (Code::ResourceExhausted, "the gateway is unavailable"),
@@ -324,6 +355,31 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn only_outright_refusals_are_known_not_applied() {
+        for (code, not_applied) in [
+            (Code::Unauthenticated, true),
+            (Code::PermissionDenied, true),
+            (Code::InvalidArgument, true),
+            (Code::FailedPrecondition, true),
+            // May have been applied before the answer went missing.
+            (Code::Unavailable, false),
+            (Code::DeadlineExceeded, false),
+            (Code::Internal, false),
+            (Code::Unknown, false),
+            (Code::Cancelled, false),
+            // Also what tonic says of an answer too large to read.
+            (Code::OutOfRange, false),
+        ] {
+            assert_eq!(
+                GatewayError::from(Status::new(code, "")).not_applied(),
+                not_applied,
+                "{code:?}"
+            );
+        }
+        assert!(!GatewayError::TooManyMembers.not_applied());
     }
 
     #[test]
