@@ -14,6 +14,10 @@ import 'package:kanbot/ui/core/theme.dart';
 import 'package:shad/shad.dart';
 
 Future<void> main() async {
+  // The web app's routes are the page's path (`/login?error=...` from the
+  // server's sign-in redirect), not a `#` fragment. Set before anything
+  // starts the app, as Flutter requires; a no-op elsewhere.
+  usePathUrlStrategy();
   WidgetsFlutterBinding.ensureInitialized();
   // Throws on a misconfigured build (an invalid API_BASE_URL), so it fails
   // at startup rather than on the first request.
@@ -35,9 +39,6 @@ Future<void> main() async {
   final started = dependencies.start(
     page: kIsWeb ? browser.currentPage() : null,
   );
-  // The web app's routes are the page's path (`/login?error=...` from the
-  // server's sign-in redirect), not a `#` fragment. A no-op elsewhere.
-  usePathUrlStrategy();
   final router = createRouter(dependencies: dependencies);
   reportNavigation(router);
   runApp(KanbotApp(router: router));
