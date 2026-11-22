@@ -12,7 +12,7 @@ toolchain and are run manually, not in CI.
 | `cedar_entities` | arbitrary facts and claims: groups, client ID, memberships, links, admins | building the Cedar entities and deciding every action never fails or panics; platform admins are allowed everything, a user with no memberships or admin rights nothing |
 
 ```sh
-cargo install cargo-fuzz
+cargo install --locked cargo-fuzz@0.13.2
 cd backend
 cargo +nightly fuzz run token
 cargo +nightly fuzz run signed_claims

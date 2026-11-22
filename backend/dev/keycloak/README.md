@@ -14,4 +14,5 @@ end-to-end tests against Keycloak (`tests/keycloak.rs`). DEVELOPMENT ONLY.
 - Issuer: `https://auth.kanbot.internal:8443/realms/kanbot`, the same dev
   hostname as Authelia on another port, with the certificate from
   `dev/auth-setup.sh`.
-- Nothing persists: the realm is imported again on every start.
+- Nothing persists (`--db=dev-mem`): the realm is imported again on every
+  start.

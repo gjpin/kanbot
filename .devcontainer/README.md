@@ -22,7 +22,7 @@ Linux and macOS builds would keep rebuilding over each other in
 `backend/target/`.
 
 Fuzzing (`backend/fuzz/`) needs a nightly toolchain:
-`rustup toolchain install nightly && cargo install cargo-fuzz`.
+`rustup toolchain install nightly && cargo install --locked cargo-fuzz@0.13.2`.
 
 Pins: the base image by digest, rustup-init by checksum, Flutter by commit,
 crates by version. Keep the versions in step with `.github/workflows/`.

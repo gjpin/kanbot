@@ -286,11 +286,10 @@ feature.
 - **JWT access tokens are off by default.** Set `access_token_signed_response_alg`
   (or `access_token_signed_response_key_id`) on each kanbot client. Any value
   other than `none` makes access tokens RFC 9068 JWTs.
-- **Audience:** list `kanbot-api` in each client's `audience`.
-  - With the default `requested_audience_mode: explicit`, the client must
-    request it with the `audience` parameter.
-  - With `implicit`, a client that requests no audience gets all audiences it
-    is allowed.
+- **Audience:** list `kanbot-api` in each client's `audience`, and set
+  `requested_audience_mode: 'implicit'`: kanbot's sign-in sends no
+  `audience` parameter, and with the default `explicit` mode its access
+  tokens would then lack `kanbot-api` and be refused.
 - **Roles:** the `groups` scope provides the `groups` claim. Copy it into the
   access token with a claims policy and set `OIDC_ROLES_CLAIM=groups`:
 
@@ -306,6 +305,7 @@ feature.
           claims_policy: 'kanbot'
           access_token_signed_response_alg: 'RS256'
           audience: ['kanbot-api']
+          requested_audience_mode: 'implicit'
           require_pkce: true
           pkce_challenge_method: 'S256'
           scopes: ['openid', 'profile', 'email', 'groups', 'offline_access']

@@ -9,7 +9,8 @@
 #   sh dev/local-stack.sh postgres authelia
 set -eu
 cd "$(dirname "$0")/.."
-if ! grep -q '[[:space:]]auth\.kanbot\.internal\([[:space:]]\|$\)' /etc/hosts; then
+# Only an active entry for loopback counts, not a comment or another address.
+if ! grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]]([^#]*[[:space:]])?auth\.kanbot\.internal([[:space:]]|$)' /etc/hosts; then
   echo "127.0.0.1 auth.kanbot.internal" | sudo tee -a /etc/hosts >/dev/null
 fi
 sh dev/auth-setup.sh

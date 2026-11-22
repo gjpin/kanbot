@@ -7,8 +7,9 @@
 #
 #   sh dev/auth-setup.sh      (from backend/)
 #
-# Idempotent: existing files are kept, so running it again changes nothing.
-# Delete both directories to start over.
+# Idempotent: existing files are kept, so running it again changes nothing,
+# except certificates that expire within a day, which are renewed. Delete
+# both directories to start over.
 set -eu
 
 dev="$(cd "$(dirname "$0")" && pwd)"
@@ -33,9 +34,12 @@ trap 'rm -f "$host.csr" "$host.ext" ca.srl' EXIT
 # A file is generated only if it does not exist yet.
 missing() { [ ! -s "$1" ]; }
 
+# A certificate is renewed when it is missing or expires within a day.
+expiring() { missing "$1" || ! openssl x509 -checkend 86400 -noout -in "$1" >/dev/null; }
+
 # Local certificate authority, trusted by the backend (OIDC_CA_FILE) and
 # the tests.
-if missing "$ca_key" || missing ca.crt; then
+if missing "$ca_key" || expiring ca.crt; then
   (umask 077 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$ca_key")
   openssl req -x509 -new -key "$ca_key" -out ca.crt -days 3650 -sha256 \
     -subj "/CN=kanbot local development CA" \
@@ -45,7 +49,7 @@ if missing "$ca_key" || missing ca.crt; then
 fi
 
 # The identity providers' TLS certificate, signed by the CA.
-if missing "$host.key" || missing "$host.crt"; then
+if missing "$host.key" || expiring "$host.crt"; then
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$host.key"
   openssl req -new -key "$host.key" -out "$host.csr" -subj "/CN=$host"
   printf '%s\n' \
