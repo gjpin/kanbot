@@ -1,7 +1,9 @@
 //! Cedar entities built from arbitrary facts and claims (group names,
-//! client IDs, memberships, links): building them and deciding never fails
-//! or panics, platform admins are allowed everything, and a user with no
-//! memberships or admin rights nothing.
+//! client IDs, memberships, links, IPv4 and IPv6 addresses): building them
+//! and deciding never fails or panics, platform admins are allowed
+//! everything, and a user with no memberships or admin rights nothing. With
+//! the documented deployer policies (`src/authz/examples.cedar`), exactly
+//! what they forbid is denied, and nothing else changes.
 #![no_main]
 
 use std::{net::IpAddr, sync::LazyLock};
@@ -21,6 +23,10 @@ use uuid::Uuid;
 
 static POLICIES: LazyLock<Policies> =
     LazyLock::new(|| Policies::builtin().expect("built-in policies are valid"));
+static DEPLOYED: LazyLock<Policies> = LazyLock::new(|| {
+    Policies::with_deployer(include_str!("../../src/authz/examples.cedar"))
+        .expect("the documented examples are valid")
+});
 
 /// Reads the input a byte at a time; zeros when it runs out.
 struct Input<'a>(&'a [u8]);
@@ -46,6 +52,23 @@ impl Input<'_> {
     fn id(&mut self) -> Uuid {
         Uuid::from_u128(u128::from(self.byte() % 4))
     }
+
+    /// A name the example policies look for, or any other.
+    fn name(&mut self, known: &str) -> String {
+        if self.bool() {
+            known.to_owned()
+        } else {
+            self.string()
+        }
+    }
+
+    fn ip(&mut self) -> IpAddr {
+        if self.bool() {
+            IpAddr::from([self.byte(), self.byte(), self.byte(), self.byte()])
+        } else {
+            IpAddr::from(std::array::from_fn::<u8, 16, _>(|_| self.byte()))
+        }
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -62,16 +85,16 @@ fuzz_target!(|data: &[u8]| {
             role,
             display_name: Some(input.string()),
             telemetry_opt_in: input.bool(),
-            groups: (0..input.byte() % 4).map(|_| input.string()).collect(),
+            groups: (0..input.byte() % 4).map(|_| input.name("contractors")).collect(),
             groups_claimed: true,
-            client_id: input.bool().then(|| input.string()),
+            client_id: input.bool().then(|| input.name("kanbot-ci")),
         },
         via: match input.byte() % 3 {
             0 => Via::Web,
             1 => Via::Native,
             _ => Via::Bearer,
         },
-        ip: IpAddr::from([input.byte(), input.byte(), input.byte(), input.byte()]),
+        ip: input.ip(),
     };
     let teams: Vec<TeamFacts> = (0..input.byte() % 4)
         .map(|_| TeamFacts {
@@ -144,5 +167,26 @@ fuzz_target!(|data: &[u8]| {
         && !facts.user.team_maintainer;
     if role == PlatformRole::User && nothing {
         assert!(decisions.iter().all(|decision| !decision.allowed));
+    }
+
+    let deployed = DEPLOYED
+        .decide_all(&actor, &facts, &requests)
+        .expect("entities from any facts are valid");
+    let ci = actor.user.client_id.as_deref() == Some("kanbot-ci");
+    let contractor = actor.user.groups.iter().any(|group| group == "contractors");
+    let in_office =
+        matches!(actor.ip.to_canonical(), IpAddr::V4(ip) if ip.octets()[0] == 10) && actor.via != Via::Bearer;
+    for (((action, _), builtin), deployed) in requests.iter().zip(&decisions).zip(&deployed) {
+        let forbidden = (ci && *action != Action::Read)
+            || (contractor && *action == Action::Write)
+            || (!in_office
+                && matches!(
+                    action,
+                    Action::ManageOrganizationAdmins
+                        | Action::ManageTeamLinks
+                        | Action::SetTeamIdpGroup
+                        | Action::DeleteOrganization
+                ));
+        assert_eq!(deployed.allowed, builtin.allowed && !forbidden, "{action:?}");
     }
 });

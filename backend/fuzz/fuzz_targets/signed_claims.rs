@@ -8,7 +8,11 @@ mod common;
 use std::sync::LazyLock;
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kanbot_backend::auth::{config::OidcConfig, keys::KeySet, token::PlatformRole};
+use kanbot_backend::auth::{
+    config::OidcConfig,
+    keys::KeySet,
+    token::{LEEWAY_SECONDS, PlatformRole},
+};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
@@ -29,7 +33,23 @@ fuzz_target!(|data: &[u8]| {
     };
     if let Ok(principal) = common::validate(&token, &KEYS, &CONFIG) {
         assert_eq!(claims["iss"], common::ISSUER);
-        assert!(claims["exp"].as_u64().is_some_and(|exp| exp >= common::NOW - 60));
+        assert!(claims["exp"].as_u64().is_some_and(|exp| exp >= common::NOW - LEEWAY_SECONDS));
+        // Not before, nor issued, in the future.
+        for name in ["nbf", "iat"] {
+            assert!(
+                claims.get(name).is_none_or(|time| time
+                    .as_u64()
+                    .is_some_and(|time| time <= common::NOW + LEEWAY_SECONDS)),
+                "{name}"
+            );
+        }
+        let audience = &claims["aud"];
+        assert!(
+            audience == "kanbot-api"
+                || audience
+                    .as_array()
+                    .is_some_and(|audiences| audiences.iter().any(|a| a == "kanbot-api"))
+        );
         assert!(!principal.subject.is_empty());
         assert_eq!(claims["sub"], principal.subject.as_str());
         let roles = &claims["realm_access"]["roles"];

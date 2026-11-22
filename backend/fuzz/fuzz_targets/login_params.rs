@@ -1,6 +1,6 @@
 //! The sign-in's untrusted parameters (`/auth/login`, `/auth/callback`,
-//! `/auth/token`, the session cookie): the parsers never panic, and accept
-//! only what they promise.
+//! `/auth/token`, the session cookie, in one or more Cookie headers): the
+//! parsers never panic, and accept only what they promise.
 #![no_main]
 
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -20,11 +20,13 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    let mut parts = text.splitn(4, '\n');
+    let mut parts = text.splitn(5, '\n');
     let redirect = parts.next().unwrap_or_default();
     let challenge = parts.next().unwrap_or_default();
     let secret = parts.next().unwrap_or_default();
     let cookies = parts.next().unwrap_or_default();
+    // A second Cookie header (HTTP/2 sends one per cookie).
+    let more_cookies = parts.next();
 
     if let Some(parsed) = AppRedirect::parse(redirect) {
         assert_eq!(parsed.as_str(), redirect);
@@ -53,8 +55,19 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(value) = HeaderValue::from_str(cookies) {
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, value);
+        let mut all = cookies.to_owned();
+        if let Some(more) = more_cookies.and_then(|more| HeaderValue::from_str(more).ok()) {
+            all.push(';');
+            all.push_str(more.to_str().unwrap_or_default());
+            headers.append(header::COOKIE, more);
+        }
         if let Some(found) = cookie(&headers, SESSION_COOKIE) {
-            assert!(cookies.contains(&format!("{SESSION_COOKIE}={found}")));
+            // Exactly one session cookie, in any of the headers.
+            let pairs = all
+                .split(';')
+                .filter_map(|pair| pair.trim().split_once('='))
+                .filter(|(name, _)| *name == SESSION_COOKIE);
+            assert_eq!(pairs.map(|(_, value)| value).collect::<Vec<_>>(), [found]);
         }
     }
 });
