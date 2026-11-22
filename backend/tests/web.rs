@@ -172,6 +172,83 @@ async fn api_routes_and_non_html_requests_stay_the_api() {
     }
 }
 
+/// A browser loading `path` as a page (a reload, a link, a bookmark).
+async fn navigate(app: &Router, path: &str) -> Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri(path)
+                .header(header::ACCEPT, HTML)
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "document")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn navigations_to_pages_that_share_an_api_path_get_the_app() {
+    let dir = WebDir::new();
+    let app = app(Some(&dir));
+    let id = uuid::Uuid::new_v4();
+    for path in [
+        "/teams".to_owned(),
+        format!("/teams/{id}"),
+        format!("/organizations/{id}"),
+        "/audit".to_owned(),
+        "/me".to_owned(),
+    ] {
+        let response = navigate(&app, &path).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(header_of(&response, header::CACHE_CONTROL), "no-store");
+        assert_eq!(
+            header_of(&response, header::CONTENT_SECURITY_POLICY),
+            WEB_CONTENT_SECURITY_POLICY
+        );
+        assert!(
+            body(response).await.contains("<title>kanbot</title>"),
+            "{path}"
+        );
+    }
+    // Files are still files.
+    let response = navigate(&app, "/main.dart.js").await;
+    assert_eq!(body(response).await, "console.log(1)");
+}
+
+#[tokio::test]
+async fn navigations_to_the_servers_own_pages_stay_the_api() {
+    let dir = WebDir::new();
+    let app = app(Some(&dir));
+    let response = navigate(&app, "/health").await;
+    assert_eq!(body(response).await, "ok");
+    let response = navigate(&app, "/auth/callback").await;
+    assert_ne!(response.status(), StatusCode::OK);
+    assert!(!body(response).await.contains("<title>kanbot</title>"));
+    let response = navigate(&app, "/auth/config").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body(response).await.contains("<title>kanbot</title>"));
+    // Only a document navigation: a frame or a script's request is not one.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me")
+                .header(header::ACCEPT, HTML)
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "iframe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // The prefix is a path segment: `/healthz` is the app's.
+    let response = navigate(&app, "/healthz").await;
+    assert!(body(response).await.contains("<title>kanbot</title>"));
+}
+
 #[tokio::test]
 async fn files_outside_the_web_dir_are_never_served() {
     let dir = WebDir::new();

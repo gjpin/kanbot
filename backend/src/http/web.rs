@@ -5,6 +5,11 @@
 //! - A file that exists is served (`GET`, `HEAD`).
 //! - Any other path asked for as HTML (`Accept: text/html`) gets
 //!   `index.html`: the app's router handles it (single-page app).
+//! - A browser's navigation to a page (`Sec-Fetch-Mode: navigate`,
+//!   `Sec-Fetch-Dest: document`) gets the app even where an API route
+//!   matches: the app's pages and the API share paths (`/teams/{id}`), and
+//!   reloading or opening a link to one must show the page, not its JSON.
+//!   The server's own pages (sign-in, health probes) stay the API's.
 //! - Anything else is a `404` problem, as on any API route.
 //!
 //! `index.html` is never stored by caches (`no-store`): it names the
@@ -19,6 +24,7 @@ use axum::{
     Router,
     body::Body,
     http::{HeaderValue, Method, Request, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
 };
 use tower::ServiceExt;
@@ -46,16 +52,55 @@ pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
      object-src 'none'; \
      frame-ancestors 'none'";
 
-/// Adds serving of the web build in `dir` to `routes`, for paths no route
-/// matches.
+/// Paths a browser navigates to that are the server's, not the app's: the
+/// sign-in pages, and the probes (prefixes end with `/`).
+const SERVER_PAGES: [&str; 3] = ["/auth/", "/health", "/ready"];
+
+/// Adds serving of the web build in `dir` to `routes`: for paths no route
+/// matches, and for a browser's navigation to any page of the app.
 pub fn with_web_app(routes: Router, dir: &Path) -> Router {
     let files = ServeDir::new(dir).append_index_html_on_directories(false);
     let index = ServeFile::new(dir.join("index.html"));
-    routes.fallback(move |request: Request<Body>| {
-        let files = files.clone();
-        let index = index.clone();
-        async move { serve(files, index, request).await }
-    })
+    let (page_files, page_index) = (files.clone(), index.clone());
+    routes
+        .fallback(move |request: Request<Body>| {
+            let files = files.clone();
+            let index = index.clone();
+            async move { serve(files, index, request).await }
+        })
+        .layer(middleware::from_fn(
+            move |request: Request<Body>, next: Next| {
+                let files = page_files.clone();
+                let index = page_index.clone();
+                async move {
+                    if is_page_navigation(&request) {
+                        serve(files, index, request).await
+                    } else {
+                        next.run(request).await
+                    }
+                }
+            },
+        ))
+}
+
+/// Whether `request` is a browser loading one of the app's pages: a
+/// top-level navigation (headers scripts cannot set), to a path that is
+/// not one of the [`SERVER_PAGES`].
+fn is_page_navigation(request: &Request<Body>) -> bool {
+    let header_is = |name: &str, value: &str| {
+        request
+            .headers()
+            .get(name)
+            .is_some_and(|header| header.as_bytes() == value.as_bytes())
+    };
+    let path = request.uri().path();
+    request.method() == Method::GET
+        && header_is("sec-fetch-mode", "navigate")
+        && header_is("sec-fetch-dest", "document")
+        && !SERVER_PAGES.iter().any(|page| {
+            path.strip_prefix(page)
+                .is_some_and(|rest| page.ends_with('/') || rest.is_empty())
+        })
 }
 
 async fn serve(files: ServeDir, index: ServeFile, request: Request<Body>) -> Response {
@@ -64,11 +109,12 @@ async fn serve(files: ServeDir, index: ServeFile, request: Request<Body>) -> Res
     }
     // `/index.html` is the same page as `/`: never cached either.
     let path_is_root = matches!(request.uri().path(), "/" | "/index.html");
-    let wants_html = request
-        .headers()
-        .get(header::ACCEPT)
-        .and_then(|accept| accept.to_str().ok())
-        .is_some_and(|accept| accept.contains("text/html"));
+    let wants_html = is_page_navigation(&request)
+        || request
+            .headers()
+            .get(header::ACCEPT)
+            .and_then(|accept| accept.to_str().ok())
+            .is_some_and(|accept| accept.contains("text/html"));
     let (is_index, response) = if path_is_root {
         (true, index.oneshot(request).await)
     } else {
