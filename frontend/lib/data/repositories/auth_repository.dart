@@ -1,4 +1,7 @@
+import 'dart:io' show IOException;
+
 import 'package:flutter/foundation.dart';
+import 'package:kanbot/config/api_config.dart';
 import 'package:kanbot/config/app_id.dart';
 import 'package:kanbot/data/api/generated/kanbot_api.dart' as api;
 import 'package:kanbot/data/repositories/api_result.dart';
@@ -35,6 +38,14 @@ final class NotKanbotServerException implements Exception {
   const NotKanbotServerException();
 }
 
+/// Loading the session ended with an error that is not an outcome: most
+/// likely a response that breaks the API contract (a `TypeError` from the
+/// generated client, AGENTS.md §5). That error itself propagates, to be
+/// reported as uncaught; this one is what the login page shows meanwhile.
+final class UnexpectedResponseException implements Exception {
+  const UnexpectedResponseException();
+}
+
 /// How a platform receives the end of a native sign-in.
 typedef NativeRedirect = ({String redirectUri, String callback});
 
@@ -52,7 +63,7 @@ class AuthRepository extends ChangeNotifier {
     required this._connection,
     required this._web,
     this._tokenStore,
-    this._webAuth = const FlutterWebAuth(),
+    required this._webAuth,
     required this._nativeRedirect,
     required this._navigate,
   }) {
@@ -89,24 +100,29 @@ class AuthRepository extends ChangeNotifier {
 
   /// Asks the current server what it is (`GET /auth/config`).
   Future<Result<ServerInfo>> checkServer() async {
-    final result = await apiResult(_connection.api.auth.config);
-    return switch (result) {
-      Ok(:final value) => Ok(_server = serverInfoFrom(value)),
-      Failure(:final error) => Failure(error),
-    };
+    final result = await _call(
+      () async => serverInfoFrom(await _connection.api.auth.config()),
+    );
+    if (result case Ok(:final value)) _server = value;
+    return result;
   }
 
   /// Loads the session from the server: signed in when `GET /me` works,
   /// signed out on `401`. Other failures (the server is down) leave the
   /// user signed out with the error, so the login page can say so.
-  Future<Result<void>> refresh() async {
+  ///
+  /// A response that breaks the API contract throws (AGENTS.md §5), and
+  /// still leaves the user signed out, with [UnexpectedResponseException].
+  Future<Result<void>> refresh() => _signedOutUnlessCompleted(_refresh);
+
+  Future<Result<void>> _refresh() async {
     final server = await checkServer();
     if (server case Failure(:final error)) {
       _lastError = error;
       _setSignedOut();
       return Failure(error);
     }
-    final me = await apiResult(_connection.api.users.me);
+    final me = await _call(_connection.api.users.me);
     switch (me) {
       case Ok(:final value):
         _lastError = null;
@@ -129,9 +145,13 @@ class AuthRepository extends ChangeNotifier {
   /// Signs in. On the web this navigates away to the server; natively it
   /// completes once the session token is stored.
   ///
-  /// Failures: [SignInCancelledException], [SignInRefusedException], or an
-  /// [ApiException].
-  Future<Result<void>> signIn() async {
+  /// Failures: [SignInCancelledException], [SignInFailedException],
+  /// [SignInRefusedException], [NotKanbotServerException], or an
+  /// [ApiException]. A response that breaks the API contract throws, as in
+  /// [refresh].
+  Future<Result<void>> signIn() => _signedOutUnlessCompleted(_signIn);
+
+  Future<Result<void>> _signIn() async {
     var server = _server;
     if (server == null) {
       switch (await checkServer()) {
@@ -155,9 +175,11 @@ class AuthRepository extends ChangeNotifier {
 
   Future<Result<void>> _signInNative(Uri loginUrl) async {
     final pkce = Pkce.generate();
-    final redirect = await _nativeRedirect();
+    final NativeRedirect redirect;
     final Uri result;
     try {
+      // Windows and Linux: a free loopback port, which can fail.
+      redirect = await _nativeRedirect();
       result = await _webAuth.authenticate(
         url: loginUrl.replace(
           queryParameters: {
@@ -173,6 +195,8 @@ class AuthRepository extends ChangeNotifier {
       return Failure(error);
     } on SignInFailedException catch (error) {
       return Failure(error);
+    } on IOException {
+      return const Failure(SignInFailedException());
     }
     final expected = Uri.parse(redirect.redirectUri);
     final code = result.queryParameters['code'];
@@ -186,7 +210,7 @@ class AuthRepository extends ChangeNotifier {
         SignInRefusedException(result.queryParameters['error'] ?? 'unknown'),
       );
     }
-    final token = await apiResult(
+    final token = await _call(
       () => _connection.api.auth.token(
         body: api.TokenRequest(code: code, codeVerifier: pkce.verifier),
       ),
@@ -206,12 +230,18 @@ class AuthRepository extends ChangeNotifier {
 
   /// Signs out at the server, forgets the session, and on the web sends
   /// the browser to the identity provider's sign-out page when the server
-  /// returns one. A server that cannot be reached still signs the user out
-  /// here.
+  /// returns one. A server that cannot be reached, or answers something
+  /// else, still signs the user out here.
   Future<void> signOut() async {
-    final result = await apiResult(_connection.api.auth.logout);
-    await _forgetToken();
-    _setSignedOut();
+    final Result<api.LogoutResponse> result;
+    try {
+      result = await _call(_connection.api.auth.logout);
+    } finally {
+      // Even when the answer breaks the contract (and that error goes on
+      // to be reported): the session must end here.
+      await _forgetToken();
+      _setSignedOut();
+    }
     if (result case Ok(:final value) when _web) {
       final logoutUrl = Uri.tryParse(value.logoutUrl ?? '');
       if (logoutUrl != null && isLogoutUrl(logoutUrl)) _navigate(logoutUrl);
@@ -220,7 +250,7 @@ class AuthRepository extends ChangeNotifier {
 
   /// Sets whether the app may send telemetry (`PUT /me/preferences`).
   Future<Result<void>> setTelemetryOptIn({required bool optIn}) async {
-    final result = await apiResult(
+    final result = await _call(
       () => _connection.api.users.updatePreferences(
         body: api.Preferences(telemetryOptIn: optIn),
       ),
@@ -232,6 +262,37 @@ class AuthRepository extends ChangeNotifier {
         return const Ok(null);
       case Failure(:final error):
         return Failure(error);
+    }
+  }
+
+  /// Runs an API [call] like [apiResult]. A response that is not JSON at
+  /// all, or a sign-in URL that is not a URL, is
+  /// [NotKanbotServerException]: something other than a kanbot server
+  /// answered (an HTML page served for every path, for example). A JSON
+  /// response that breaks the contract still throws (AGENTS.md §5).
+  static Future<Result<T>> _call<T>(Future<T> Function() call) async {
+    try {
+      return await apiResult(call);
+    } on FormatException {
+      return const Failure(NotKanbotServerException());
+    }
+  }
+
+  /// Runs [body]. When it throws instead of completing (a response that
+  /// breaks the contract, AGENTS.md §5), the error propagates to be
+  /// reported, but the user is left signed out with
+  /// [UnexpectedResponseException] rather than loading forever.
+  Future<T> _signedOutUnlessCompleted<T>(Future<T> Function() body) async {
+    var completed = false;
+    try {
+      final result = await body();
+      completed = true;
+      return result;
+    } finally {
+      if (!completed) {
+        _lastError = const UnexpectedResponseException();
+        _setSignedOut();
+      }
     }
   }
 
@@ -262,9 +323,11 @@ class AuthRepository extends ChangeNotifier {
   }
 
   /// Forgets the server's settings and its session token (a native user
-  /// changes server): the token must never reach another server.
+  /// changes server): the token must never reach another server. The last
+  /// error was the old server's, so it goes too.
   Future<void> forgetServer() async {
     _server = null;
+    _lastError = null;
     await _forgetToken();
     _setSignedOut();
   }
@@ -280,10 +343,11 @@ bool isBelow(Uri url, Uri baseUrl) =>
     url.path.startsWith(baseUrl.path);
 
 /// Whether [url] may be the identity provider's logout page: `https` (or
-/// `http` on a loopback host, for development), with a host and no
-/// credentials. Anything else (`javascript:`, a relative URL) is ignored.
+/// `http` on a loopback host ([isLoopbackHost]), for development), with a
+/// host and no credentials. Anything else (`javascript:`, a relative URL)
+/// is ignored.
 bool isLogoutUrl(Uri url) {
-  final loopback = const {'localhost', '127.0.0.1', '::1'}.contains(url.host);
+  final loopback = isLoopbackHost(url.host);
   return (url.scheme == 'https' || (url.scheme == 'http' && loopback)) &&
       url.host.isNotEmpty &&
       url.userInfo.isEmpty;

@@ -1,3 +1,4 @@
+import 'dart:convert' show HtmlEscape;
 import 'dart:io' show IOException;
 
 import 'package:flutter/services.dart';
@@ -26,32 +27,53 @@ abstract interface class WebAuth {
   Future<Uri> authenticate({required Uri url, required String callback});
 }
 
+/// `FlutterWebAuth2.authenticate`'s signature.
+typedef BrowserAuthenticate = Future<String> Function({
+  required String url,
+  required String callbackUrlScheme,
+  FlutterWebAuth2Options options,
+});
+
+/// The page the browser shows after the loopback redirect (Windows,
+/// Linux), with [title] and [message] (from `Messages`), escaped. The
+/// redirect may carry an error as well as a code, so [message] must not
+/// say how the sign-in went: the app does.
+String landingPage({required String title, required String message}) {
+  const escape = HtmlEscape();
+  return '<!doctype html><meta charset="utf-8">'
+      '<title>${escape.convert(title)}</title>'
+      '<p>${escape.convert(message)}</p>';
+}
+
 /// [WebAuth] with `flutter_web_auth_2`: `ASWebAuthenticationSession` on
 /// Apple platforms, an Auth Tab or Custom Tab on Android, and the system
 /// browser with a loopback server on Windows and Linux (never its embedded
 /// webview: an app must not see the identity provider's page, RFC 8252).
 class FlutterWebAuth implements WebAuth {
-  const FlutterWebAuth();
+  const FlutterWebAuth({
+    required this.landingPageHtml,
+    this.open = FlutterWebAuth2.authenticate,
+  });
 
   /// How long a sign-in may take, in seconds.
   static const int timeoutSeconds = 300;
 
-  /// Shown in the browser after the loopback redirect (Windows, Linux).
-  static const String landingPage =
-      '<!doctype html><meta charset="utf-8"><title>kanbot</title>'
-      '<p>You are signed in. You can close this window and return to '
-      'kanbot.</p>';
+  /// Shown in the browser after the loopback redirect (see [landingPage]).
+  final String landingPageHtml;
+
+  /// The plugin call; tests replace it.
+  final BrowserAuthenticate open;
 
   @override
   Future<Uri> authenticate({required Uri url, required String callback}) async {
     try {
-      final result = await FlutterWebAuth2.authenticate(
+      final result = await open(
         url: url.toString(),
         callbackUrlScheme: callback,
-        options: const FlutterWebAuth2Options(
+        options: FlutterWebAuth2Options(
           useWebview: false,
           timeout: timeoutSeconds,
-          landingPageHtml: landingPage,
+          landingPageHtml: landingPageHtml,
         ),
       );
       return Uri.parse(result);

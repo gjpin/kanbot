@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -12,6 +13,13 @@ import 'package:kanbot/utils/result.dart';
 
 import '../../helpers/fake_backend.dart';
 import '../../helpers/test_dependencies.dart';
+
+/// What some other web server answers for every path.
+http.Response _html() => http.Response(
+  '<!doctype html><title>Welcome</title>',
+  200,
+  headers: {'content-type': 'text/html'},
+);
 
 void main() {
   group('refresh', () {
@@ -89,6 +97,73 @@ void main() {
       final auth = testDependencies(backend: backend).auth;
       expect(await auth.refresh(), isA<Failure<void>>());
       expect(auth.lastError, isA<ApiUnavailableException>());
+    });
+
+    final Matcher notKanbot = isA<Failure<void>>().having(
+      (f) => f.error,
+      'error',
+      isA<NotKanbotServerException>(),
+    );
+
+    for (final path in ['/auth/config', '/me']) {
+      test('a page that is not JSON at $path is not a kanbot server', () async {
+        final backend = FakeBackend()
+          ..on('GET', '/auth/config', authConfig())
+          ..on('GET', '/me', me())
+          ..handle('GET', path, (_) => _html());
+        final auth = testDependencies(backend: backend).auth;
+
+        expect(await auth.refresh(), notKanbot);
+
+        expect(auth.status, AuthStatus.signedOut);
+        expect(auth.lastError, isA<NotKanbotServerException>());
+      });
+    }
+
+    test('a sign-in URL that is not a URL is not a kanbot server', () async {
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', {
+          ...authConfig(),
+          'login_url': 'http://[::1',
+        });
+      final auth = testDependencies(backend: backend).auth;
+      expect(await auth.refresh(), notKanbot);
+      expect(auth.status, AuthStatus.signedOut);
+    });
+
+    for (final path in ['/auth/config', '/me']) {
+      test(
+        'JSON that breaks the contract at $path throws, signed out',
+        () async {
+          final backend = FakeBackend()
+            ..on('GET', '/auth/config', authConfig())
+            ..on('GET', '/me', me())
+            ..on('GET', path, {'hello': 'world'});
+          final auth = testDependencies(backend: backend).auth;
+
+          // A bug to report (AGENTS.md §5), never handled as an outcome.
+          await expectLater(auth.refresh(), throwsA(isA<TypeError>()));
+
+          expect(auth.status, AuthStatus.signedOut);
+          expect(auth.lastError, isA<UnexpectedResponseException>());
+        },
+      );
+    }
+  });
+
+  group('changing server', () {
+    test('forgets the old server\'s error', () async {
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', problem(503, 'unavailable'), status: 503);
+      final auth = testDependencies(backend: backend).auth;
+      await auth.refresh();
+      expect(auth.lastError, isA<ApiUnavailableException>());
+
+      await auth.forgetServer();
+
+      expect(auth.lastError, isNull);
+      expect(auth.server, isNull);
+      expect(auth.status, AuthStatus.signedOut);
     });
   });
 
@@ -255,6 +330,73 @@ void main() {
       expect(await TokenStore().read(), isNull);
     });
 
+    test('a server that cannot be asked is a failure', () async {
+      backend.on(
+        'GET',
+        '/auth/config',
+        problem(503, 'unavailable'),
+        status: 503,
+      );
+      final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+      expect(
+        await auth.signIn(),
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<ApiUnavailableException>(),
+        ),
+      );
+      expect(webAuth.opened, isEmpty);
+    });
+
+    test('a token answer that is not JSON is not a kanbot server', () async {
+      backend.handle('POST', '/auth/token', (_) => _html());
+      final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+      final result = await auth.signIn();
+      expect(
+        result,
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<NotKanbotServerException>(),
+        ),
+      );
+      expect(await TokenStore().read(), isNull);
+    });
+
+    test(
+      'a sign-in answer that breaks the contract throws, with a reason',
+      () async {
+        backend.on('GET', '/auth/config', {'hello': 'world'});
+        final auth = testDependencies(backend: backend, webAuth: webAuth).auth;
+        await expectLater(auth.signIn(), throwsA(isA<TypeError>()));
+        expect(auth.status, AuthStatus.signedOut);
+        expect(auth.lastError, isA<UnexpectedResponseException>());
+        expect(webAuth.opened, isEmpty);
+      },
+    );
+
+    test('no loopback port is a failed sign-in, not an error', () async {
+      final dependencies = testDependencies(backend: backend);
+      final auth = AuthRepository(
+        connection: dependencies.connection,
+        web: false,
+        webAuth: webAuth,
+        nativeRedirect: () =>
+            loopbackRedirect(() async => throw const SocketException('in use')),
+        navigate: (_) {},
+      );
+      expect(
+        await auth.signIn(),
+        isA<Failure<void>>().having(
+          (f) => f.error,
+          'error',
+          isA<SignInFailedException>(),
+        ),
+      );
+      expect(webAuth.opened, isEmpty);
+    });
+
     test('Windows and Linux use a loopback redirect', () async {
       final redirect = await loopbackRedirect(() async => 43210);
       expect(redirect.redirectUri, 'http://127.0.0.1:43210/auth/done');
@@ -318,6 +460,8 @@ void main() {
         'http://idp.example.com/logout',
         'https://user:pass@idp.example.com/logout',
         '/relative',
+        // A DNS name, not 127.0.0.0/8: plain http is refused.
+        'http://127.attacker.example/logout',
       ]) {
         final backend = FakeBackend()
           ..on('GET', '/auth/config', authConfig())
@@ -334,6 +478,42 @@ void main() {
         expect(auth.status, AuthStatus.signedOut, reason: logoutUrl);
         expect(navigations, isEmpty, reason: logoutUrl);
       }
+    });
+  });
+
+  test('a logout URL may be plain http on a loopback address', () {
+    for (final url in [
+      'http://localhost:9000/logout',
+      'http://127.0.0.2/logout',
+      'http://[::1]:9000/logout',
+      'https://127.example.com/logout',
+    ]) {
+      expect(isLogoutUrl(Uri.parse(url)), isTrue, reason: url);
+    }
+  });
+
+  group('signing out ends the session whatever the server answers:', () {
+    test('a page that is not JSON', () async {
+      final backend = FakeBackend();
+      final dependencies = await signedIn(backend);
+      backend.handle('POST', '/auth/logout', (_) => _html());
+
+      await dependencies.auth.signOut();
+
+      expect(dependencies.auth.status, AuthStatus.signedOut);
+      expect(await TokenStore().read(), isNull);
+    });
+
+    test('JSON that breaks the contract', () async {
+      final backend = FakeBackend();
+      final dependencies = await signedIn(backend);
+      backend.on('POST', '/auth/logout', {'logout_url': 5});
+
+      // A bug to report (AGENTS.md §5); the session ends anyway.
+      await expectLater(dependencies.auth.signOut(), throwsA(isA<TypeError>()));
+
+      expect(dependencies.auth.status, AuthStatus.signedOut);
+      expect(await TokenStore().read(), isNull);
     });
   });
 

@@ -1,6 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:kanbot/data/repositories/auth_repository.dart';
+import 'package:kanbot/data/services/api_exception.dart';
 import 'package:kanbot/data/services/server_store.dart';
 import 'package:kanbot/data/services/token_store.dart';
 import 'package:kanbot/routing/router.dart';
@@ -195,6 +200,100 @@ void main() {
       await tester.pumpAndSettle();
       expect(dependencies.auth.status, AuthStatus.signedIn);
       expect(find.byType(OrganizationsPage), findsOneWidget);
+    });
+
+    testWidgets('a server that is not kanbot ends here, not on loading', (
+      tester,
+    ) async {
+      // An HTML page served for every path, with 200.
+      final backend = FakeBackend()
+        ..handle(
+          'GET',
+          '/auth/config',
+          (_) => http.Response(
+            '<!doctype html><title>Welcome</title>',
+            200,
+            headers: {'content-type': 'text/html'},
+          ),
+        );
+      final dependencies = testDependencies(
+        backend: backend,
+        connected: false,
+        storage: {'server_url': testServer.toString()},
+      );
+      final started = dependencies.start();
+      await pumpApp(tester, dependencies);
+      await started;
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LoginPage), findsOneWidget);
+      expect(find.text(Messages.notKanbot), findsOneWidget);
+      await tester.tap(find.text(Messages.changeServer));
+      await tester.pumpAndSettle();
+      expect(find.byType(ServerPage), findsOneWidget);
+    });
+
+    testWidgets('the old server\'s error is not shown for the new one', (
+      tester,
+    ) async {
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', authConfig())
+        ..on('GET', '/me', problem(503, 'unavailable'), status: 503);
+      final dependencies = testDependencies(backend: backend);
+      await dependencies.auth.refresh();
+      await pumpApp(tester, dependencies, location: Routes.login);
+      final unavailable = Messages.error(const ApiUnavailableException());
+      expect(find.text(unavailable), findsOneWidget);
+
+      await tester.tap(find.text(Messages.changeServer));
+      await tester.pumpAndSettle();
+      // The new server is up, but slow to say who is signed in: the login
+      // page opens meanwhile.
+      final me = Completer<http.Response>();
+      backend.handle('GET', '/me', (_) => me.future);
+      await tester.enterText(
+        find.byType(EditableText),
+        'https://other.example.com',
+      );
+      await tester.tap(find.text(Messages.connect));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LoginPage), findsOneWidget);
+      expect(find.text(unavailable), findsNothing);
+      expect(find.text(Messages.retry), findsNothing);
+
+      me.complete(
+        http.Response(
+          jsonEncode(problem(401, 'unauthorized')),
+          401,
+          headers: {'content-type': 'application/problem+json'},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(unavailable), findsNothing);
+      expect(find.widgetWithText(ShadButton, Messages.signIn), findsOneWidget);
+    });
+
+    testWidgets('shows a failure to load the session after it opened', (
+      tester,
+    ) async {
+      final backend = FakeBackend()
+        ..on('GET', '/auth/config', authConfig())
+        ..on('GET', '/me', problem(401, 'unauthorized'), status: 401);
+      final dependencies = testDependencies(backend: backend);
+      await dependencies.auth.refresh();
+      await pumpApp(tester, dependencies, location: Routes.login);
+      expect(find.text(Messages.retry), findsNothing);
+
+      backend.on('GET', '/me', problem(503, 'unavailable'), status: 503);
+      await dependencies.auth.refresh();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(Messages.error(const ApiUnavailableException())),
+        findsOneWidget,
+      );
+      expect(find.text(Messages.retry), findsOneWidget);
     });
 
     testWidgets('a native user can change server', (tester) async {

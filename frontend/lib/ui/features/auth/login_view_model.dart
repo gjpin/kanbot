@@ -11,8 +11,8 @@ class LoginViewModel extends ViewModel {
     required this._connection,
     this._serverStore,
     String? error,
-  }) {
-    _error = error == null ? _auth.lastError : SignInRefusedException(error);
+  }) : _error = error == null ? null : SignInRefusedException(error) {
+    _auth.addListener(notifyListeners);
   }
 
   final AuthRepository _auth;
@@ -20,13 +20,16 @@ class LoginViewModel extends ViewModel {
   final ServerStore? _serverStore;
 
   bool _busy = false;
+
+  /// This page's own error: a failed sign-in, or the server's redirect.
   Exception? _error;
 
   bool get busy => _busy;
 
-  /// Why the last sign-in failed: from this page, or from the server's
-  /// redirect (`/login?error=...`, web).
-  Exception? get error => _error;
+  /// Why the last sign-in failed (from this page, or from the server's
+  /// redirect, `/login?error=...` on the web), else why the session could
+  /// not be loaded from the current server.
+  Exception? get error => _error ?? _auth.lastError;
 
   /// The server's address, shown so the user knows where they sign in.
   Uri? get server => _connection.baseUrl;
@@ -41,14 +44,24 @@ class LoginViewModel extends ViewModel {
   /// Native apps can change server; the web app belongs to its server.
   bool get canChangeServer => _serverStore != null;
 
-  Future<void> signIn() async {
+  Future<void> signIn() => _run(_auth.signIn);
+
+  /// Tries to load the session again (the server was unreachable).
+  Future<void> retry() => _run(_auth.refresh);
+
+  /// Runs [action], showing its failure. Anything it throws that is not an
+  /// [Exception] is a bug (AGENTS.md §5): it propagates to be reported, and
+  /// the repository's error says what happened.
+  Future<void> _run(Future<Result<void>> Function() action) async {
     if (_busy) return;
     _busy = true;
     _error = null;
     notifyListeners();
     try {
-      final result = await _auth.signIn();
+      final result = await action();
       if (result case Failure(:final error)) _error = error;
+    } on Exception catch (error) {
+      _error = error;
     } finally {
       _busy = false;
       notifyListeners();
@@ -67,18 +80,9 @@ class LoginViewModel extends ViewModel {
     _connection.disconnect();
   }
 
-  /// Tries to load the session again (the server was unreachable).
-  Future<void> retry() async {
-    if (_busy) return;
-    _busy = true;
-    _error = null;
-    notifyListeners();
-    try {
-      final result = await _auth.refresh();
-      if (result case Failure(:final error)) _error = error;
-    } finally {
-      _busy = false;
-      notifyListeners();
-    }
+  @override
+  void dispose() {
+    _auth.removeListener(notifyListeners);
+    super.dispose();
   }
 }

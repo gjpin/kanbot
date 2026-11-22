@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,7 +8,8 @@ import 'package:http/testing.dart';
 /// A scripted kanbot server: `METHOD /path` routes answer with JSON. Any
 /// other request fails the test, so a test states every call it expects.
 class FakeBackend {
-  final Map<String, http.Response Function(http.Request)> _routes = {};
+  final Map<String, FutureOr<http.Response> Function(http.Request)> _routes =
+      {};
 
   /// Every request received, in order.
   final List<http.Request> requests = [];
@@ -23,7 +25,7 @@ class FakeBackend {
   void handle(
     String method,
     String path,
-    http.Response Function(http.Request request) handler,
+    FutureOr<http.Response> Function(http.Request request) handler,
   ) => _routes['$method $path'] = handler;
 
   /// The requests to `METHOD path`.

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kanbot/config/api_config.dart';
 import 'package:kanbot/config/dependencies.dart';
@@ -27,12 +28,20 @@ Future<void> main() async {
     defaultServer: defaultServer,
   );
   if (kIsWeb) dependencies.connectWeb(browser.currentPage());
+  // Started before the first frame, so a native app shows the loading page,
+  // not the server page, while it reads the stored server. Failures end on
+  // the login page, which says what went wrong; an error that is a bug
+  // (AGENTS.md §5) also reaches reportUncaughtErrors.
+  final started = dependencies.start(
+    page: kIsWeb ? browser.currentPage() : null,
+  );
+  // The web app's routes are the page's path (`/login?error=...` from the
+  // server's sign-in redirect), not a `#` fragment. A no-op elsewhere.
+  usePathUrlStrategy();
   final router = createRouter(dependencies: dependencies);
   reportNavigation(router);
   runApp(KanbotApp(router: router));
-  // The router shows the loading page meanwhile; failures end on the
-  // login page, which says what went wrong.
-  unawaited(dependencies.start(page: kIsWeb ? browser.currentPage() : null));
+  unawaited(started);
 }
 
 class KanbotApp extends StatelessWidget {

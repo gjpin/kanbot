@@ -21,7 +21,7 @@ The app already uses `go_router`:
 - `lib/main.dart` builds the router once and passes it to `KanbotApp`, which binds it to `ShadApp.router`. Never create a `GoRouter` in `build()`.
 - Unknown paths, including deep links, show `NotFoundPage` (`errorBuilder`).
 - **ShellRoute / StatefulShellRoute** wrap child routes in a persistent UI shell (e.g. a tab bar). `StatefulShellRoute` keeps the state of each branch.
-- **Path URL strategy** (`usePathUrlStrategy()` from `package:flutter_web_plugins/url_strategy.dart`, called in `main()` before `runApp`) removes the `#` from web URLs. The app does not use it yet. Adding it needs the web host to serve `index.html` for every path.
+- **Path URL strategy** (`usePathUrlStrategy()` from `package:flutter_web_plugins/url_strategy.dart`, called in `main()` before `runApp`) removes the `#` from web URLs. The app uses it: the backend's sign-in redirect lands on `/login?error=...`, which the router must see as a path. The backend serves `index.html` for every path that is not a file (`backend/src/http/web.rs`).
 
 ## Workflow: Adding a Route
 

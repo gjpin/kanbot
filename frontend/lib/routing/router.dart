@@ -59,9 +59,11 @@ GoRouter createRouter({
     refreshListenable: Listenable.merge([
       dependencies.connection,
       dependencies.auth,
+      dependencies.starting,
     ]),
     redirect: (context, state) => redirect(
       location: state.uri,
+      starting: dependencies.starting.value,
       connected: dependencies.connection.isConnected,
       status: dependencies.auth.status,
     ),
@@ -129,29 +131,32 @@ GoRouter createRouter({
 
 /// Where a request for [location] goes, or `null` to show it.
 ///
-/// - No server yet (native): the server page.
-/// - Session loading: the loading page, remembering [location] in `from`.
+/// - Looking for the stored server ([starting], native), or session
+///   loading: the loading page, remembering [location] in `from`.
+/// - No server (native): the server page.
 /// - Signed out: the login page; everything else goes there.
 /// - Signed in: the pages before sign-in go home (or back to `from`).
 @visibleForTesting
 String? redirect({
   required Uri location,
+  required bool starting,
   required bool connected,
   required AuthStatus status,
 }) {
   final path = location.path;
-  if (!connected) return path == Routes.server ? null : Routes.server;
-  if (status == AuthStatus.unknown) {
+  if ((!connected && starting) || (connected && status == AuthStatus.unknown)) {
     if (path == Routes.loading) return null;
     return Uri(
       path: Routes.loading,
       queryParameters: {'from': location.toString()},
     ).toString();
   }
+  if (!connected) return path == Routes.server ? null : Routes.server;
   if (path == Routes.loading) {
     final from = _internal(location.queryParameters['from']);
     return redirect(
           location: Uri.parse(from),
+          starting: starting,
           connected: connected,
           status: status,
         ) ??

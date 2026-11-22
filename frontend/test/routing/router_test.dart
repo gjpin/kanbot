@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
+import 'package:kanbot/data/services/server_store.dart';
 import 'package:kanbot/main.dart';
 import 'package:kanbot/routing/router.dart';
 import 'package:kanbot/ui/core/messages.dart';
@@ -10,10 +14,13 @@ import 'package:kanbot/ui/features/auth/server_page.dart';
 import 'package:kanbot/ui/features/organizations/organization_page.dart';
 import 'package:kanbot/ui/features/organizations/organizations_page.dart';
 import 'package:kanbot/ui/features/settings/settings_page.dart';
+import 'package:mockito/annotations.dart';
+import 'package:mockito/mockito.dart';
 
 import '../helpers/fake_backend.dart';
 import '../helpers/pump.dart';
 import '../helpers/test_dependencies.dart';
+import 'router_test.mocks.dart';
 
 /// Every route that needs a signed-in user.
 const List<String> protectedRoutes = [
@@ -25,20 +32,52 @@ const List<String> protectedRoutes = [
   '/teams/$teamId',
 ];
 
+@GenerateMocks([ServerStore])
 void main() {
   group('redirect', () {
-    String? go(String location, {bool connected = true, AuthStatus? status}) =>
-        redirect(
-          location: Uri.parse(location),
-          connected: connected,
-          status: status ?? AuthStatus.signedIn,
-        );
+    String? go(
+      String location, {
+      bool starting = false,
+      bool connected = true,
+      AuthStatus? status,
+    }) => redirect(
+      location: Uri.parse(location),
+      starting: starting,
+      connected: connected,
+      status: status ?? AuthStatus.signedIn,
+    );
 
     test('without a server, everything goes to the server page', () {
       for (final status in AuthStatus.values) {
         expect(go('/teams', connected: false, status: status), Routes.server);
         expect(go(Routes.server, connected: false, status: status), isNull);
+        expect(
+          go('/loading?from=%2Fteams', connected: false, status: status),
+          Routes.server,
+        );
       }
+    });
+
+    test('while the stored server is read, the loading page shows', () {
+      for (final status in AuthStatus.values) {
+        final loading = go(
+          '/teams',
+          starting: true,
+          connected: false,
+          status: status,
+        );
+        expect(loading, '/loading?from=%2Fteams');
+        expect(
+          go(Routes.server, starting: true, connected: false, status: status),
+          '/loading?from=%2Fserver',
+        );
+        expect(
+          go(loading!, starting: true, connected: false, status: status),
+          isNull,
+        );
+      }
+      // Connected: the session decides, as without a start.
+      expect(go('/loading?from=%2Fteams', starting: true), '/teams');
     });
 
     test('while loading, the loading page remembers where to go', () {
@@ -142,6 +181,50 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(ServerPage), findsOneWidget);
+  });
+
+  testWidgets('a native app with a stored server never asks for one', (
+    tester,
+  ) async {
+    final backend = FakeBackend()
+      ..on('GET', '/auth/config', authConfig())
+      ..on('GET', '/me', problem(401, 'unauthorized'), status: 401);
+    // Secure storage answers when the test says so (a slow keychain, a
+    // locked keyring).
+    final stored = Completer<Uri?>();
+    final store = MockServerStore();
+    when(store.read(release: false)).thenAnswer((_) => stored.future);
+    final base = testDependencies(backend: backend, connected: false);
+    final dependencies = AppDependencies(
+      web: false,
+      release: false,
+      connection: base.connection,
+      auth: base.auth,
+      newConnection: base.newConnection,
+      serverStore: store,
+    );
+    // As main does: started before the first frame.
+    final started = dependencies.start();
+    await tester.pumpWidget(
+      KanbotApp(
+        router: createRouter(
+          dependencies: dependencies,
+          initialLocation: Routes.settings,
+        ),
+      ),
+    );
+    for (var frame = 0; frame < 10; frame++) {
+      expect(find.byType(LoadingPage), findsOneWidget, reason: 'frame $frame');
+      expect(find.byType(ServerPage), findsNothing, reason: 'frame $frame');
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    stored.complete(testServer);
+    await started;
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LoginPage), findsOneWidget);
+    expect(dependencies.connection.baseUrl, testServer);
   });
 
   testWidgets('shows the loading page until the session is known', (

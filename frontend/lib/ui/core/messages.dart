@@ -33,6 +33,14 @@ abstract final class Messages {
   static const String loading = 'Loading…';
   static const String retry = 'Try again';
 
+  /// In the browser after a native sign-in (Windows, Linux). It does not
+  /// say how the sign-in went: the app does.
+  static const String signInLanding =
+      'Return to kanbot to continue. You can close this window.';
+  static const String unexpectedResponse =
+      'The server sent an answer this version of the app does not '
+      'understand. The app or the server may need an update.';
+
   /// The message for a sign-in the server refused, by its `error` code.
   static String signInRefused(String code) => switch (code) {
     'access_denied' => 'Sign-in was cancelled at your identity provider.',
@@ -137,6 +145,7 @@ abstract final class Messages {
     SignInFailedException() => signInFailed,
     SignInRefusedException(:final code) => signInRefused(code),
     NotKanbotServerException() => notKanbot,
+    UnexpectedResponseException() => unexpectedResponse,
     FormatException() => invalidServer,
     ApiUnauthorizedException() => 'Your session has ended. Sign in again.',
     ApiForbiddenException(code: 'account_disabled') =>
