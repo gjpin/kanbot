@@ -463,7 +463,7 @@ pub(super) async fn remove_team_link(
 pub(super) async fn link_openshell(
     State(state): State<AppState>,
     Caller(actor): Caller,
-    UserAccessToken(token): UserAccessToken,
+    token: UserAccessToken,
     Path(id): Path<Uuid>,
     Json(link): Json<OpenShellLinkDto>,
 ) -> Result<Json<OrganizationDto>, AppError> {
@@ -476,7 +476,8 @@ pub(super) async fn link_openshell(
         state.openshell.as_deref(),
         &actor,
         id,
-        Some((&workspace, &token)),
+        Some(&workspace),
+        async || token.get(&state).await,
     )
     .await?;
     let (organization, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;
@@ -520,6 +521,7 @@ pub(super) async fn unlink_openshell(
         &actor,
         id,
         None,
+        async || Err(AppError::Internal("no token needed to unlink")),
     )
     .await?;
     let (organization, permissions) = service::get(&state.db, &state.authz, &actor, id).await?;

@@ -101,6 +101,9 @@ pub enum Via {
     Native,
     /// An identity provider's access token.
     Bearer,
+    /// No request: the `OpenShell` membership sync, deciding for each user
+    /// (from [`SYNC_IP`]).
+    Sync,
 }
 
 impl Via {
@@ -110,9 +113,15 @@ impl Via {
             Self::Web => "web",
             Self::Native => "native",
             Self::Bearer => "bearer",
+            Self::Sync => "sync",
         }
     }
 }
+
+/// The client address of decisions made without a request
+/// ([`Via::Sync`]): `0.0.0.0`, inside no network, so a policy that allows
+/// only some networks denies them unless it allows `"sync"` on purpose.
+pub const SYNC_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
 
 /// Who asks: the Cedar principal and the request context.
 #[derive(Clone, Debug, PartialEq, Eq)]

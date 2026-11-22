@@ -73,6 +73,16 @@ pub enum PlatformRole {
 }
 
 impl PlatformRole {
+    /// Reads the stored form; `None` for anything else.
+    #[must_use]
+    pub fn parse(stored: &str) -> Option<Self> {
+        match stored {
+            "admin" => Some(Self::Admin),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+
     /// The stored form (`users.platform_role`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -495,6 +505,10 @@ mod tests {
     fn roles_have_their_stored_form() {
         assert_eq!(PlatformRole::Admin.as_str(), "admin");
         assert_eq!(PlatformRole::User.as_str(), "user");
+        for role in [PlatformRole::Admin, PlatformRole::User] {
+            assert_eq!(PlatformRole::parse(role.as_str()), Some(role));
+        }
+        assert_eq!(PlatformRole::parse("owner"), None);
     }
 
     #[test]

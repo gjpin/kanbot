@@ -31,6 +31,8 @@ pub struct State {
     pub changes: Vec<String>,
     /// Bearer tokens accepted; any other is `unauthenticated`.
     pub accepted: BTreeSet<String>,
+    /// Workspaces where adding a member fails (`unavailable`).
+    pub failing_adds: BTreeSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -137,10 +139,17 @@ impl OpenShell for FakeGateway {
         let body = request.into_inner();
         let workspace = workspace_of(body.workspace_scope.as_ref())?;
         let mut state = self.state.lock().unwrap();
+        if state.failing_adds.contains(&workspace) {
+            return Err(Status::unavailable("try again"));
+        }
         let members = state
             .workspaces
             .get_mut(&workspace)
             .ok_or_else(|| Status::not_found("workspace"))?;
+        // As OpenShell: adding an existing member is a conflict.
+        if members.contains_key(&body.principal_subject) {
+            return Err(Status::already_exists("member"));
+        }
         members.insert(body.principal_subject.clone(), body.role);
         state.changes.push(format!(
             "add {workspace} {} {}",

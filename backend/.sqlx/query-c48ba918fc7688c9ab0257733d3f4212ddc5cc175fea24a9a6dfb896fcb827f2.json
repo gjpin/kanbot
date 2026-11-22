@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            u.id,\n            COALESCE(\n                (SELECT array_agg(team_id ORDER BY team_id) FROM team_members WHERE user_id = u.id),\n                '{}'\n            ) AS \"teams!\",\n            EXISTS (\n                SELECT 1 FROM team_members WHERE user_id = u.id AND role = 'maintainer'\n            ) AS \"team_maintainer!\",\n            EXISTS (SELECT 1 FROM organization_admins WHERE user_id = u.id) AS \"organization_admin!\"\n        FROM users u\n        WHERE u.id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "teams!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "team_maintainer!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "organization_admin!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "c48ba918fc7688c9ab0257733d3f4212ddc5cc175fea24a9a6dfb896fcb827f2"
+}

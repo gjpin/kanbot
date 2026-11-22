@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     auth::token::PlatformRole,
     authz::{
-        model::{Action, Actor, Decision, Facts, Resource},
+        model::{Action, Actor, Decision, Facts, Resource, SYNC_IP, Via},
         policies::Policies,
         repo,
     },
@@ -215,6 +215,90 @@ pub async fn require_all(
         allowed: true,
         policy_ids,
     })
+}
+
+/// The decisions on `actions` for `resource`, for each of `users`, made
+/// without a request ([`Via::Sync`] from [`SYNC_IP`]): for background work
+/// that acts on users' behalf, such as the `OpenShell` membership sync. The
+/// facts of all users are loaded at once. Users that no longer exist are
+/// denied everything.
+///
+/// # Errors
+///
+/// [`AppError::NotFound`] if the resource does not exist, or a database
+/// error.
+pub async fn decide_for_users(
+    db: &PgPool,
+    policies: &Policies,
+    users: &[crate::users::model::AuthenticatedUser],
+    actions: &[Action],
+    resource: Resource,
+) -> Result<Vec<Vec<Decision>>, AppError> {
+    let ids: Vec<Uuid> = users.iter().map(|user| user.id.as_uuid()).collect();
+    let user_facts: std::collections::HashMap<_, _> =
+        repo::user_facts_many(db, &ids).await?.into_iter().collect();
+    let mut team_ids: BTreeSet<Uuid> = user_facts
+        .values()
+        .flat_map(|facts| facts.teams.iter().map(TeamId::as_uuid))
+        .collect();
+    let mut organization_ids = Vec::new();
+    match resource {
+        Resource::Platform => {}
+        Resource::Organization(id) => organization_ids.push(id.as_uuid()),
+        Resource::Team(id) => {
+            team_ids.insert(id.as_uuid());
+        }
+    }
+    let team_ids: Vec<Uuid> = team_ids.into_iter().collect();
+    let teams = if team_ids.is_empty() {
+        Vec::new()
+    } else {
+        repo::team_facts(db, &team_ids).await?
+    };
+    let organizations = if organization_ids.is_empty() {
+        Vec::new()
+    } else {
+        repo::organization_facts(db, &organization_ids).await?
+    };
+    let requests: Vec<(Action, Resource)> =
+        actions.iter().map(|action| (*action, resource)).collect();
+    let denied = || {
+        actions
+            .iter()
+            .map(|_| Decision {
+                allowed: false,
+                policy_ids: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut all = Vec::with_capacity(users.len());
+    for user in users {
+        let Some(facts) = user_facts.get(&user.id) else {
+            all.push(denied());
+            continue;
+        };
+        let facts = Facts {
+            user: facts.clone(),
+            teams: teams
+                .iter()
+                .filter(|team| {
+                    facts.teams.contains(&team.id) || Resource::Team(team.id) == resource
+                })
+                .cloned()
+                .collect(),
+            organizations: organizations.clone(),
+        };
+        if !exists(&facts, resource) {
+            return Err(AppError::NotFound);
+        }
+        let actor = Actor {
+            user: user.clone(),
+            via: Via::Sync,
+            ip: SYNC_IP,
+        };
+        all.push(decide_all(policies, &actor, &facts, &requests)?);
+    }
+    Ok(all)
 }
 
 /// The candidates that `actor` may see, among `candidates` (all of one

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE openshell_members SET role = 'user'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "8590968078b6e96561bddae072aa04ad23cf3cff53823529d0f134d3c5d1e598"
+}

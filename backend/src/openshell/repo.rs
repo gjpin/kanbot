@@ -1,10 +1,12 @@
 //! Database access for the `OpenShell` membership sync.
 
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::{
+    auth::token::PlatformRole,
     openshell::model::{MemberRole, WorkspaceName},
     organizations::model::OrganizationId,
+    users::model::UserId,
 };
 
 fn decode(what: &'static str) -> sqlx::Error {
@@ -51,28 +53,42 @@ pub(super) async fn orphans(db: &PgPool) -> Result<Vec<WorkspaceName>, sqlx::Err
     .collect()
 }
 
-/// Who should be in the organization's workspace: its admins as admins,
-/// members of teams with write access as users. Disabled users and users
-/// of another issuer are left out. Subject → role.
+/// Someone who could be in an organization's workspace: one of its
+/// admins, or a member of a team linked to it with write access. Cedar has
+/// the last word ([`crate::authz::service::decide_for_users`]).
+pub(super) struct Candidate {
+    pub id: UserId,
+    pub subject: String,
+    pub role: PlatformRole,
+    pub groups: Vec<String>,
+    pub admin: bool,
+}
+
+/// The organization's candidates who are not disabled and belong to
+/// `issuer`, by subject. Two index-driven lookups (admins, members of
+/// write-linked teams), then the users.
 #[tracing::instrument(skip_all, fields(organization.id = %organization.as_uuid()))]
-pub(super) async fn desired(
+pub(super) async fn candidates(
     db: &PgPool,
     organization: OrganizationId,
     issuer: &str,
-) -> Result<Vec<(String, MemberRole)>, sqlx::Error> {
-    Ok(sqlx::query!(
+) -> Result<Vec<Candidate>, sqlx::Error> {
+    sqlx::query!(
         r#"
-        SELECT u.subject, bool_or(a.user_id IS NOT NULL) AS "admin!"
-        FROM users u
-        LEFT JOIN organization_admins a
-            ON a.user_id = u.id AND a.organization_id = $1
-        LEFT JOIN team_members m ON m.user_id = u.id
-        LEFT JOIN organization_teams l
-            ON l.team_id = m.team_id AND l.organization_id = $1 AND l.access = 'write'
-        WHERE u.disabled_at IS NULL
-          AND u.issuer = $2
-          AND (a.user_id IS NOT NULL OR l.team_id IS NOT NULL)
-        GROUP BY u.subject
+        SELECT u.id, u.subject, u.platform_role, u.groups, bool_or(c.admin) AS "admin!"
+        FROM (
+            SELECT a.user_id, true AS admin
+            FROM organization_admins a
+            WHERE a.organization_id = $1
+            UNION ALL
+            SELECT m.user_id, false
+            FROM organization_teams l
+            JOIN team_members m ON m.team_id = l.team_id
+            WHERE l.organization_id = $1 AND l.access = 'write'
+        ) c
+        JOIN users u ON u.id = c.user_id
+        WHERE u.disabled_at IS NULL AND u.issuer = $2
+        GROUP BY u.id, u.subject, u.platform_role, u.groups
         ORDER BY u.subject
         "#,
         organization.as_uuid(),
@@ -82,15 +98,47 @@ pub(super) async fn desired(
     .await?
     .into_iter()
     .map(|row| {
-        let role = if row.admin {
-            MemberRole::Admin
-        } else {
-            MemberRole::User
-        };
-        (row.subject, role)
+        Ok(Candidate {
+            id: UserId::from_uuid(row.id),
+            subject: row.subject,
+            role: PlatformRole::parse(&row.platform_role)
+                .ok_or_else(|| decode("users.platform_role"))?,
+            groups: row.groups,
+            admin: row.admin,
+        })
     })
-    .collect())
+    .collect()
 }
+
+/// Forgets every member kanbot added to `workspace` (it no longer exists
+/// in `OpenShell`).
+#[tracing::instrument(skip_all)]
+pub(super) async fn forget_workspace(
+    db: &PgPool,
+    workspace: &WorkspaceName,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query!(
+        "DELETE FROM openshell_members WHERE workspace = $1",
+        workspace.as_str()
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
+/// Takes the sync's lock for the transaction `lock`, if no other instance
+/// holds it. Released when the transaction ends, or its connection drops.
+pub(super) async fn try_lock(lock: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT pg_try_advisory_xact_lock($1) AS "locked!""#,
+        SYNC_LOCK
+    )
+    .fetch_one(lock)
+    .await
+}
+
+/// The advisory lock key of the sync: "kanbotOS" in ASCII.
+const SYNC_LOCK: i64 = 0x6b61_6e62_6f74_4f53;
 
 /// The members kanbot added to `workspace`. Subject → role.
 #[tracing::instrument(skip_all)]

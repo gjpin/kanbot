@@ -7,23 +7,21 @@ pub mod credentials;
 pub mod gateway;
 pub mod model;
 mod repo;
+pub mod service;
 pub mod sync;
 
 use std::sync::Arc;
-
-use tokio::sync::Notify;
 
 use crate::{
     auth::keys::KeyCache,
     openshell::{config::OpenShellConfig, credentials::Credentials, gateway::Gateway},
 };
 
-/// The running integration: the gateway, tokens for it, and the sync's
-/// wake-up.
+/// The running integration: the gateway and tokens for it. The sync wakes
+/// on the database's change notifications, so nothing here needs to.
 pub struct OpenShell {
     pub gateway: Gateway,
     pub credentials: Credentials,
-    wake: Notify,
 }
 
 impl OpenShell {
@@ -39,12 +37,6 @@ impl OpenShell {
         Ok(Self {
             gateway,
             credentials: Credentials::new(Arc::new(config), keys),
-            wake: Notify::new(),
         })
-    }
-
-    /// Asks the sync to run now (a link changed).
-    pub fn wake_sync(&self) {
-        self.wake.notify_one();
     }
 }

@@ -87,6 +87,32 @@ impl FieldError {
     }
 }
 
+/// The kind of a database error, for logs: never its message, which can
+/// quote row values.
+#[must_use]
+pub fn database_kind(error: &sqlx::Error) -> &'static str {
+    match error {
+        sqlx::Error::Configuration(_) => "database.configuration",
+        sqlx::Error::InvalidArgument(_) => "database.invalid_argument",
+        sqlx::Error::Database(_) => "database.database",
+        sqlx::Error::Io(_) => "database.io",
+        sqlx::Error::Tls(_) => "database.tls",
+        sqlx::Error::Protocol(_) => "database.protocol",
+        sqlx::Error::RowNotFound => "database.row_not_found",
+        sqlx::Error::TypeNotFound { .. } => "database.type_not_found",
+        sqlx::Error::ColumnIndexOutOfBounds { .. } => "database.column_index_out_of_bounds",
+        sqlx::Error::ColumnNotFound(_) => "database.column_not_found",
+        sqlx::Error::ColumnDecode { .. } => "database.column_decode",
+        sqlx::Error::Encode(_) => "database.encode",
+        sqlx::Error::Decode(_) => "database.decode",
+        sqlx::Error::PoolTimedOut => "database.pool_timed_out",
+        sqlx::Error::PoolClosed => "database.pool_closed",
+        sqlx::Error::WorkerCrashed => "database.worker_crashed",
+        sqlx::Error::Migrate(_) => "database.migrate",
+        _ => "database.other",
+    }
+}
+
 /// SQLSTATEs that say the database is busy or going away, not that the
 /// query is wrong: a statement timeout (`57014`), too many connections
 /// (`53300`), and shutdown or recovery (`57P01`..`57P03`).
@@ -151,26 +177,7 @@ impl AppError {
 
     fn log_kind(&self) -> &'static str {
         match self {
-            Self::Database(error) => match error {
-                sqlx::Error::Configuration(_) => "database.configuration",
-                sqlx::Error::InvalidArgument(_) => "database.invalid_argument",
-                sqlx::Error::Database(_) => "database.database",
-                sqlx::Error::Io(_) => "database.io",
-                sqlx::Error::Tls(_) => "database.tls",
-                sqlx::Error::Protocol(_) => "database.protocol",
-                sqlx::Error::RowNotFound => "database.row_not_found",
-                sqlx::Error::TypeNotFound { .. } => "database.type_not_found",
-                sqlx::Error::ColumnIndexOutOfBounds { .. } => "database.column_index_out_of_bounds",
-                sqlx::Error::ColumnNotFound(_) => "database.column_not_found",
-                sqlx::Error::ColumnDecode { .. } => "database.column_decode",
-                sqlx::Error::Encode(_) => "database.encode",
-                sqlx::Error::Decode(_) => "database.decode",
-                sqlx::Error::PoolTimedOut => "database.pool_timed_out",
-                sqlx::Error::PoolClosed => "database.pool_closed",
-                sqlx::Error::WorkerCrashed => "database.worker_crashed",
-                sqlx::Error::Migrate(_) => "database.migrate",
-                _ => "database.other",
-            },
+            Self::Database(error) => database_kind(error),
             Self::BadRequest => "bad_request",
             Self::Unauthorized => "unauthorized",
             Self::InvalidToken => "invalid_token",

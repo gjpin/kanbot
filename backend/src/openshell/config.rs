@@ -32,6 +32,15 @@ pub enum OpenShellConfigError {
         #[source]
         source: std::io::Error,
     },
+    #[error("OPENSHELL_CA_FILE {0:?} holds no valid PEM certificate")]
+    CaFileInvalid(String),
+    #[error("{0} must not be empty")]
+    Empty(&'static str),
+    #[error(
+        "OPENSHELL_CLIENT_ID must differ from OPENSHELL_AUDIENCE and OIDC_AUDIENCE: ID tokens \
+         issued to it would pass as access tokens"
+    )]
+    AudienceIsClient,
 }
 
 /// The `OpenShell` gateway and how kanbot gets tokens for it.
@@ -54,7 +63,7 @@ pub struct OpenShellConfig {
     pub token_scope: Option<String>,
     /// `OPENSHELL_TOKEN_EXCHANGE` (default `false`): exchange the user's
     /// token (RFC 8693) for calls a user starts. Only for identity providers
-    /// that support it (Keycloak, Okta, authentik 2026.8+).
+    /// that support it (Keycloak, Okta).
     pub token_exchange: bool,
     /// `OPENSHELL_CA_FILE`: PEM certificates trusted for the gateway, in
     /// addition to the system roots.
@@ -122,11 +131,23 @@ impl OpenShellConfig {
             return Err(OpenShellConfigError::SameAudience.into());
         }
         let client_id = required(lookup, "OPENSHELL_CLIENT_ID")?.trim().to_owned();
-        let client_secret = SecretString::from(crate::sessions::config::secret(
+        if client_id.is_empty() {
+            return Err(OpenShellConfigError::Empty("OPENSHELL_CLIENT_ID").into());
+        }
+        if client_id == audience || client_id == kanbot_audience {
+            return Err(OpenShellConfigError::AudienceIsClient.into());
+        }
+        // A secret file usually ends with a newline: never part of it.
+        let client_secret = crate::sessions::config::secret(
             lookup,
             "OPENSHELL_CLIENT_SECRET",
             "OPENSHELL_CLIENT_SECRET_FILE",
-        )?);
+        )?;
+        let client_secret = client_secret.trim();
+        if client_secret.is_empty() {
+            return Err(OpenShellConfigError::Empty("OPENSHELL_CLIENT_SECRET").into());
+        }
+        let client_secret = SecretString::from(client_secret.to_owned());
         let token_scope = optional(lookup, "OPENSHELL_TOKEN_SCOPE")?
             .map(|scope| scope.trim().to_owned())
             .filter(|scope| !scope.is_empty());
@@ -137,12 +158,20 @@ impl OpenShellConfig {
         )?;
         let ca_pem = match optional(lookup, "OPENSHELL_CA_FILE")? {
             Some(path) if !path.trim().is_empty() => {
-                Some(std::fs::read(Path::new(path.trim())).map_err(|source| {
+                let pem = std::fs::read(Path::new(path.trim())).map_err(|source| {
                     OpenShellConfigError::CaFile {
                         path: path.trim().to_owned(),
                         source,
                     }
-                })?)
+                })?;
+                // TLS would ignore a file without certificates and fail
+                // every call; refuse it now.
+                let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+                    .map_err(|_| OpenShellConfigError::CaFileInvalid(path.trim().to_owned()))?;
+                if certificates.is_empty() {
+                    return Err(OpenShellConfigError::CaFileInvalid(path.trim().to_owned()).into());
+                }
+                Some(pem)
             }
             _ => None,
         };
@@ -287,6 +316,44 @@ mod tests {
     }
 
     #[test]
+    fn the_client_is_trimmed_and_must_not_be_blank() {
+        let path =
+            std::env::temp_dir().join(format!("kanbot-openshell-secret-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "s3cret\n").unwrap();
+        let file = path.to_str().unwrap().to_owned();
+        let vars: Vec<_> = BASE
+            .iter()
+            .copied()
+            .filter(|(name, _)| *name != "OPENSHELL_CLIENT_SECRET")
+            .chain([("OPENSHELL_CLIENT_SECRET_FILE", file.as_str())])
+            .collect();
+        let config = read(&vars).unwrap().unwrap();
+        assert_eq!(config.client_secret.expose_secret(), "s3cret");
+        std::fs::remove_file(path).unwrap();
+        for (name, value) in [
+            ("OPENSHELL_CLIENT_ID", " "),
+            ("OPENSHELL_CLIENT_SECRET", " \n"),
+        ] {
+            assert!(
+                matches!(
+                    with(&[(name, value)]),
+                    Err(ConfigError::OpenShell(OpenShellConfigError::Empty(n))) if n == name
+                ),
+                "{name}"
+            );
+        }
+        // A client whose ID tokens would carry a service's audience.
+        for audience in ["openshell-gateway", "kanbot-api"] {
+            assert!(matches!(
+                with(&[("OPENSHELL_CLIENT_ID", audience)]),
+                Err(ConfigError::OpenShell(
+                    OpenShellConfigError::AudienceIsClient
+                ))
+            ));
+        }
+    }
+
+    #[test]
     fn reads_the_ca_file() {
         let path =
             std::env::temp_dir().join(format!("kanbot-openshell-ca-{}", uuid::Uuid::new_v4()));
@@ -295,10 +362,20 @@ mod tests {
             with(&[("OPENSHELL_CA_FILE", &raw)]),
             Err(ConfigError::OpenShell(OpenShellConfigError::CaFile { .. }))
         ));
-        std::fs::write(&path, "pem").unwrap();
-        let config = with(&[("OPENSHELL_CA_FILE", &raw)]).unwrap().unwrap();
-        assert_eq!(config.ca_pem.as_deref(), Some(&b"pem"[..]));
+        // A file without a certificate would be ignored by TLS: refused.
+        for content in ["pem", ""] {
+            std::fs::write(&path, content).unwrap();
+            assert!(matches!(
+                with(&[("OPENSHELL_CA_FILE", &raw)]),
+                Err(ConfigError::OpenShell(OpenShellConfigError::CaFileInvalid(
+                    _
+                )))
+            ));
+        }
         std::fs::remove_file(path).unwrap();
+        let ca = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/oidc/ca.crt");
+        let config = with(&[("OPENSHELL_CA_FILE", ca)]).unwrap().unwrap();
+        assert_eq!(config.ca_pem.unwrap(), std::fs::read(ca).unwrap());
         // Blank is unset, not a file named "".
         let config = with(&[("OPENSHELL_CA_FILE", "  ")]).unwrap().unwrap();
         assert_eq!(config.ca_pem, None);

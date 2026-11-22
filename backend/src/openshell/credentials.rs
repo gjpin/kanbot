@@ -7,9 +7,10 @@
 //!   gateway's audience (RFC 8693), where the identity provider supports it
 //!   (`OPENSHELL_TOKEN_EXCHANGE`); otherwise the service account.
 //!
-//! Every token is checked before use: it must carry the gateway's audience
-//! and must not carry kanbot's, so no token valid for both services is
-//! ever sent.
+//! Every token is verified before use like any other (signature with the
+//! identity provider's keys, issuer, expiry) and must carry the gateway's
+//! audience and not kanbot's, so no token valid for both services is ever
+//! sent. An exchanged token must name the user whose token was exchanged.
 
 use std::{
     sync::Arc,
@@ -18,10 +19,16 @@ use std::{
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
-use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::{auth::keys::KeyCache, openshell::config::OpenShellConfig};
+use crate::{
+    auth::{
+        discovery::FetchError,
+        keys::{KeyCache, KeyLookup},
+        token::{Rejection, UnverifiedToken},
+    },
+    openshell::config::OpenShellConfig,
+};
 
 /// Largest token response read.
 const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
@@ -36,15 +43,33 @@ const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 pub enum CredentialError {
     #[error("the identity provider's token endpoint is not known yet")]
     NoTokenEndpoint,
+    /// The identity provider's keys have not loaded: nothing can be
+    /// verified yet.
+    #[error("the identity provider's keys have not loaded")]
+    KeysNotLoaded,
     #[error("the token request failed")]
-    Request(#[source] crate::auth::discovery::FetchError),
-    #[error("the token is not a JWT with an audience and an expiry")]
-    Malformed,
+    Request(#[source] FetchError),
+    /// A token that does not verify (signature, issuer, expiry), or the
+    /// user's own token is no valid kanbot token.
+    #[error("the token does not verify: {}", .0.reason())]
+    Invalid(Rejection),
     #[error("the token is not for the gateway's audience")]
     WrongAudience,
     /// The token would also be accepted by kanbot: never sent anywhere.
     #[error("the token is also valid for kanbot")]
     SharedAudience,
+    /// The exchanged token names someone else than the user.
+    #[error("the exchanged token is for another subject")]
+    WrongSubject,
+}
+
+impl CredentialError {
+    /// Whether the identity provider refused the request (`400`/`401` from
+    /// its token endpoint), as opposed to failing.
+    #[must_use]
+    pub const fn is_refusal(&self) -> bool {
+        matches!(self, Self::Request(FetchError::Refused(..)))
+    }
 }
 
 #[derive(Deserialize)]
@@ -52,10 +77,20 @@ struct TokenResponse {
     access_token: String,
 }
 
-/// A checked token and when it expires (seconds since the epoch).
+/// A verified token, its subject and when it expires (seconds since the
+/// epoch).
 struct Checked {
     token: SecretString,
+    subject: Option<String>,
     expires_at: u64,
+}
+
+/// A token for a call a user starts.
+pub struct UserToken {
+    pub token: SecretString,
+    /// The subject the gateway will see: the user's, after an exchange;
+    /// `None` for the service account's token.
+    pub subject: Option<String>,
 }
 
 /// Gets tokens for the gateway.
@@ -71,30 +106,6 @@ fn now() -> u64 {
         .map_or(u64::MAX, |since| since.as_secs())
 }
 
-/// The audiences and expiry of a JWT's payload. The signature is not
-/// checked: the token comes straight from the identity provider over TLS,
-/// and the gateway verifies it; this only refuses tokens that must not be
-/// sent.
-fn audiences_and_expiry(token: &str) -> Option<(Vec<String>, u64)> {
-    let mut segments = token.split('.');
-    let (_, payload, _) = (segments.next()?, segments.next()?, segments.next()?);
-    if segments.next().is_some() {
-        return None;
-    }
-    let standard = payload.replace('-', "+").replace('_', "/");
-    let claims: Value = serde_json::from_slice(&crate::base64::decode_standard(&standard)?).ok()?;
-    let audiences = match claims.get("aud")? {
-        Value::String(one) => vec![one.clone()],
-        Value::Array(many) => many
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect(),
-        _ => return None,
-    };
-    Some((audiences, claims.get("exp")?.as_u64()?))
-}
-
 impl Credentials {
     #[must_use]
     pub fn new(config: Arc<OpenShellConfig>, keys: Arc<KeyCache>) -> Self {
@@ -105,26 +116,46 @@ impl Credentials {
         }
     }
 
-    /// Accepts `token` only if it is for the gateway and not for kanbot.
-    fn check(&self, token: String) -> Result<Checked, CredentialError> {
-        let (audiences, expires_at) =
-            audiences_and_expiry(&token).ok_or(CredentialError::Malformed)?;
+    /// Whether calls a user starts use the user's exchanged token.
+    #[must_use]
+    pub fn exchanges_tokens(&self) -> bool {
+        self.config.token_exchange
+    }
+
+    /// The parsed token and its key.
+    async fn key_for<'t>(
+        &self,
+        token: &'t str,
+    ) -> Result<(UnverifiedToken<'t>, Arc<crate::auth::keys::VerifyingKey>), CredentialError> {
+        let unverified = UnverifiedToken::parse(token).map_err(CredentialError::Invalid)?;
+        match self.keys.key(unverified.kid()).await {
+            KeyLookup::Found(key) => Ok((unverified, key)),
+            KeyLookup::Unknown => Err(CredentialError::Invalid(Rejection::UnknownKey)),
+            KeyLookup::NotLoaded => Err(CredentialError::KeysNotLoaded),
+        }
+    }
+
+    /// Accepts `token` only if it verifies, is for the gateway and not for
+    /// kanbot.
+    async fn check(&self, token: String) -> Result<Checked, CredentialError> {
+        let (unverified, key) = self.key_for(&token).await?;
+        let verified = unverified
+            .verify_foreign(&key, self.keys.config(), &self.config.audience, now())
+            .map_err(|rejection| match rejection {
+                Rejection::WrongAudience => CredentialError::WrongAudience,
+                other => CredentialError::Invalid(other),
+            })?;
         let kanbot = self.keys.config().audience.as_str();
-        if audiences.iter().any(|audience| audience == kanbot) {
+        if verified.audiences.iter().any(|audience| audience == kanbot) {
             tracing::warn!(
                 "openshell: the identity provider issued a token for both services; not used"
             );
             return Err(CredentialError::SharedAudience);
         }
-        if !audiences
-            .iter()
-            .any(|audience| *audience == self.config.audience)
-        {
-            return Err(CredentialError::WrongAudience);
-        }
         Ok(Checked {
+            subject: verified.subject,
+            expires_at: verified.expires_at,
             token: SecretString::from(token),
-            expires_at,
         })
     }
 
@@ -150,7 +181,7 @@ impl Credentials {
             )
             .await
             .map_err(CredentialError::Request)?;
-        self.check(response.access_token)
+        self.check(response.access_token).await
     }
 
     /// The service account's token (`client_credentials`), cached until
@@ -179,7 +210,8 @@ impl Credentials {
 
     /// A token for a call `user_token`'s user starts: the user's token
     /// exchanged for the gateway's audience, or the service account's when
-    /// token exchange is off.
+    /// token exchange is off. The user's token must be a valid kanbot
+    /// token, and the exchanged one must name the same subject.
     ///
     /// # Errors
     ///
@@ -187,10 +219,17 @@ impl Credentials {
     pub async fn on_behalf_of(
         &self,
         user_token: &SecretString,
-    ) -> Result<SecretString, CredentialError> {
+    ) -> Result<UserToken, CredentialError> {
         if !self.config.token_exchange {
-            return self.service_token().await;
+            return Ok(UserToken {
+                token: self.service_token().await?,
+                subject: None,
+            });
         }
+        let (unverified, key) = self.key_for(user_token.expose_secret()).await?;
+        let user = unverified
+            .verify(&key, self.keys.config(), now())
+            .map_err(CredentialError::Invalid)?;
         let checked = self
             .request(&[
                 ("grant_type", TOKEN_EXCHANGE),
@@ -200,43 +239,12 @@ impl Credentials {
                 ("audience", &self.config.audience),
             ])
             .await?;
-        Ok(checked.token)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::base64::encode_url;
-
-    fn jwt(claims: &Value) -> String {
-        format!(
-            "{}.{}.sig",
-            encode_url(br#"{"alg":"RS256"}"#),
-            encode_url(claims.to_string().as_bytes())
-        )
-    }
-
-    #[test]
-    fn reads_audiences_and_expiry() {
-        assert_eq!(
-            audiences_and_expiry(&jwt(&serde_json::json!({"aud": "a", "exp": 5}))),
-            Some((vec!["a".to_owned()], 5))
-        );
-        assert_eq!(
-            audiences_and_expiry(&jwt(&serde_json::json!({"aud": ["a", 1, "b"], "exp": 9}))),
-            Some((vec!["a".to_owned(), "b".to_owned()], 9))
-        );
-        for claims in [
-            serde_json::json!({"exp": 5}),
-            serde_json::json!({"aud": "a"}),
-            serde_json::json!({"aud": 3, "exp": 5}),
-            serde_json::json!({"aud": "a", "exp": "soon"}),
-        ] {
-            assert_eq!(audiences_and_expiry(&jwt(&claims)), None, "{claims}");
+        if checked.subject.as_deref() != Some(user.subject.as_str()) {
+            return Err(CredentialError::WrongSubject);
         }
-        for token in ["opaque", "a.b", "a.b.c.d", "a.!!.c"] {
-            assert_eq!(audiences_and_expiry(token), None, "{token}");
-        }
+        Ok(UserToken {
+            token: checked.token,
+            subject: checked.subject,
+        })
     }
 }

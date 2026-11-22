@@ -59,32 +59,50 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
     }
 }
 
-/// The user's own access token, for a call to another service on their
-/// behalf: the one a bearer request presented, or the identity provider
-/// token stored with the session. Never log it.
-pub struct UserAccessToken(pub secrecy::SecretString);
+/// Where the user's own access token is, for a call to another service on
+/// their behalf: the one a bearer request presented, or the identity
+/// provider token stored with the session. Nothing is read until
+/// [`UserAccessToken::get`]. Never log it.
+pub enum UserAccessToken {
+    Bearer(secrecy::SecretString),
+    Session(uuid::Uuid),
+}
 
-impl FromRequestParts<crate::state::AppState> for UserAccessToken {
+impl UserAccessToken {
+    /// The token; for a session, read from the database and opened.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Unauthorized`] if the session is gone, or another
+    /// [`AppError`].
+    pub async fn get(
+        self,
+        state: &crate::state::AppState,
+    ) -> Result<secrecy::SecretString, AppError> {
+        match self {
+            Self::Bearer(token) => Ok(token),
+            Self::Session(id) => {
+                crate::sessions::service::stored_access_token(&state.db, &state.sessions, id).await
+            }
+        }
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for UserAccessToken {
     type Rejection = AppError;
 
-    async fn from_request_parts(
+    fn from_request_parts(
         parts: &mut Parts,
-        state: &crate::state::AppState,
-    ) -> Result<Self, Self::Rejection> {
-        if let Some(session) = parts.extensions.get::<CurrentSession>() {
-            let token = crate::sessions::service::stored_access_token(
-                &state.db,
-                &state.sessions,
-                session.id,
-            )
-            .await?;
-            return Ok(Self(token));
-        }
-        parts
-            .extensions
-            .get::<crate::auth::middleware::BearerToken>()
-            .map(|bearer| Self(bearer.0.clone()))
-            .ok_or(AppError::Unauthorized)
+        _: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        let found = match parts.extensions.get::<CurrentSession>() {
+            Some(session) => Some(Self::Session(session.id)),
+            None => parts
+                .extensions
+                .get::<crate::auth::middleware::BearerToken>()
+                .map(|bearer| Self::Bearer(bearer.0.clone())),
+        };
+        std::future::ready(found.ok_or(AppError::Unauthorized))
     }
 }
 

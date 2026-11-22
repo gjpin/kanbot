@@ -55,17 +55,19 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
         .map(|openshell| openshell::OpenShell::new(openshell, Arc::clone(&keys)).map(Arc::new))
         .transpose()
         .map_err(StartupError::OpenShell)?;
-    if let Some(openshell) = &openshell {
-        openshell::sync::spawn_sync(
-            db.clone(),
-            Arc::clone(openshell),
-            keys.config().issuer.as_str().to_owned(),
-        );
-    }
     tracing::info!(
         deployer_policies = ?config.authz.deployer_policy_ids(),
         "authorization policies loaded"
     );
+    let authz = Arc::new(config.authz);
+    if let Some(openshell) = &openshell {
+        openshell::sync::spawn_sync(
+            db.clone(),
+            Arc::clone(&authz),
+            Arc::clone(openshell),
+            keys.config().issuer.as_str().to_owned(),
+        );
+    }
     let relay = config
         .telemetry_relay_upstream
         .map(|upstream| telemetry_relay::routes(upstream, config.rate_limits.telemetry))
@@ -76,7 +78,7 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
             migrator: &db::MIGRATOR,
             keys,
             sessions: Arc::new(config.sessions),
-            authz: Arc::new(config.authz),
+            authz,
             openshell: openshell.clone(),
         },
         http::HttpSettings::configured(

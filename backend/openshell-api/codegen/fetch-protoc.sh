@@ -10,21 +10,23 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-x86_64) asset=osx-x86_64; sha=228cc7add4616cc14ca5e80dee83209d44449a7aee95a914ae748fa374efb078 ;;
   Linux-x86_64) asset=linux-x86_64; sha=121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278 ;;
   Linux-aarch64) asset=linux-aarch_64; sha=8b8f18bd2b30346efbc698dd5a73dd7c805f3ef8380f6dfc95c768f3f1852f6a ;;
-  *) echo "no pinned protoc for $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  *) printf 'no pinned protoc for %s-%s\n' "$(uname -s)" "$(uname -m)" >&2; exit 1 ;;
 esac
 
 dir="$(cd "$(dirname "$0")" && pwd)/.protoc"
-[ -x "$dir/bin/protoc" ] && "$dir/bin/protoc" --version | grep -q " $version\$" && exit 0
+[ -x "$dir/bin/protoc" ] && [ "$("$dir/bin/protoc" --version)" = "libprotoc $version" ] && exit 0
 rm -rf "$dir"
 mkdir -p "$dir"
 zip="$dir/protoc.zip"
-curl -sSfL -o "$zip" \
+trap 'rm -f "$zip"' EXIT
+# HTTPS only, also through redirects; bounded in time.
+curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --connect-timeout 10 --max-time 300 -o "$zip" \
   "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-$asset.zip"
 if command -v sha256sum >/dev/null; then
-  echo "$sha  $zip" | sha256sum -c -
+  printf '%s  %s\n' "$sha" "$zip" | sha256sum -c -
 else
-  echo "$sha  $zip" | shasum -a 256 -c -
+  printf '%s  %s\n' "$sha" "$zip" | shasum -a 256 -c -
 fi
 unzip -q "$zip" -d "$dir"
-rm "$zip"
 "$dir/bin/protoc" --version

@@ -1,19 +1,24 @@
 //! Domain types of the `OpenShell` integration.
 
-/// An `OpenShell` workspace's name: 1 to 128 characters, no control
-/// characters or whitespace. `OpenShell` checks its own rules.
+/// An `OpenShell` workspace's name. Workspaces have Kubernetes-style
+/// names: a DNS-1123 subdomain, 1 to 253 lowercase letters, digits, `-`
+/// and `.`, starting and ending with a letter or digit. The database
+/// checks the same.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WorkspaceName(String);
 
 impl WorkspaceName {
-    const MAX_CHARS: usize = 128;
+    const MAX_CHARS: usize = 253;
 
     /// `None` if `raw` cannot be a workspace name.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
+        let alphanumeric = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
         let valid = !raw.is_empty()
-            && raw.chars().count() <= Self::MAX_CHARS
-            && !raw.chars().any(|c| c.is_control() || c.is_whitespace());
+            && raw.len() <= Self::MAX_CHARS
+            && raw.chars().all(|c| alphanumeric(c) || c == '-' || c == '.')
+            && raw.starts_with(alphanumeric)
+            && raw.ends_with(alphanumeric);
         valid.then(|| Self(raw.to_owned()))
     }
 
@@ -56,10 +61,25 @@ mod tests {
 
     #[test]
     fn workspace_names() {
-        for valid in ["default", "team-a", "a", &"w".repeat(128)] {
+        for valid in ["default", "team-a", "a", "a.b-2", "0", &"w".repeat(253)] {
             assert_eq!(WorkspaceName::parse(valid).unwrap().as_str(), valid);
         }
-        for invalid in ["", "a b", "a\nb", "\t", &"w".repeat(129)] {
+        for invalid in [
+            "",
+            "a b",
+            "a\nb",
+            "\t",
+            "Team",
+            "a/b",
+            "a\\b",
+            "..",
+            "-a",
+            "a-",
+            ".a",
+            "é",
+            "a\u{200b}b",
+            &"w".repeat(254),
+        ] {
             assert_eq!(WorkspaceName::parse(invalid), None, "{invalid:?}");
         }
     }

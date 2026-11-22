@@ -24,7 +24,14 @@ use crate::openshell::{
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Bounds a whole call, connecting and the TLS handshake included.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// HTTP/2 pings keep the connection alive between syncs, and find a dead
+/// one before a call waits on it.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest message read: a page of 500 members is far smaller.
+const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Members per page when listing.
 const PAGE_SIZE: i32 = 500;
 /// Pages read at most: 50,000 members.
@@ -48,6 +55,24 @@ pub enum GatewayError {
     Other(Code),
     #[error("the gateway listed more members than kanbot reads")]
     TooManyMembers,
+    #[error("the gateway repeated a page")]
+    RepeatedPage,
+}
+
+impl GatewayError {
+    /// A bounded name for logs and metrics.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Setup(_) => "setup",
+            Self::NotFound => "not_found",
+            Self::Refused => "refused",
+            Self::Unavailable => "unavailable",
+            Self::Other(_) => "other",
+            Self::TooManyMembers => "too_many_members",
+            Self::RepeatedPage => "repeated_page",
+        }
+    }
 }
 
 impl From<Status> for GatewayError {
@@ -103,16 +128,34 @@ impl Gateway {
         let mut endpoint = Endpoint::from_shared(config.gateway.as_str().to_owned())
             .map_err(GatewayError::Setup)?
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT);
+            .timeout(REQUEST_TIMEOUT)
+            .http2_keep_alive_interval(KEEPALIVE_INTERVAL)
+            .keep_alive_timeout(KEEPALIVE_TIMEOUT)
+            .keep_alive_while_idle(true);
         if config.gateway.scheme() == "https" {
-            let mut tls = ClientTlsConfig::new().with_native_roots();
-            if let Some(pem) = &config.ca_pem {
-                tls = tls.ca_certificate(Certificate::from_pem(pem));
-            }
-            endpoint = endpoint.tls_config(tls).map_err(GatewayError::Setup)?;
+            let tls = |native_roots: bool| {
+                let mut tls = ClientTlsConfig::new();
+                if native_roots {
+                    tls = tls.with_native_roots();
+                }
+                if let Some(pem) = &config.ca_pem {
+                    tls = tls.ca_certificate(Certificate::from_pem(pem));
+                }
+                tls
+            };
+            endpoint = match endpoint.clone().tls_config(tls(true)) {
+                Ok(endpoint) => endpoint,
+                // A minimal image may have no system roots: with
+                // OPENSHELL_CA_FILE, that file is enough.
+                Err(_) if config.ca_pem.is_some() => endpoint
+                    .tls_config(tls(false))
+                    .map_err(GatewayError::Setup)?,
+                Err(error) => return Err(GatewayError::Setup(error)),
+            };
         }
         Ok(Self {
-            client: OpenShellClient::new(endpoint.connect_lazy()),
+            client: OpenShellClient::new(endpoint.connect_lazy())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES),
         })
     }
 
@@ -189,12 +232,16 @@ impl Gateway {
             if page.next_page_token.is_empty() {
                 return Ok(members);
             }
+            if page.next_page_token == page_token {
+                return Err(GatewayError::RepeatedPage);
+            }
             page_token = page.next_page_token;
         }
         Err(GatewayError::TooManyMembers)
     }
 
-    /// Makes `subject` a member with `role`.
+    /// Makes `subject` a member with `role`. Already a member is fine: an
+    /// earlier attempt, or another instance, got there first.
     ///
     /// # Errors
     ///
@@ -215,8 +262,11 @@ impl Gateway {
                 request_id: uuid::Uuid::new_v4().to_string(),
             },
         )?;
-        self.client.clone().add_workspace_member(request).await?;
-        Ok(())
+        match self.client.clone().add_workspace_member(request).await {
+            Ok(_) => Ok(()),
+            Err(status) if status.code() == Code::AlreadyExists => Ok(()),
+            Err(status) => Err(status.into()),
+        }
     }
 
     /// Removes `subject` from the workspace; already absent is fine.

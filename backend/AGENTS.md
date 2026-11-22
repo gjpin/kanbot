@@ -248,12 +248,12 @@ All from environment variables (`src/config.rs`, `src/auth/config.rs`, `src/tele
 | `AUTHZ_POLICY_FILE` | 4 | none | Deployer Cedar policies. `forbid` only: a file containing any `permit` stops startup |
 | `OPENSHELL_GATEWAY_URL` | 7 | unset (off) | The OpenShell gateway's gRPC endpoint. HTTPS only (`http` on a numeric loopback host with `OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP=true`, tests only) |
 | `OPENSHELL_AUDIENCE` | 7 | required with the gateway | Audience of the gateway's tokens, for example `openshell-gateway`. Must differ from `OIDC_AUDIENCE` |
-| `OPENSHELL_CLIENT_ID`, `OPENSHELL_CLIENT_SECRET` / `OPENSHELL_CLIENT_SECRET_FILE` | 7 | required with the gateway | Kanbot's client for OpenShell tokens (secret) |
+| `OPENSHELL_CLIENT_ID`, `OPENSHELL_CLIENT_SECRET` / `OPENSHELL_CLIENT_SECRET_FILE` | 7 | required with the gateway | Kanbot's client for OpenShell tokens (secret). The ID must differ from both audiences |
 | `OPENSHELL_TOKEN_SCOPE` | 7 | none | `scope` to request for the gateway's audience, if the identity provider needs one |
 | `OPENSHELL_TOKEN_EXCHANGE` | 7 | `false` | Exchange the user's token (RFC 8693) for calls a user starts |
-| `OPENSHELL_CA_FILE` | 7 | none | PEM certificates trusted for the gateway, in addition to the system roots |
+| `OPENSHELL_CA_FILE` | 7 | none | PEM certificates trusted for the gateway, in addition to the system roots. Must hold at least one valid certificate |
 
-The integration and its sync are described in [`docs/openshell.md`](../docs/openshell.md). Tokens sent to the gateway must carry `OPENSHELL_AUDIENCE` and never `OIDC_AUDIENCE` (`src/openshell/credentials.rs` refuses any other); keep it that way. Tests run against a fake gateway (`tests/common/openshell.rs`), a real gRPC server on loopback.
+The integration and its sync are described in [`docs/openshell.md`](../docs/openshell.md). Tokens sent to the gateway are verified like access tokens and must carry `OPENSHELL_AUDIENCE` and never `OIDC_AUDIENCE` (`src/openshell/credentials.rs` refuses any other); keep it that way. The sync asks Cedar for every member (`authz::service::decide_for_users`, `context.via == "sync"`), takes a Postgres advisory lock so one instance runs at a time, and wakes on `NOTIFY kanbot_openshell` from database triggers: a new table it reads needs a trigger too. Tests run against a fake gateway (`tests/common/openshell.rs`), a real gRPC server on loopback.
 
 ## 3a. Observability (OpenTelemetry)
 

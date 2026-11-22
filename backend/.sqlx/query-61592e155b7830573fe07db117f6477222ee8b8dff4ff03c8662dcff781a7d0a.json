@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE organizations SET openshell_workspace = NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "61592e155b7830573fe07db117f6477222ee8b8dff4ff03c8662dcff781a7d0a"
+}

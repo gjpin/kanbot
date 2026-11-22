@@ -14,7 +14,7 @@ use crate::{
         policies::Policies,
         service::{self as authz, allowed_actions},
     },
-    error::{AppError, FieldError},
+    error::AppError,
     organizations::{
         model::{Access, Organization, OrganizationChanges, OrganizationId, TeamLink},
         repo,
@@ -447,33 +447,27 @@ pub async fn remove_team_link(
 }
 
 /// Links the organization to an `OpenShell` workspace (or unlinks it, with
-/// `None`), then wakes the membership sync. `link` is the workspace and the
-/// user's own access token: the workspace must exist and be visible to the
-/// user, which kanbot asks the gateway with a token for the user
-/// ([`crate::openshell::credentials::Credentials::on_behalf_of`]).
+/// `None`); the membership sync picks the change up from the database.
+/// Linking checks the workspace first
+/// ([`crate::openshell::service::check_link`]): `user_token` gives the
+/// user's own access token, asked for only when token exchange is on.
 ///
 /// # Errors
 ///
 /// - [`AppError::NotFound`], [`AppError::Forbidden`] (see
-///   [`authz::require`]); `Forbidden` too when the gateway refuses the
-///   user;
+///   [`authz::require`]), and those of
+///   [`crate::openshell::service::check_link`];
 /// - [`AppError::Conflict`] when the integration is off, or another
-///   organization links the workspace;
-/// - a validation error on `/workspace` when it does not exist;
-/// - [`AppError::Unavailable`] when no token or answer can be had.
+///   organization links the workspace.
 pub async fn set_openshell_workspace(
     db: &PgPool,
     policies: &Policies,
     openshell: Option<&crate::openshell::OpenShell>,
     actor: &Actor,
     id: OrganizationId,
-    link: Option<(
-        &crate::openshell::model::WorkspaceName,
-        &secrecy::SecretString,
-    )>,
+    workspace: Option<&crate::openshell::model::WorkspaceName>,
+    user_token: impl AsyncFnOnce() -> Result<secrecy::SecretString, AppError>,
 ) -> Result<(), AppError> {
-    use crate::openshell::gateway::GatewayError;
-
     let decision = authz::require(
         db,
         policies,
@@ -483,30 +477,8 @@ pub async fn set_openshell_workspace(
     )
     .await?;
     let openshell = openshell.ok_or(AppError::Conflict)?;
-    let workspace = link.map(|(workspace, _)| workspace);
-    if let Some((workspace, user_token)) = link {
-        let token = openshell
-            .credentials
-            .on_behalf_of(user_token)
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, "openshell: no token for the user");
-                AppError::Unavailable
-            })?;
-        match openshell.gateway.workspace_exists(&token, workspace).await {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(AppError::Validation(vec![FieldError::new(
-                    "/workspace",
-                    "not_found",
-                )]));
-            }
-            Err(GatewayError::Refused) => return Err(AppError::Forbidden),
-            Err(error) => {
-                tracing::warn!(%error, "openshell: workspace lookup failed");
-                return Err(AppError::Unavailable);
-            }
-        }
+    if let Some(workspace) = workspace {
+        crate::openshell::service::check_link(openshell, workspace, user_token).await?;
     }
     let mut tx = db.begin().await?;
     if !repo::set_openshell_workspace(&mut tx, id, workspace)
@@ -524,6 +496,5 @@ pub async fn set_openshell_workspace(
     };
     audit::record(&mut tx, &entry(actor, action, id, &decision, details)).await?;
     tx.commit().await?;
-    openshell.wake_sync();
     Ok(())
 }

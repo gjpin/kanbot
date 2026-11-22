@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM openshell_members WHERE workspace = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "515f03d54d25ad882c00d97dd21dc57b3b387dc0d043c7edc5977760153576af"
+}

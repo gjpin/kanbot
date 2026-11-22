@@ -38,6 +38,46 @@ pub(super) async fn user_facts(db: &PgPool, user: UserId) -> Result<UserFacts, s
     })
 }
 
+/// [`user_facts`] for each of `users` (those that exist), in one query.
+#[tracing::instrument(skip_all)]
+pub(super) async fn user_facts_many(
+    db: &PgPool,
+    users: &[Uuid],
+) -> Result<Vec<(UserId, UserFacts)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            u.id,
+            COALESCE(
+                (SELECT array_agg(team_id ORDER BY team_id) FROM team_members WHERE user_id = u.id),
+                '{}'
+            ) AS "teams!",
+            EXISTS (
+                SELECT 1 FROM team_members WHERE user_id = u.id AND role = 'maintainer'
+            ) AS "team_maintainer!",
+            EXISTS (SELECT 1 FROM organization_admins WHERE user_id = u.id) AS "organization_admin!"
+        FROM users u
+        WHERE u.id = ANY($1)
+        "#,
+        users,
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                UserId::from_uuid(row.id),
+                UserFacts {
+                    teams: row.teams.into_iter().map(TeamId::from_uuid).collect(),
+                    organization_admin: row.organization_admin,
+                    team_maintainer: row.team_maintainer,
+                },
+            )
+        })
+        .collect())
+}
+
 /// The teams among `ids` that exist, with their maintainers and links.
 #[tracing::instrument(skip_all)]
 pub(super) async fn team_facts(db: &PgPool, ids: &[Uuid]) -> Result<Vec<TeamFacts>, sqlx::Error> {
