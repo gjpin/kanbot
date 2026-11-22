@@ -28,7 +28,8 @@ OpenShell versions are listed in
   use the **same issuer and subject claim** ([oidc.md](oidc.md#openshell-alignment)).
 - Kanbot changes only the members **it added** (table `openshell_members`).
   Someone added in OpenShell another way is left alone, even if kanbot would
-  have added them too, and is never removed by kanbot.
+  have added them too, and is never removed by kanbot. That includes someone
+  added by hand between kanbot's look at the workspace and its own add.
 - A role change removes the member and adds them back with the new role
   (OpenShell has no call to change a role).
 - When an organization is unlinked or deleted, the next sync removes the
@@ -40,14 +41,33 @@ OpenShell versions are listed in
 - The sync runs every 5 minutes, and soon after anything it reads changes:
   database triggers notify every instance (Postgres `LISTEN`/`NOTIFY`) when
   admins, team links, team members, a link, or a user's groups, role or
-  disabled state change. Runs are at least 5 seconds apart.
+  disabled state change. Runs are at least 5 seconds apart. Each run syncs
+  every linked workspace: the notifications do not say which organization
+  changed.
+- If listening for those notifications fails (the database is down at
+  startup, or the connection drops), it is tried again after 1 second, then
+  twice as long each time up to a minute; once it works again, a run catches
+  up on what was missed.
 - One instance syncs at a time (a Postgres advisory lock); the others skip.
+  The lock is held by a connection of its own, outside any transaction, and
+  checked before each workspace: a run whose connection died (and with it
+  the lock) stops, since another instance may have started.
+- Each workspace's link is read again right before it syncs, so a run never
+  applies an organization's members to a workspace that was linked to
+  another organization (or unlinked) since the run started, and never empties
+  a workspace that was linked again.
 - A workspace that fails is logged (`a workspace could not be synced`) and
-  skipped; the others still sync, and a failed run is retried after 30
-  seconds. Each run that added, removed or failed logs the counts
-  (`openshell membership synced`); the metrics
+  skipped; the others still sync. It is retried on its own after 30 seconds,
+  then twice as long each time it fails again, up to 5 minutes; until then,
+  runs leave it out. A run that fails as a whole (no token, the database) is
+  retried after 30 seconds. Each run that added, removed or failed logs the
+  counts (`openshell membership synced`); the metrics
   `kanbot.openshell.sync.members` and `kanbot.openshell.sync.failures` count
   them.
+- **Database connections:** besides its pool (`DATABASE_MAX_CONNECTIONS`),
+  each instance keeps one connection open for the notifications and opens
+  one more for the lock while it syncs. Allow for two connections per
+  instance more in the database's `max_connections`.
 - A workspace can be linked to only one organization.
 - **Kanbot learns about groups and roles when users use kanbot.** Someone
   removed from an identity provider group, or who lost their kanbot role,
@@ -80,8 +100,11 @@ audiences, and an `OPENSHELL_CLIENT_ID` equal to either audience (ID tokens
 issued to it would pass as access tokens).
 
 - **Sync (kanbot's own calls):** a service account, `client_credentials` with
-  `OPENSHELL_CLIENT_ID` and its secret (`client_secret_basic`). The token is
-  cached until 30 seconds before it expires. Set `OPENSHELL_TOKEN_SCOPE` if your
+  `OPENSHELL_CLIENT_ID` and its secret (`client_secret_basic`; kanbot does
+  not support `private_key_jwt`). The token is cached until 30 seconds before
+  it expires, and taken from the cache for each gateway call. A token the
+  gateway refuses is dropped and the call made once more with a new one. Set
+  `OPENSHELL_TOKEN_SCOPE` if your
   identity provider needs a scope to issue the gateway's audience (Microsoft
   Entra ID: `api://<gateway app>/.default`).
 - **Linking a workspace (a call a user starts):** with

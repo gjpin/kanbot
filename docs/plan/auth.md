@@ -154,6 +154,9 @@ this.
   - use token exchange (RFC 8693) where the IdP supports it;
   - otherwise use a `client_credentials` service account (with `private_key_jwt`
     where supported);
+    - **deviation:** only `client_secret_basic` is implemented
+      (`OPENSHELL_CLIENT_SECRET`). `private_key_jwt` would need a signing key
+      to configure and rotate, and is left for later (see 7.3);
   - never forward one token valid for both services.
 - An organization can optionally be linked to one OpenShell workspace. Membership
   syncs one way, kanbot → OpenShell.
@@ -922,7 +925,9 @@ after regenerating the client, and the Authelia tests pass locally and in CI.
 - [x] **7.3** Use token exchange (RFC 8693) for user-initiated calls where the IdP
   supports it (Keycloak, Okta, authentik 2026.8+). Otherwise use a
   `client_credentials` service account. Never forward a token valid for both
-  services.
+  services. Deviation: the service account authenticates with
+  `client_secret_basic` only; `private_key_jwt` (planned "where supported"
+  above) is not implemented.
 - [x] **7.4** Link organizations to OpenShell workspaces (`openshell_workspace`) and
   sync membership one way, kanbot → OpenShell.
 
