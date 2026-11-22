@@ -97,6 +97,15 @@ pub struct Member {
     pub role: Option<MemberRole>,
 }
 
+/// What adding a member did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Added {
+    Added,
+    /// They were a member already: an earlier attempt, or someone else,
+    /// got there first. Their role is whatever it was.
+    AlreadyMember,
+}
+
 /// A client of one gateway. Cheap to clone; connects lazily.
 #[derive(Clone)]
 pub struct Gateway {
@@ -240,8 +249,9 @@ impl Gateway {
         Err(GatewayError::TooManyMembers)
     }
 
-    /// Makes `subject` a member with `role`. Already a member is fine: an
-    /// earlier attempt, or another instance, got there first.
+    /// Makes `subject` a member with `role`, unless they are a member
+    /// already ([`Added::AlreadyMember`]: the caller decides whose member
+    /// that is).
     ///
     /// # Errors
     ///
@@ -252,7 +262,7 @@ impl Gateway {
         workspace: &WorkspaceName,
         subject: &str,
         role: MemberRole,
-    ) -> Result<(), GatewayError> {
+    ) -> Result<Added, GatewayError> {
         let request = Self::request(
             token,
             AddWorkspaceMemberRequest {
@@ -263,8 +273,8 @@ impl Gateway {
             },
         )?;
         match self.client.clone().add_workspace_member(request).await {
-            Ok(_) => Ok(()),
-            Err(status) if status.code() == Code::AlreadyExists => Ok(()),
+            Ok(_) => Ok(Added::Added),
+            Err(status) if status.code() == Code::AlreadyExists => Ok(Added::AlreadyMember),
             Err(status) => Err(status.into()),
         }
     }

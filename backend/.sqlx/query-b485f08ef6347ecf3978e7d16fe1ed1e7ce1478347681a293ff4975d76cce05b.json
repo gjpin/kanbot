@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO openshell_members (workspace, subject, role) VALUES ('research', 'alice', 'admin')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "b485f08ef6347ecf3978e7d16fe1ed1e7ce1478347681a293ff4975d76cce05b"
+}

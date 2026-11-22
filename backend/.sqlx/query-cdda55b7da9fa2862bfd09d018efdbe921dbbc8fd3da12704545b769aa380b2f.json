@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT NOT EXISTS (\n               SELECT 1 FROM organizations WHERE openshell_workspace = $1\n           ) AS \"unlinked!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unlinked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cdda55b7da9fa2862bfd09d018efdbe921dbbc8fd3da12704545b769aa380b2f"
+}

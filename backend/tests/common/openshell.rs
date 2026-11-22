@@ -1,6 +1,7 @@
 //! A fake `OpenShell` gateway: a real gRPC server on `127.0.0.1:0` that
 //! implements the workspace membership calls in memory, and records the
-//! bearer token of every call.
+//! bearer token of every call. Tests can hold a call, refuse tokens, add
+//! members behind kanbot's back, and page oddly.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,7 +19,31 @@ use openshell_api::openshell::{
         open_shell_server::{OpenShell, OpenShellServer},
     },
 };
-use tonic::{Request, Response, Status, transport::server::TcpIncoming};
+use tokio::sync::oneshot;
+use tonic::{
+    Request, Response, Status,
+    transport::{Identity, ServerTlsConfig, server::TcpIncoming},
+};
+
+/// How the fake pages member lists.
+#[derive(Default)]
+pub enum Paging {
+    /// Pages of two.
+    #[default]
+    Normal,
+    /// Always the same next page token.
+    Repeat,
+    /// Always another page.
+    Endless,
+}
+
+/// A list call held until the test releases it.
+pub struct Held {
+    /// Resolves once the call is held.
+    pub reached: oneshot::Receiver<()>,
+    /// Lets the call go on.
+    pub release: oneshot::Sender<()>,
+}
 
 #[derive(Default)]
 pub struct State {
@@ -33,6 +58,17 @@ pub struct State {
     pub accepted: BTreeSet<String>,
     /// Workspaces where adding a member fails (`unavailable`).
     pub failing_adds: BTreeSet<String>,
+    /// The next this many calls are `unauthenticated`, whatever their
+    /// token.
+    pub refuse_next: usize,
+    /// The workspace of every list call, in order.
+    pub lists: Vec<String>,
+    /// Members (workspace, subject, role) someone adds right after the
+    /// next list call of their workspace answers.
+    pub added_after_list: Vec<(String, String, i32)>,
+    pub paging: Paging,
+    /// The next list call of each of these workspaces waits.
+    holds: BTreeMap<String, (oneshot::Sender<()>, oneshot::Receiver<()>)>,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +92,59 @@ impl FakeGateway {
                 .serve_with_incoming(TcpIncoming::from(listener)),
         );
         format!("http://{addr}")
+    }
+
+    /// Serves over TLS with `certificate` and `key` (PEM) on a free
+    /// loopback port; that port.
+    ///
+    /// # Panics
+    ///
+    /// If the port cannot be bound or the certificate is unusable.
+    pub async fn start_tls(&self, certificate: &[u8], key: &[u8]) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = OpenShellServer::new(self.clone());
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(certificate, key)))
+                .unwrap()
+                .add_service(service)
+                .serve_with_incoming(TcpIncoming::from(listener)),
+        );
+        port
+    }
+
+    /// Holds the next list call of `workspace` until released.
+    ///
+    /// # Panics
+    ///
+    /// If the state lock is poisoned.
+    #[must_use]
+    pub fn hold_list(&self, workspace: &str) -> Held {
+        let (reached_tx, reached) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        self.state
+            .lock()
+            .unwrap()
+            .holds
+            .insert(workspace.to_owned(), (reached_tx, release_rx));
+        Held { reached, release }
+    }
+
+    /// How many list calls `workspace` got.
+    ///
+    /// # Panics
+    ///
+    /// If the state lock is poisoned.
+    #[must_use]
+    pub fn lists_of(&self, workspace: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .lists
+            .iter()
+            .filter(|listed| *listed == workspace)
+            .count()
     }
 
     /// Creates an empty workspace.
@@ -94,6 +183,10 @@ impl FakeGateway {
             .to_owned();
         let mut state = self.state.lock().unwrap();
         state.tokens.push(header.clone());
+        if state.refuse_next > 0 {
+            state.refuse_next = state.refuse_next.saturating_sub(1);
+            return Err(Status::unauthenticated("token no longer accepted"));
+        }
         if state.accepted.contains(&header) {
             Ok(())
         } else {
@@ -199,10 +292,20 @@ impl OpenShell for FakeGateway {
         self.check(&request)?;
         let body = request.into_inner();
         let workspace = workspace_of(body.workspace_scope.as_ref())?;
-        let state = self.state.lock().unwrap();
+        let hold = {
+            let mut state = self.state.lock().unwrap();
+            state.lists.push(workspace.clone());
+            state.holds.remove(&workspace)
+        };
+        if let Some((reached, release)) = hold {
+            reached.send(()).unwrap();
+            release.await.unwrap();
+        }
+        let mut state = self.state.lock().unwrap();
+        let state = &mut *state;
         let members = state
             .workspaces
-            .get(&workspace)
+            .get_mut(&workspace)
             .ok_or_else(|| Status::not_found("workspace"))?;
         // Pages of two, so callers must follow next_page_token.
         let start: usize = body.page_token.parse().unwrap_or(0);
@@ -217,13 +320,24 @@ impl OpenShell for FakeGateway {
             })
             .collect();
         let next = start.saturating_add(page.len());
+        let next_page_token = match state.paging {
+            Paging::Normal if next < members.len() => next.to_string(),
+            Paging::Normal => String::new(),
+            Paging::Repeat => "again".to_owned(),
+            Paging::Endless => start.saturating_add(1).to_string(),
+        };
+        if next_page_token.is_empty() {
+            let (now, later) = std::mem::take(&mut state.added_after_list)
+                .into_iter()
+                .partition(|(added_to, _, _)| *added_to == workspace);
+            state.added_after_list = later;
+            for (_, subject, role) in now {
+                members.insert(subject, role);
+            }
+        }
         Ok(Response::new(ListWorkspaceMembersResponse {
             members: page,
-            next_page_token: if next < members.len() {
-                next.to_string()
-            } else {
-                String::new()
-            },
+            next_page_token,
         }))
     }
 }

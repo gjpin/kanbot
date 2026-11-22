@@ -5,7 +5,8 @@
 //!   such as membership sync, cached until shortly before it expires;
 //! - for calls a user starts, the user's token exchanged for one with the
 //!   gateway's audience (RFC 8693), where the identity provider supports it
-//!   (`OPENSHELL_TOKEN_EXCHANGE`); otherwise the service account.
+//!   (`OPENSHELL_TOKEN_EXCHANGE`); otherwise the caller uses the service
+//!   account's token.
 //!
 //! Every token is verified before use like any other (signature with the
 //! identity provider's keys, issuer, expiry) and must carry the gateway's
@@ -88,9 +89,8 @@ struct Checked {
 /// A token for a call a user starts.
 pub struct UserToken {
     pub token: SecretString,
-    /// The subject the gateway will see: the user's, after an exchange;
-    /// `None` for the service account's token.
-    pub subject: Option<String>,
+    /// The subject the gateway will see: the user's.
+    pub subject: String,
 }
 
 /// Gets tokens for the gateway.
@@ -208,10 +208,17 @@ impl Credentials {
         Ok(token)
     }
 
+    /// Drops the cached service token, which the gateway refused: the next
+    /// [`Self::service_token`] asks the identity provider for a new one.
+    pub async fn forget_service_token(&self) {
+        *self.service.lock().await = None;
+    }
+
     /// A token for a call `user_token`'s user starts: the user's token
-    /// exchanged for the gateway's audience, or the service account's when
-    /// token exchange is off. The user's token must be a valid kanbot
-    /// token, and the exchanged one must name the same subject.
+    /// exchanged for the gateway's audience. Only with
+    /// [`Self::exchanges_tokens`]; without it, the caller uses the service
+    /// account's token. The user's token must be a valid kanbot token, and
+    /// the exchanged one must name the same subject.
     ///
     /// # Errors
     ///
@@ -220,12 +227,6 @@ impl Credentials {
         &self,
         user_token: &SecretString,
     ) -> Result<UserToken, CredentialError> {
-        if !self.config.token_exchange {
-            return Ok(UserToken {
-                token: self.service_token().await?,
-                subject: None,
-            });
-        }
         let (unverified, key) = self.key_for(user_token.expose_secret()).await?;
         let user = unverified
             .verify(&key, self.keys.config(), now())
@@ -239,12 +240,13 @@ impl Credentials {
                 ("audience", &self.config.audience),
             ])
             .await?;
-        if checked.subject.as_deref() != Some(user.subject.as_str()) {
-            return Err(CredentialError::WrongSubject);
-        }
+        let subject = checked
+            .subject
+            .filter(|subject| *subject == user.subject)
+            .ok_or(CredentialError::WrongSubject)?;
         Ok(UserToken {
             token: checked.token,
-            subject: checked.subject,
+            subject,
         })
     }
 }

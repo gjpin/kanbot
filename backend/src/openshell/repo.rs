@@ -126,14 +126,68 @@ pub(super) async fn forget_workspace(
     .rows_affected())
 }
 
-/// Takes the sync's lock for the transaction `lock`, if no other instance
-/// holds it. Released when the transaction ends, or its connection drops.
+/// Takes the sync's lock for the session of `lock`, if no other instance
+/// holds it. Held until [`unlock`], or until the session ends.
 pub(super) async fn try_lock(lock: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(r#"SELECT pg_try_advisory_lock($1) AS "locked!""#, SYNC_LOCK)
+        .fetch_one(lock)
+        .await
+}
+
+/// Whether the session of `lock` still holds the sync's lock. A `bigint`
+/// advisory lock is listed with its high half as `classid`, its low half
+/// as `objid`, and `objsubid` 1.
+pub(super) async fn holds_lock(lock: &mut PgConnection) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar!(
-        r#"SELECT pg_try_advisory_xact_lock($1) AS "locked!""#,
+        r#"SELECT EXISTS (
+               SELECT 1 FROM pg_locks
+               WHERE locktype = 'advisory' AND granted AND pid = pg_backend_pid()
+                 AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = $1
+           ) AS "held!""#,
         SYNC_LOCK
     )
     .fetch_one(lock)
+    .await
+}
+
+/// Releases the sync's lock; `false` if the session did not hold it.
+pub(super) async fn unlock(lock: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(r#"SELECT pg_advisory_unlock($1) AS "unlocked!""#, SYNC_LOCK)
+        .fetch_one(lock)
+        .await
+}
+
+/// Whether `organization` still links `workspace`.
+#[tracing::instrument(skip_all)]
+pub(super) async fn links_now(
+    db: &PgPool,
+    organization: OrganizationId,
+    workspace: &WorkspaceName,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM organizations WHERE id = $1 AND openshell_workspace = $2
+           ) AS "linked!""#,
+        organization.as_uuid(),
+        workspace.as_str()
+    )
+    .fetch_one(db)
+    .await
+}
+
+/// Whether no organization links `workspace`.
+#[tracing::instrument(skip_all)]
+pub(super) async fn unlinked_now(
+    db: &PgPool,
+    workspace: &WorkspaceName,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT NOT EXISTS (
+               SELECT 1 FROM organizations WHERE openshell_workspace = $1
+           ) AS "unlinked!""#,
+        workspace.as_str()
+    )
+    .fetch_one(db)
     .await
 }
 

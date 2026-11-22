@@ -4,29 +4,32 @@ pub mod common;
 
 use std::collections::HashMap;
 
-use common::openshell::FakeGateway;
+use common::openshell::{FakeGateway, Paging};
 use kanbot_backend::openshell::{
     config::OpenShellConfig,
-    gateway::{Gateway, GatewayError, Member},
+    gateway::{Added, Gateway, GatewayError, Member},
     model::{MemberRole, WorkspaceName},
 };
 use secrecy::SecretString;
+use tonic::Code;
 
 fn config(gateway: &str) -> OpenShellConfig {
+    config_with(&[
+        ("OPENSHELL_GATEWAY_URL", gateway),
+        ("OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP", "true"),
+    ])
+}
+
+/// The configuration with `vars` besides the client's.
+fn config_with(vars: &[(&'static str, &str)]) -> OpenShellConfig {
     let vars: HashMap<&'static str, String> = [
-        ("OPENSHELL_GATEWAY_URL", gateway.to_owned()),
-        (
-            "OPENSHELL_DANGEROUSLY_ALLOW_INSECURE_HTTP",
-            "true".to_owned(),
-        ),
-        ("OPENSHELL_AUDIENCE", "openshell-gateway".to_owned()),
-        ("OPENSHELL_CLIENT_ID", "kanbot-openshell".to_owned()),
-        (
-            "OPENSHELL_CLIENT_SECRET",
-            "openshell-test-secret".to_owned(),
-        ),
+        ("OPENSHELL_AUDIENCE", "openshell-gateway"),
+        ("OPENSHELL_CLIENT_ID", "kanbot-openshell"),
+        ("OPENSHELL_CLIENT_SECRET", "openshell-test-secret"),
     ]
-    .into_iter()
+    .iter()
+    .chain(vars)
+    .map(|(name, value)| (*name, (*value).to_owned()))
     .collect();
     OpenShellConfig::from_lookup(
         &move |name| {
@@ -70,16 +73,22 @@ async fn the_gateway_client_manages_members_with_its_token() {
         ("b", MemberRole::User),
         ("c", MemberRole::User),
     ] {
-        gateway
-            .add_member(&token, &workspace("research"), subject, role)
-            .await
-            .unwrap();
+        assert_eq!(
+            gateway
+                .add_member(&token, &workspace("research"), subject, role)
+                .await
+                .unwrap(),
+            Added::Added
+        );
     }
-    // Adding a member already there (another instance, a retry) is fine.
-    gateway
-        .add_member(&token, &workspace("research"), "a", MemberRole::Admin)
-        .await
-        .unwrap();
+    // Adding a member already there is no failure, but says so.
+    assert_eq!(
+        gateway
+            .add_member(&token, &workspace("research"), "a", MemberRole::User)
+            .await
+            .unwrap(),
+        Added::AlreadyMember
+    );
     // Three members over two pages.
     let members = gateway
         .members(&token, &workspace("research"))
@@ -165,6 +174,126 @@ async fn gateway_failures_are_typed() {
             .await,
         Err(GatewayError::Unavailable)
     ));
+}
+
+#[tokio::test]
+async fn odd_member_lists_are_refused() {
+    let fake = FakeGateway::default();
+    fake.workspace("research");
+    fake.accept("gw-token");
+    let gateway = Gateway::new(&config(&fake.start().await)).unwrap();
+    let token = SecretString::from("gw-token");
+    let list = async || gateway.members(&token, &workspace("research")).await;
+
+    fake.state.lock().unwrap().paging = Paging::Repeat;
+    assert!(matches!(list().await, Err(GatewayError::RepeatedPage)));
+    assert_eq!(
+        fake.lists_of("research"),
+        2,
+        "the repeat is noticed at once"
+    );
+
+    fake.state.lock().unwrap().paging = Paging::Endless;
+    assert!(matches!(list().await, Err(GatewayError::TooManyMembers)));
+    assert_eq!(fake.lists_of("research"), 2 + 100, "at most 100 pages");
+}
+
+#[tokio::test]
+async fn messages_over_a_mebibyte_are_refused() {
+    let fake = FakeGateway::default();
+    fake.accept("gw-token");
+    let gateway = Gateway::new(&config(&fake.start().await)).unwrap();
+    let token = SecretString::from("gw-token");
+    for (name, subject_bytes) in [("large", 1000 * 1024), ("too-large", 1024 * 1024)] {
+        fake.workspace(name);
+        fake.state
+            .lock()
+            .unwrap()
+            .workspaces
+            .get_mut(name)
+            .unwrap()
+            .insert("s".repeat(subject_bytes), 1);
+    }
+    assert_eq!(
+        gateway
+            .members(&token, &workspace("large"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        gateway.members(&token, &workspace("too-large")).await,
+        Err(GatewayError::Other(Code::OutOfRange))
+    ));
+}
+
+mod tls {
+    use super::*;
+
+    const CERTIFICATE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/dev/.generated/auth.kanbot.internal.crt"
+    );
+    const KEY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/dev/.generated/auth.kanbot.internal.key"
+    );
+
+    /// A fake gateway over TLS, with the local stack's certificate for
+    /// `auth.kanbot.internal` (dev/auth-setup.sh), which resolves to
+    /// loopback; its port.
+    async fn serve(fake: &FakeGateway) -> u16 {
+        fake.workspace("research");
+        fake.accept("gw-token");
+        let certificate = std::fs::read(CERTIFICATE).expect("run dev/auth-setup.sh");
+        let key = std::fs::read(KEY).expect("run dev/auth-setup.sh");
+        fake.start_tls(&certificate, &key).await
+    }
+
+    async fn reach(url: &str, ca_file: Option<&str>) -> Result<bool, GatewayError> {
+        let mut vars = vec![("OPENSHELL_GATEWAY_URL", url)];
+        vars.extend(ca_file.map(|path| ("OPENSHELL_CA_FILE", path)));
+        Gateway::new(&config_with(&vars))
+            .unwrap()
+            .workspace_exists(&SecretString::from("gw-token"), &workspace("research"))
+            .await
+    }
+
+    #[tokio::test]
+    async fn the_gateway_is_reached_over_tls_trusting_the_ca_file() {
+        let fake = FakeGateway::default();
+        let port = serve(&fake).await;
+        let url = format!("https://auth.kanbot.internal:{port}");
+        assert!(reach(&url, Some(common::authelia::CA_FILE)).await.unwrap());
+        assert_eq!(fake.state.lock().unwrap().tokens, ["Bearer gw-token"]);
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_certificate_is_refused() {
+        let fake = FakeGateway::default();
+        let port = serve(&fake).await;
+        let url = format!("https://auth.kanbot.internal:{port}");
+        // The local CA is not among the system's roots.
+        assert!(matches!(
+            reach(&url, None).await,
+            Err(GatewayError::Unavailable)
+        ));
+        assert!(fake.state.lock().unwrap().tokens.is_empty(), "never sent");
+    }
+
+    #[tokio::test]
+    async fn a_certificate_for_another_name_is_refused() {
+        let fake = FakeGateway::default();
+        let port = serve(&fake).await;
+        // The same server, by an address its certificate does not name.
+        let url = format!("https://127.0.0.1:{port}");
+        assert!(matches!(
+            reach(&url, Some(common::authelia::CA_FILE)).await,
+            Err(GatewayError::Unavailable)
+        ));
+        assert!(fake.state.lock().unwrap().tokens.is_empty(), "never sent");
+    }
 }
 
 mod credentials {
@@ -335,7 +464,7 @@ mod credentials {
             .await
             .unwrap();
         assert_eq!(result.token.expose_secret(), exchanged);
-        assert_eq!(result.subject.as_deref(), Some("alice"));
+        assert_eq!(result.subject, "alice");
         let form = &idp.token_requests()[0].form;
         assert_eq!(
             form["grant_type"],
@@ -388,18 +517,15 @@ mod credentials {
     }
 
     #[tokio::test]
-    async fn without_token_exchange_user_calls_use_the_service_account() {
+    async fn a_forgotten_service_token_is_requested_again() {
         let idp = TestIdp::start().await;
         idp.set_token(reply(&gateway(&idp, now() + 300)));
         let credentials = credentials(&idp, &[]).await;
-        let token = credentials
-            .on_behalf_of(&SecretString::from("the-users-access-token"))
-            .await
-            .unwrap();
-        assert_eq!(token.subject, None);
-        let form = &idp.token_requests()[0].form;
-        assert_eq!(form["grant_type"], "client_credentials");
-        assert!(!form.values().any(|value| value == "the-users-access-token"));
+        credentials.service_token().await.unwrap();
+        credentials.forget_service_token().await;
+        credentials.service_token().await.unwrap();
+        credentials.service_token().await.unwrap();
+        assert_eq!(idp.token_requests().len(), 2);
     }
 }
 
@@ -615,14 +741,14 @@ mod link_and_sync {
                 "organization.openshell_unlinked"
             ]
         );
-        // The workspace was checked with the service account (no exchange).
-        assert!(
-            setup
-                .idp
-                .token_requests()
-                .iter()
-                .all(|request| request.form["grant_type"] == "client_credentials")
-        );
+        // The workspace was checked with the service account (no exchange),
+        // and the user's token went nowhere.
+        let requests = setup.idp.token_requests();
+        assert!(!requests.is_empty());
+        for request in requests {
+            assert_eq!(request.form["grant_type"], "client_credentials");
+            assert!(!request.form.values().any(|value| *value == root));
+        }
     }
 
     #[sqlx::test]
@@ -1176,12 +1302,105 @@ mod link_and_sync {
         assert_eq!(outcome, None);
         other.rollback().await.unwrap();
         assert_eq!(sync_once(&pool, &setup).await, sync::Changes::default());
+        // Released once the run is over.
+        assert_eq!(lock_holders(&pool).await, 0);
+    }
+
+    /// The sync's advisory lock key, "kanbotOS" in ASCII.
+    const SYNC_LOCK: i64 = 0x6b61_6e62_6f74_4f53;
+
+    /// How many sessions hold the sync's lock in this test's database
+    /// (`pg_locks` lists every database's).
+    async fn lock_holders(pool: &PgPool) -> i64 {
+        sqlx::query_scalar!(
+            r#"SELECT count(*) AS "n!" FROM pg_locks
+               WHERE locktype = 'advisory' AND granted
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                 AND ((classid::bigint << 32) | objid::bigint) = $1"#,
+            SYNC_LOCK
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn organization(pool: &PgPool, slug: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO organizations (id, slug, name) VALUES ($1, $2, 'O')",
+            id,
+            slug
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    fn members_of(fake: &FakeGateway, workspace: &str) -> Vec<(String, i32)> {
+        fake.state.lock().unwrap().workspaces[workspace]
+            .iter()
+            .map(|(subject, role)| (subject.clone(), *role))
+            .collect()
+    }
+
+    /// Kanbot's records for `workspace`: subject and role.
+    async fn recorded(pool: &PgPool, workspace: &str) -> Vec<(String, String)> {
+        sqlx::query!(
+            "SELECT subject, role FROM openshell_members WHERE workspace = $1 ORDER BY subject",
+            workspace
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.subject, row.role))
+        .collect()
+    }
+
+    fn pair(subject: &str, role: &str) -> (String, String) {
+        (subject.to_owned(), role.to_owned())
+    }
+
+    /// Starts a run in the background.
+    fn spawn_run(
+        pool: &PgPool,
+        setup: &Setup,
+    ) -> tokio::task::JoinHandle<Result<Option<sync::Changes>, sync::SyncError>> {
+        let (pool, policies, openshell, issuer) = (
+            pool.clone(),
+            Arc::clone(&setup.policies),
+            Arc::clone(&setup.openshell),
+            setup.idp.issuer.clone(),
+        );
+        tokio::spawn(async move { sync::sync_all(&pool, &policies, &openshell, &issuer).await })
+    }
+
+    /// Waits up to 10 s for `done`.
+    async fn eventually(what: &str, done: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("never: {what}");
+    }
+
+    /// Timings for background sync tests: no timer run after the first,
+    /// no gap between runs.
+    fn fast(retry_ms: u64) -> sync::Timing {
+        sync::Timing {
+            interval: std::time::Duration::from_secs(3600),
+            retry: std::time::Duration::from_millis(retry_ms),
+            min_gap: std::time::Duration::ZERO,
+            listen_retry: std::time::Duration::from_millis(100),
+            listen_retry_max: std::time::Duration::from_millis(200),
+        }
     }
 
     #[sqlx::test]
-    async fn a_member_already_there_counts_as_added(pool: PgPool) {
-        // Recorded but not yet confirmed (the instance stopped after the
-        // gateway call): the next run's add finds them, which is fine.
+    async fn a_stale_record_is_corrected_without_a_gateway_call(pool: PgPool) {
         let setup = setup(&pool, false).await;
         let issuer = setup.idp.issuer.clone();
         let alice = user(&pool, &issuer, "alice", false).await;
@@ -1193,13 +1412,392 @@ mod link_and_sync {
             .execute(&pool)
             .await
             .unwrap();
+        let before = setup.fake.state.lock().unwrap().changes.len();
         let changes = sync_once(&pool, &setup).await;
-        assert_eq!(changes.failed, 0);
-        let role = sqlx::query_scalar!("SELECT role FROM openshell_members")
-            .fetch_one(&pool)
+        assert_eq!(changes, sync::Changes::default());
+        assert_eq!(setup.fake.state.lock().unwrap().changes.len(), before);
+        assert_eq!(recorded(&pool, "research").await, [pair("alice", "admin")]);
+    }
+
+    #[sqlx::test]
+    async fn a_member_someone_else_adds_meanwhile_is_left_alone(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        setup.fake.workspace("research");
+        admin_of(&pool, ORG, alice).await;
+        link(&pool, ORG, "research").await;
+        // Added by hand between kanbot's list and its add.
+        setup.fake.state.lock().unwrap().added_after_list.push((
+            "research".to_owned(),
+            "alice".to_owned(),
+            1,
+        ));
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.skipped, changes.failed), (0, 1, 0));
+        assert_eq!(members(&setup.fake), [("alice".to_owned(), 1)]);
+        assert!(recorded(&pool, "research").await.is_empty(), "not recorded");
+        // Kanbot never takes them over: not their role, not on unlinking.
+        sync_once(&pool, &setup).await;
+        sqlx::query!("UPDATE organizations SET openshell_workspace = NULL")
+            .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(role, "admin");
+        sync_once(&pool, &setup).await;
+        assert_eq!(members(&setup.fake), [("alice".to_owned(), 1)]);
+    }
+
+    #[sqlx::test]
+    async fn a_member_kanbot_recorded_and_finds_already_there_is_its_own(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        setup.fake.workspace("research");
+        admin_of(&pool, ORG, alice).await;
+        link(&pool, ORG, "research").await;
+        // An earlier run recorded alice and asked for her to be added; the
+        // gateway shows her only once this run has listed.
+        sqlx::query!(
+            "INSERT INTO openshell_members (workspace, subject, role) VALUES ('research', 'alice', 'admin')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        setup.fake.state.lock().unwrap().added_after_list.push((
+            "research".to_owned(),
+            "alice".to_owned(),
+            2,
+        ));
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.skipped, changes.failed), (1, 0, 0));
+        assert_eq!(recorded(&pool, "research").await, [pair("alice", "admin")]);
+        // Still kanbot's: removed when unlinked.
+        sqlx::query!("UPDATE organizations SET openshell_workspace = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sync_once(&pool, &setup).await.removed, 1);
+        assert!(members(&setup.fake).is_empty(), "removed");
+    }
+
+    #[sqlx::test]
+    async fn every_gateway_call_takes_its_token_from_the_cache(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        for subject in ["alice", "bob"] {
+            let id = user(&pool, &issuer, subject, false).await;
+            admin_of(&pool, ORG, id).await;
+        }
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        // A token within the cache's margin of expiry is never reused, so
+        // each call needs a new one.
+        let token = sign(
+            "rsa-a",
+            &json!({ "iss": issuer, "sub": "svc", "aud": "openshell-gateway", "exp": now().saturating_add(30) }),
+        );
+        setup
+            .idp
+            .set_token(Reply::Json(json!({ "access_token": token })));
+        setup.fake.accept(&token);
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (2, 0));
+        // A list and two adds, plus the run's first check for a token.
+        assert_eq!(setup.fake.state.lock().unwrap().tokens.len(), 3);
+        assert_eq!(setup.idp.token_requests().len(), 1 + 3);
+    }
+
+    #[sqlx::test]
+    async fn a_refused_token_is_replaced_and_the_call_made_once_more(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        admin_of(&pool, ORG, alice).await;
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        // The gateway stops accepting the cached token (a key rotation).
+        setup.fake.state.lock().unwrap().refuse_next = 1;
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (1, 0));
+        assert_eq!(setup.idp.token_requests().len(), 2, "a new token");
+        assert_eq!(members(&setup.fake), [("alice".to_owned(), 2)]);
+
+        // Refused again with the new one: the workspace fails, after only
+        // one more call.
+        let bob = user(&pool, &issuer, "bob", false).await;
+        admin_of(&pool, ORG, bob).await;
+        let calls = setup.fake.state.lock().unwrap().tokens.len();
+        setup.fake.state.lock().unwrap().refuse_next = 2;
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (0, 1));
+        assert_eq!(
+            setup.fake.state.lock().unwrap().tokens.len(),
+            calls.saturating_add(2)
+        );
+        assert_eq!(setup.idp.token_requests().len(), 3);
+    }
+
+    #[sqlx::test]
+    async fn a_role_change_whose_add_fails_is_finished_by_the_next_run(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        team(&pool, "writers", "write", &[alice]).await;
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        sync_once(&pool, &setup).await;
+        assert_eq!(members(&setup.fake), [("alice".to_owned(), 1)]);
+
+        admin_of(&pool, ORG, alice).await;
+        setup
+            .fake
+            .state
+            .lock()
+            .unwrap()
+            .failing_adds
+            .insert("research".to_owned());
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (0, 1));
+        // Removed, not yet back; kanbot still knows her as its own.
+        assert!(members(&setup.fake).is_empty(), "removed, not yet back");
+        assert_eq!(recorded(&pool, "research").await, [pair("alice", "admin")]);
+
+        setup.fake.state.lock().unwrap().failing_adds.clear();
+        let changes = sync_once(&pool, &setup).await;
+        assert_eq!((changes.added, changes.failed), (1, 0));
+        assert_eq!(members(&setup.fake), [("alice".to_owned(), 2)]);
+    }
+
+    #[sqlx::test]
+    async fn a_run_that_loses_its_lock_stops(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        let beta = organization(&pool, "beta").await;
+        for (organization, workspace) in [(ORG, "alpha"), (beta, "beta")] {
+            setup.fake.workspace(workspace);
+            admin_of(&pool, organization, alice).await;
+            link(&pool, organization, workspace).await;
+        }
+        let held = setup.fake.hold_list("alpha");
+        let run = spawn_run(&pool, &setup);
+        held.reached.await.unwrap();
+        // The lock's connection dies (a server timeout, a failover): the
+        // lock goes with it, and another instance could start syncing.
+        assert_eq!(lock_holders(&pool).await, 1);
+        let ended = sqlx::query_scalar!(
+            r#"SELECT count(pg_terminate_backend(pid)) AS "n!" FROM (
+                   SELECT pid FROM pg_locks
+                   WHERE locktype = 'advisory' AND granted
+                     AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                     AND ((classid::bigint << 32) | objid::bigint) = $1
+               ) holders"#,
+            SYNC_LOCK
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ended, 1);
+        held.release.send(()).unwrap();
+        assert!(matches!(run.await.unwrap(), Err(sync::SyncError::LockLost)));
+        assert_eq!(setup.fake.lists_of("beta"), 0, "beta is left alone");
+    }
+
+    #[sqlx::test]
+    async fn a_workspace_linked_to_another_organization_meanwhile_waits_for_the_next_run(
+        pool: PgPool,
+    ) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let (beta, gamma) = (
+            organization(&pool, "beta").await,
+            organization(&pool, "gamma").await,
+        );
+        for (organization, subject) in [(ORG, "alice"), (beta, "bob"), (gamma, "carol")] {
+            let id = user(&pool, &issuer, subject, false).await;
+            admin_of(&pool, organization, id).await;
+        }
+        for (organization, workspace) in [(ORG, "alpha"), (beta, "beta")] {
+            setup.fake.workspace(workspace);
+            link(&pool, organization, workspace).await;
+        }
+        let held = setup.fake.hold_list("alpha");
+        let run = spawn_run(&pool, &setup);
+        held.reached.await.unwrap();
+        // While alpha syncs, beta moves from Beta to Gamma.
+        sqlx::query!(
+            "UPDATE organizations SET openshell_workspace = NULL WHERE id = $1",
+            beta
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        link(&pool, gamma, "beta").await;
+        held.release.send(()).unwrap();
+        let changes = run.await.unwrap().unwrap().unwrap();
+        assert_eq!(changes.added, 1, "alpha only");
+        assert!(
+            members_of(&setup.fake, "beta").is_empty(),
+            "not Beta's admin"
+        );
+
+        sync_once(&pool, &setup).await;
+        assert_eq!(members_of(&setup.fake, "beta"), [("carol".to_owned(), 2)]);
+    }
+
+    #[sqlx::test]
+    async fn an_unlinked_workspace_linked_again_meanwhile_is_not_emptied(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let beta = organization(&pool, "beta").await;
+        let alice = user(&pool, &issuer, "alice", false).await;
+        let bob = user(&pool, &issuer, "bob", false).await;
+        admin_of(&pool, ORG, alice).await;
+        admin_of(&pool, beta, bob).await;
+        setup.fake.workspace("alpha");
+        link(&pool, ORG, "alpha").await;
+        // Beta's workspace, unlinked: kanbot's member is to be removed...
+        setup.fake.workspace("beta");
+        link(&pool, beta, "beta").await;
+        sync_once(&pool, &setup).await;
+        sqlx::query!(
+            "UPDATE organizations SET openshell_workspace = NULL WHERE id = $1",
+            beta
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let held = setup.fake.hold_list("alpha");
+        let run = spawn_run(&pool, &setup);
+        held.reached.await.unwrap();
+        // ... but is linked again before its turn.
+        link(&pool, beta, "beta").await;
+        held.release.send(()).unwrap();
+        let changes = run.await.unwrap().unwrap().unwrap();
+        assert_eq!(changes.removed, 0);
+        assert_eq!(members_of(&setup.fake, "beta"), [("bob".to_owned(), 2)]);
+        assert_eq!(recorded(&pool, "beta").await, [pair("bob", "admin")]);
+    }
+
+    #[sqlx::test]
+    async fn a_failed_run_is_retried(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        admin_of(&pool, ORG, alice).await;
+        setup.fake.workspace("research");
+        link(&pool, ORG, "research").await;
+        setup.idp.set_token(Reply::Status(StatusCode::UNAUTHORIZED));
+        sync::spawn_sync_with(
+            pool.clone(),
+            Arc::clone(&setup.policies),
+            Arc::clone(&setup.openshell),
+            issuer,
+            fast(200),
+        );
+        eventually("a refused token request", || {
+            !setup.idp.token_requests().is_empty()
+        })
+        .await;
+        assert!(members(&setup.fake).is_empty(), "nothing synced yet");
+        // Nothing changes in the database: only the retry can sync.
+        issue_gateway_token(&setup.idp, &setup.fake, "svc");
+        eventually("alice added", || {
+            members(&setup.fake) == [("alice".to_owned(), 2)]
+        })
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn a_failing_workspace_is_retried_on_its_own(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        let beta = organization(&pool, "beta").await;
+        for (organization, workspace) in [(ORG, "alpha"), (beta, "beta")] {
+            setup.fake.workspace(workspace);
+            admin_of(&pool, organization, alice).await;
+            link(&pool, organization, workspace).await;
+        }
+        setup
+            .fake
+            .state
+            .lock()
+            .unwrap()
+            .failing_adds
+            .insert("alpha".to_owned());
+        sync::spawn_sync_with(
+            pool.clone(),
+            Arc::clone(&setup.policies),
+            Arc::clone(&setup.openshell),
+            issuer,
+            fast(200),
+        );
+        // Retried after 0.2 s, 0.4 s more, 0.8 s more...
+        eventually("alpha retried twice", || setup.fake.lists_of("alpha") >= 3).await;
+        // ... without syncing beta again.
+        assert_eq!(setup.fake.lists_of("beta"), 1);
+        assert_eq!(members_of(&setup.fake, "beta"), [("alice".to_owned(), 2)]);
+    }
+
+    /// A TCP proxy to the database at `port` that drops every connection
+    /// until it is opened.
+    async fn proxy(port: u16) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let open = Arc::new(AtomicBool::new(false));
+        let opened = Arc::clone(&open);
+        tokio::spawn(async move {
+            loop {
+                let (mut inbound, _) = listener.accept().await.unwrap();
+                if !opened.load(Ordering::SeqCst) {
+                    continue;
+                }
+                tokio::spawn(async move {
+                    let mut outbound = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                });
+            }
+        });
+        (proxy_port, open)
+    }
+
+    #[sqlx::test]
+    async fn listening_for_changes_resumes_once_the_database_is_back(pool: PgPool) {
+        let setup = setup(&pool, false).await;
+        let issuer = setup.idp.issuer.clone();
+        let alice = user(&pool, &issuer, "alice", false).await;
+        let bob = user(&pool, &issuer, "bob", false).await;
+        admin_of(&pool, ORG, alice).await;
+        setup.fake.workspace("research");
+        let options = pool.connect_options();
+        let (port, open) = proxy(options.get_port()).await;
+        let down = db::pool_with((*options).clone().port(port));
+        // No timer run after the first, and a failed run retried only in
+        // an hour: only listening again can sync.
+        sync::spawn_sync_with(
+            down,
+            Arc::clone(&setup.policies),
+            Arc::clone(&setup.openshell),
+            issuer,
+            fast(3_600_000),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        link(&pool, ORG, "research").await;
+        eventually("alice added once listening", || {
+            members(&setup.fake) == [("alice".to_owned(), 2)]
+        })
+        .await;
+        // And it hears about changes again.
+        admin_of(&pool, ORG, bob).await;
+        eventually("bob added on notification", || {
+            members(&setup.fake).len() == 2
+        })
+        .await;
     }
 }
 

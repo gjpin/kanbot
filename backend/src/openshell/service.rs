@@ -67,7 +67,6 @@ pub async fn check_link(
                 AppError::Unavailable
             }
         })?;
-    let subject = token.subject.ok_or(AppError::Unavailable)?;
     let members = openshell
         .gateway
         .members(&token.token, workspace)
@@ -75,7 +74,7 @@ pub async fn check_link(
         .map_err(gateway_error)?;
     let admin = members
         .iter()
-        .any(|member| member.subject == subject && member.role == Some(MemberRole::Admin));
+        .any(|member| member.subject == token.subject && member.role == Some(MemberRole::Admin));
     if admin {
         Ok(())
     } else {
