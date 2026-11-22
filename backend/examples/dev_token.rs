@@ -91,6 +91,8 @@ async fn sign_in(username: &str, login: Url) -> Result<(), Box<dyn std::error::E
         )
         .into());
     }
-    client.get(app).send().await?;
+    // The app answers its own loopback redirect: an error there would
+    // otherwise only show as the app never signing in.
+    client.get(app).send().await?.error_for_status()?;
     Ok(())
 }

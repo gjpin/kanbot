@@ -35,7 +35,7 @@ async fn app(pool: PgPool, audience: &str) -> Router {
             ("OIDC_AUDIENCE", audience),
         ],
     );
-    let client = IdpClient::new(&config.extra_root_certificates).unwrap();
+    let client = IdpClient::new(&config).unwrap();
     let keys = Arc::new(KeyCache::new(Arc::new(config), client));
     keys.refresh()
         .await

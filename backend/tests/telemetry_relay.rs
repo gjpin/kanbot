@@ -36,8 +36,18 @@ use tower::ServiceExt;
 type Received = Arc<Mutex<Vec<(String, Option<String>, Vec<u8>, Vec<String>)>>>;
 
 /// A fake OTLP collector that records every request and answers with
-/// `status` and `response_body`.
+/// `status` and `response_body`, in protobuf.
 async fn collector(status: StatusCode, response_body: &'static [u8]) -> (Url, Received) {
+    collector_answering(status, "application/x-protobuf", response_body).await
+}
+
+/// A fake OTLP collector that records every request and answers with
+/// `status` and `response_body`, of `content_type`.
+async fn collector_answering(
+    status: StatusCode,
+    content_type: &'static str,
+    response_body: &'static [u8],
+) -> (Url, Received) {
     let received = Received::default();
     let app = Router::new()
         .route(
@@ -60,7 +70,7 @@ async fn collector(status: StatusCode, response_body: &'static [u8]) -> (Url, Re
                     ));
                     (
                         status,
-                        [(header::CONTENT_TYPE, "application/x-protobuf")],
+                        [(header::CONTENT_TYPE, content_type)],
                         response_body,
                     )
                 },
@@ -270,16 +280,65 @@ async fn rejects_compressed_bodies(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     assert!(received.lock().unwrap().is_empty());
 
-    let identity = Request::post("/telemetry/v1/traces")
+    // Every header counts, not just the first.
+    let hidden = Request::post("/telemetry/v1/traces")
         .header(header::AUTHORIZATION, bearer("alice"))
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::CONTENT_ENCODING, "identity")
+        .header(header::CONTENT_ENCODING, "gzip")
+        .body(Body::from("batch"))
+        .unwrap();
+    let response = app.clone().oneshot(hidden).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(received.lock().unwrap().is_empty());
+
+    let identity = Request::post("/telemetry/v1/traces")
+        .header(header::AUTHORIZATION, bearer("alice"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_ENCODING, "Identity")
         .body(Body::from("batch"))
         .unwrap();
     assert_eq!(
         app.oneshot(identity).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+#[sqlx::test]
+async fn rejects_more_than_one_content_type(pool: PgPool) {
+    let (upstream, received) = collector(StatusCode::OK, b"").await;
+    let app = app(&pool, upstream).await;
+
+    let request = Request::post("/telemetry/v1/traces")
+        .header(header::AUTHORIZATION, bearer("alice"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("batch"))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(received.lock().unwrap().is_empty());
+}
+
+#[sqlx::test]
+async fn collector_answers_of_another_type_are_dropped(pool: PgPool) {
+    for (request_type, answer_type) in [
+        ("application/x-protobuf", "text/html"),
+        ("application/json", "application/x-protobuf"),
+    ] {
+        let (upstream, _) = collector_answering(StatusCode::OK, answer_type, b"<p>hi</p>").await;
+
+        let response = app(&pool, upstream)
+            .await
+            .oneshot(export("traces", request_type, "batch"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(header::CONTENT_TYPE), None);
+        assert!(body_of(response).await.is_empty(), "{answer_type}");
+    }
 }
 
 #[sqlx::test]
@@ -443,6 +502,10 @@ async fn collector_responses_up_to_64_kib_are_passed_through(pool: PgPool) {
         .await
         .unwrap();
 
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/x-protobuf"
+    );
     assert_eq!(body_of(response).await.len(), 64 * 1024);
 }
 

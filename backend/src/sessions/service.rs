@@ -179,6 +179,9 @@ pub struct CallbackParams<'a> {
     /// The `iss` parameter (RFC 9207), when the identity provider sends
     /// it: it must be `OIDC_ISSUER`, against mix-up attacks.
     pub issuer: Option<&'a str>,
+    /// Whether a parameter was sent more than once (one that was is
+    /// `None`): the response is refused.
+    pub repeated: bool,
 }
 
 /// A token endpoint's answer (RFC 6749, section 5.1).
@@ -214,13 +217,18 @@ pub async fn finish_login(
     params: &CallbackParams<'_>,
     browser_binding: Option<&str>,
 ) -> Result<LoginOutcome, AppError> {
-    let Some(state) = params.state else {
-        return Ok(failed(Destination::Web, refused("no state")));
+    // Values without the shape of an issued one cannot match: no query
+    // for them (a binding that cannot match is no binding).
+    let Some(state_hash) = params.state.and_then(|state| secrets::presented("", state)) else {
+        return Ok(failed(
+            Destination::Web,
+            refused("no state or a malformed one"),
+        ));
     };
-    let binding_hash = browser_binding.map(secrets::hash);
+    let binding_hash = browser_binding.and_then(|binding| secrets::presented("", binding));
     let Some(attempt) = repo::consume_attempt(
         db,
-        &secrets::hash(state),
+        &state_hash,
         binding_hash.as_ref().map(<[u8; 32]>::as_slice),
     )
     .await?
@@ -234,6 +242,9 @@ pub async fn finish_login(
         .app_redirect_uri
         .clone()
         .map_or(Destination::Web, Destination::App);
+    if params.repeated {
+        return Ok(failed(destination, refused("a repeated parameter")));
+    }
     let principal = match authorize(keys, config, params, &attempt).await {
         Ok(principal) => principal,
         Err(refusal) => return Ok(failed(destination, refusal)),
@@ -1017,7 +1028,7 @@ pub async fn cleanup(
     Ok(deleted)
 }
 
-/// Runs [`cleanup`] every 5 minutes on the current Tokio runtime.
+/// Runs [`cleanup`] every minute on the current Tokio runtime.
 pub fn spawn_cleanup(db: PgPool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(CLEANUP_INTERVAL);

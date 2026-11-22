@@ -43,8 +43,7 @@ use crate::{
 pub async fn run(config: Config) -> Result<(), StartupError> {
     let db = db::pool(&config.database_url, config.database_max_connections)?;
     db::observe_pool(&opentelemetry::global::meter(telemetry::SCOPE), db.clone());
-    let client =
-        IdpClient::new(&config.oidc.extra_root_certificates).map_err(StartupError::IdpClient)?;
+    let client = IdpClient::new(&config.oidc).map_err(StartupError::IdpClient)?;
     let keys = Arc::new(KeyCache::new(Arc::new(config.oidc), client));
     // The server starts even if the identity provider is unreachable: it
     // reports not ready until the keys load.

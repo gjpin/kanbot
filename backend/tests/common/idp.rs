@@ -186,7 +186,7 @@ impl TestIdp {
     #[must_use]
     pub fn key_cache(&self, extra: &[(&'static str, &str)]) -> Arc<KeyCache> {
         let config = self.config(extra);
-        let client = IdpClient::new(&config.extra_root_certificates).unwrap();
+        let client = IdpClient::new(&config).unwrap();
         Arc::new(KeyCache::new(Arc::new(config), client))
     }
 
@@ -384,7 +384,7 @@ pub fn static_key_cache() -> Arc<KeyCache> {
 #[must_use]
 pub fn static_key_cache_with(extra: &[(&'static str, &str)]) -> Arc<KeyCache> {
     let config = config(STATIC_ISSUER, extra);
-    let client = IdpClient::new(&[]).unwrap();
+    let client = IdpClient::new(&config).unwrap();
     let keys: Vec<Value> = DEFAULT_KEYS.iter().map(|name| jwk(name)).collect();
     Arc::new(KeyCache::with_keys(
         Arc::new(config),
@@ -402,10 +402,8 @@ pub fn static_key_cache_with(extra: &[(&'static str, &str)]) -> Arc<KeyCache> {
 #[must_use]
 pub fn unloaded_key_cache() -> Arc<KeyCache> {
     let config = config(STATIC_ISSUER, &[]);
-    Arc::new(KeyCache::new(
-        Arc::new(config),
-        IdpClient::new(&[]).unwrap(),
-    ))
+    let client = IdpClient::new(&config).unwrap();
+    Arc::new(KeyCache::new(Arc::new(config), client))
 }
 
 fn fixture_path(file: &str) -> String {

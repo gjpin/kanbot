@@ -42,7 +42,7 @@ async fn app(pool: PgPool) -> Router {
             ("OIDC_AUDIENCE", "kanbot-api"),
         ],
     );
-    let client = IdpClient::new(&config.extra_root_certificates).unwrap();
+    let client = IdpClient::new(&config).unwrap();
     let keys = Arc::new(KeyCache::new(Arc::new(config), client));
     keys.refresh()
         .await

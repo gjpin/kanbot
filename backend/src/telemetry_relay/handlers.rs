@@ -67,10 +67,12 @@ async fn forward(
 ) -> Result<Response, AppError> {
     let content_type = otlp_content_type(headers).ok_or(AppError::UnsupportedMediaType)?;
     // Compressed bodies would let a small request expand into a large one
-    // at the collector; the app's exporters do not compress.
+    // at the collector; the app's exporters do not compress. Every
+    // Content-Encoding header counts, not just the first.
     if headers
-        .get(header::CONTENT_ENCODING)
-        .is_some_and(|encoding| encoding != "identity")
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .any(|encoding| !encoding.as_bytes().eq_ignore_ascii_case(b"identity"))
     {
         return Err(AppError::UnsupportedMediaType);
     }
@@ -82,7 +84,7 @@ async fn forward(
     let response = relay
         .client
         .post(url)
-        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_TYPE, content_type.clone())
         .body(body)
         .send()
         .await
@@ -102,7 +104,10 @@ async fn forward(
             },
         );
     }
-    let response_type = response.headers().get(header::CONTENT_TYPE).cloned();
+    // The answer is passed on only in the request's own OTLP type: the
+    // client gets it from kanbot's origin, so an HTML page from a proxy
+    // must not be.
+    let passed_on = otlp_content_type(response.headers()).filter(|answer| *answer == content_type);
     // In chunks, stopping at the cap: a collector (or proxy) sending a huge
     // or endless body must not fill the memory.
     let mut response = response;
@@ -118,25 +123,24 @@ async fn forward(
         }
         body.extend_from_slice(&chunk);
     }
-    let body = if too_large {
-        Bytes::new()
-    } else {
-        Bytes::from(body)
-    };
-    let mut response = (status, body).into_response();
-    if let Some(response_type) = response_type {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_TYPE, response_type);
-    }
-    Ok(response)
+    Ok(match passed_on {
+        Some(content_type) if !too_large => {
+            (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
+        }
+        _ => status.into_response(),
+    })
 }
 
-/// The OTLP/HTTP content type of the request: protobuf or JSON, ignoring
-/// parameters and case.
+/// The OTLP/HTTP content type of a request or response: protobuf or JSON,
+/// ignoring parameters and case. `None` for anything else, and for more
+/// than one Content-Type header.
 fn otlp_content_type(headers: &HeaderMap) -> Option<HeaderValue> {
-    let media_type = headers
-        .get(header::CONTENT_TYPE)?
+    let mut values = headers.get_all(header::CONTENT_TYPE).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let media_type = value
         .to_str()
         .ok()?
         .split(';')

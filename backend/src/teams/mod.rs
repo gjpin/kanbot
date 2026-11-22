@@ -2,7 +2,7 @@
 //! with an identity provider group (`idp_group`) gets its members from the
 //! groups claim.
 
-pub mod dto;
+pub(crate) mod dto;
 mod handlers;
 pub mod model;
 mod repo;

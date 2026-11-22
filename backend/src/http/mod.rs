@@ -60,7 +60,10 @@ const CORS_MAX_AGE: Duration = Duration::from_secs(3600);
 #[openapi(
     info(
         title = "kanbot API",
-        description = "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`.",
+        description = "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`. \
+            Besides the responses listed for it, any operation may answer `429` (rate limited; \
+            `Retry-After` says when to retry), `500` (a server failure) or `503` (the database or \
+            identity provider is unavailable, or the server is overloaded; temporary).",
     ),
     components(schemas(Problem, ErrorCode, FieldError)),
     modifiers(&SecuritySchemes)
@@ -298,10 +301,9 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 /// Wraps `app` in the middleware stack. Layers added later wrap the earlier
 /// ones. The request span (and HTTP metrics) is outermost, so it covers the
 /// whole stack; it records no headers. Sensitive headers are marked before
-/// any inner layer or handler can log them,
-/// every error response gets a problem details body, and security headers
-/// are added to every response, including errors produced by the middleware
-/// itself.
+/// any inner layer or handler can log them, every error response gets a
+/// problem details body, and security headers are added to every response,
+/// including errors produced by the middleware itself.
 pub fn with_middleware(app: Router, allowed_origins: &[HeaderValue]) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(allowed_origins.iter().cloned()))

@@ -61,7 +61,7 @@ async fn keeps_end_session_and_drops_disallowed_endpoints() {
     document["authorization_endpoint"] = json!(format!("{}/authorize#fragment", idp.issuer));
     idp.set_discovery(Reply::Json(document));
     let config = idp.config(&[]);
-    let client = IdpClient::new(&[]).unwrap();
+    let client = IdpClient::new(&config).unwrap();
 
     let discovery = discover(&client, &config).await.unwrap();
 
@@ -81,8 +81,26 @@ async fn keeps_end_session_and_drops_disallowed_endpoints() {
     assert_eq!(discovery.token_endpoint, None);
 }
 
+#[tokio::test]
+async fn nothing_goes_over_plain_http_unless_allowed() {
+    let idp = TestIdp::start().await;
+    let mut config = idp.config(&[]);
+    config.allow_insecure_http = false;
+
+    let error = discover(&IdpClient::new(&config).unwrap(), &config)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, DiscoveryError::Fetch(FetchError::Request(_))),
+        "{error:?}"
+    );
+    assert_eq!(idp.discovery_requests(), 0);
+}
+
 async fn discovery_error(idp: &TestIdp, extra: &[(&'static str, &str)]) -> DiscoveryError {
-    discover(&IdpClient::new(&[]).unwrap(), &idp.config(extra))
+    let config = idp.config(extra);
+    discover(&IdpClient::new(&config).unwrap(), &config)
         .await
         .unwrap_err()
 }
@@ -211,7 +229,8 @@ async fn oversized_bodies_are_refused_with_or_without_a_length() {
         body
     };
     idp.set_discovery(Reply::Chunked(at_limit.clone()));
-    discover(&IdpClient::new(&[]).unwrap(), &idp.config(&[]))
+    let config = idp.config(&[]);
+    discover(&IdpClient::new(&config).unwrap(), &config)
         .await
         .unwrap();
 
@@ -265,7 +284,8 @@ async fn a_large_discovery_document_is_read() {
     document["pad"] = json!("x".repeat(50_000));
     idp.set_discovery(Reply::Bytes(document.to_string().into_bytes()));
 
-    discover(&IdpClient::new(&[]).unwrap(), &idp.config(&[]))
+    let config = idp.config(&[]);
+    discover(&IdpClient::new(&config).unwrap(), &config)
         .await
         .unwrap();
 }

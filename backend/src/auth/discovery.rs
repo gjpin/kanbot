@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use reqwest::{Certificate, StatusCode, Url, header};
+use reqwest::{StatusCode, Url, header};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -92,20 +92,24 @@ impl std::fmt::Display for OAuthError {
 }
 
 impl IdpClient {
-    /// A client that trusts the system roots plus `extra_roots`
-    /// (`OIDC_CA_FILE`).
+    /// A client for `config`'s identity provider: it trusts the system
+    /// roots plus `OIDC_CA_FILE`, and sends nothing over plain HTTP unless
+    /// `OIDC_DANGEROUSLY_ALLOW_INSECURE_HTTP` is set (the endpoints are
+    /// checked when discovered too).
     ///
     /// # Errors
     ///
     /// Returns an error if the TLS backend cannot be initialized.
-    pub fn new(extra_roots: &[Certificate]) -> Result<Self, reqwest::Error> {
-        extra_roots
+    pub fn new(config: &OidcConfig) -> Result<Self, reqwest::Error> {
+        config
+            .extra_root_certificates
             .iter()
             .cloned()
             .fold(
                 reqwest::Client::builder()
                     .connect_timeout(CONNECT_TIMEOUT)
                     .timeout(TOTAL_TIMEOUT)
+                    .https_only(!config.allow_insecure_http)
                     .redirect(reqwest::redirect::Policy::none()),
                 reqwest::ClientBuilder::add_root_certificate,
             )

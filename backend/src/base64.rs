@@ -8,7 +8,7 @@ const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 /// `bytes` as unpadded base64url (RFC 4648, section 5).
 #[must_use]
 pub fn encode_url(bytes: &[u8]) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
     for chunk in bytes.chunks(3) {
         let byte = |i: usize| chunk.get(i).copied().unwrap_or(0);
         let n = u32::from_be_bytes([0, byte(0), byte(1), byte(2)]);

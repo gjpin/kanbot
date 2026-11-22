@@ -1,7 +1,7 @@
 //! Users: everyone who has signed in at the identity provider, recorded on
 //! each authenticated request.
 
-pub mod dto;
+pub(crate) mod dto;
 mod handlers;
 pub mod model;
 mod repo;

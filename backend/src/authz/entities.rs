@@ -90,7 +90,10 @@ pub fn context(actor: &Actor) -> Result<Context, EntityError> {
         ),
         (
             "ip".to_owned(),
-            RestrictedExpression::new_ip(actor.ip.to_string()),
+            // An IPv4 client as IPv4, also when it reached a dual-stack
+            // socket (`::ffff:a.b.c.d`): Cedar refuses that form, and
+            // IPv4 ranges in policies would not match it.
+            RestrictedExpression::new_ip(actor.ip.to_canonical().to_string()),
         ),
     ])
     .map_err(|error| EntityError(error.to_string()))

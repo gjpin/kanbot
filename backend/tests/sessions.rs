@@ -643,6 +643,56 @@ async fn a_state_works_once_and_only_with_its_login_cookie(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_repeated_parameter_is_refused(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    let failed = "http://localhost:3000/login?error=login_failed";
+
+    // A repeated code: the attempt is used up, nothing is exchanged.
+    let started = start(&app, "/auth/login?platform=web").await;
+    let response = callback(
+        &app,
+        &started.state,
+        "&code=code-2",
+        started.binding.as_deref(),
+    )
+    .await;
+    assert_eq!(error_location(&response), failed);
+    let response = callback(&app, &started.state, "", started.binding.as_deref()).await;
+    assert_eq!(error_location(&response), failed);
+
+    // A repeated state, even the same one twice.
+    let started = start(&app, "/auth/login?platform=web").await;
+    let twice = format!("&state={}", started.state);
+    let response = callback(&app, &started.state, &twice, started.binding.as_deref()).await;
+    assert_eq!(error_location(&response), failed);
+
+    assert!(idp.token_requests().is_empty());
+    assert_eq!(session_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn a_malformed_state_is_refused_without_a_query(pool: PgPool) {
+    let idp = TestIdp::start().await;
+    let app = app(pool.clone(), &idp).await;
+    // Any query now fails.
+    pool.close().await;
+
+    let wrong_charset = format!("{}!", "a".repeat(42));
+    for state in ["unknown", &"a".repeat(44), &wrong_charset] {
+        let response = callback(&app, state, "", None).await;
+        assert_eq!(
+            error_location(&response),
+            "http://localhost:3000/login?error=login_failed",
+            "{state}"
+        );
+    }
+    // One with the shape of an issued state is looked up.
+    let response = callback(&app, &"a".repeat(43), "", None).await;
+    assert_ne!(response.status(), StatusCode::SEE_OTHER);
+}
+
+#[sqlx::test]
 async fn an_expired_attempt_cannot_finish(pool: PgPool) {
     let idp = TestIdp::start().await;
     let app = app(pool.clone(), &idp).await;

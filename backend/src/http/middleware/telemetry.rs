@@ -100,10 +100,10 @@ pub async fn trace_request(
     }
 
     let mut attributes = vec![KeyValue::new("http.request.method", method.name())];
-    metrics.active.add(1, &attributes);
+    let active = Active::start(&metrics.active, &attributes);
     let start = Instant::now();
     let response = next.run(request).instrument(span.clone()).await;
-    metrics.active.add(-1, &attributes);
+    drop(active);
 
     let status = response.status();
     // As i64: OpenTelemetry has no unsigned type, and tracing-opentelemetry
@@ -126,6 +126,30 @@ pub async fn trace_request(
         .duration
         .record(start.elapsed().as_secs_f64(), &attributes);
     response
+}
+
+/// One request counted in `http.server.active_requests` until dropped: when
+/// it has its response, or when the client goes away first and the server
+/// drops the request's future.
+struct Active<'a> {
+    counter: &'a UpDownCounter<i64>,
+    attributes: Vec<KeyValue>,
+}
+
+impl<'a> Active<'a> {
+    fn start(counter: &'a UpDownCounter<i64>, attributes: &[KeyValue]) -> Self {
+        counter.add(1, attributes);
+        Self {
+            counter,
+            attributes: attributes.to_vec(),
+        }
+    }
+}
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        self.counter.add(-1, &self.attributes);
+    }
 }
 
 /// A request method, bounded for attributes: methods outside the HTTP

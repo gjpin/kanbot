@@ -1,8 +1,6 @@
 //! Handlers of the `/auth` routes. They are public: they are how a user
 //! gets credentials in the first place.
 
-use std::collections::HashMap;
-
 use axum::{
     Json,
     extract::{Query, State},
@@ -41,6 +39,23 @@ pub fn cookie<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
         .map(|(_, value)| value);
     let value = values.next()?;
     values.next().is_none().then_some(value)
+}
+
+/// A query parameter sent more than once.
+struct Repeated;
+
+/// The value of query parameter `name`, if it is sent; [`Repeated`] if it
+/// is sent more than once.
+fn single<'q>(query: &'q [(String, String)], name: &str) -> Result<Option<&'q str>, Repeated> {
+    let mut values = query
+        .iter()
+        .filter(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str());
+    let value = values.next();
+    match values.next() {
+        Some(_) => Err(Repeated),
+        None => Ok(value),
+    }
 }
 
 /// A `Set-Cookie` value that removes the session cookie.
@@ -130,19 +145,28 @@ pub(super) async fn login(
 pub(super) async fn callback(
     State(state): State<AppState>,
     // Not a typed struct: identity providers add their own parameters
-    // (`iss`, `scope`, `session_state`), which are ignored.
+    // (`scope`, `session_state`), which are ignored. In order, so a
+    // repeated one is seen (RFC 6749, section 3.1, forbids them).
     method: Method,
-    Query(query): Query<HashMap<String, String>>,
+    Query(query): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if let Some(response) = head_refused(&method) {
         return Ok(response);
     }
+    let mut repeated = false;
+    let mut get = |name| {
+        single(&query, name).unwrap_or_else(|Repeated| {
+            repeated = true;
+            None
+        })
+    };
     let params = CallbackParams {
-        state: query.get("state").map(String::as_str),
-        code: query.get("code").map(String::as_str),
-        error: query.get("error").map(String::as_str),
-        issuer: query.get("iss").map(String::as_str),
+        state: get("state"),
+        code: get("code"),
+        error: get("error"),
+        issuer: get("iss"),
+        repeated,
     };
     let outcome = service::finish_login(
         &state.db,

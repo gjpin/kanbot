@@ -547,6 +547,15 @@ fn deployer_forbids_can_use_the_context() {
             .unwrap()
             .allowed
     );
+    // An IPv4 client seen through a dual-stack socket is still in range.
+    admin.via = Via::Web;
+    admin.ip = "::ffff:10.1.2.3".parse().unwrap();
+    assert!(
+        policies
+            .decide(&admin, &facts, Action::Read, resource)
+            .unwrap()
+            .allowed
+    );
     admin.via = Via::Native;
     admin.ip = "2001:db8::1".parse().unwrap();
     assert!(

@@ -390,6 +390,32 @@ async fn requests_are_measured() {
 }
 
 #[tokio::test]
+async fn a_request_the_client_gave_up_on_is_no_longer_active() {
+    let (provider, exporter) = meter_provider();
+    let app = Router::new()
+        .route("/slow", get(std::future::pending::<&'static str>))
+        .layer(axum::middleware::from_fn_with_state(
+            HttpMetrics::new(&opentelemetry::metrics::MeterProvider::meter(
+                &provider, "test",
+            )),
+            trace_request,
+        ));
+
+    // The server drops a request's future when its client disconnects.
+    let request = app.oneshot(get_request("/slow"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), request)
+            .await
+            .is_err()
+    );
+    provider.force_flush().unwrap();
+
+    let active = points(&exporter, "http.server.active_requests");
+    assert_eq!(active.len(), 1, "{active:?}");
+    assert_eq!(active[0].1, 0, "the dropped request is not active");
+}
+
+#[tokio::test]
 async fn pool_connections_are_reported_by_state() {
     let (provider, exporter) = meter_provider();
     // Never connects: an empty pool has no idle or used connections.

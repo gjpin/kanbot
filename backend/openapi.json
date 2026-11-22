@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "kanbot API",
-    "description": "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`.",
+    "description": "Errors are RFC 9457 problem details (`application/problem+json`) with a stable `code`. Besides the responses listed for it, any operation may answer `429` (rate limited; `Retry-After` says when to retry), `500` (a server failure) or `503` (the database or identity provider is unavailable, or the server is overloaded; temporary).",
     "version": "0.1.0"
   },
   "paths": {

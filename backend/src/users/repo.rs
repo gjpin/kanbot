@@ -112,7 +112,8 @@ pub(super) async fn search(
     query: &UserQuery,
     limit: i64,
 ) -> Result<Vec<UserSummary>, sqlx::Error> {
-    // LIKE's wildcards in the query match themselves.
+    // LIKE's wildcards in the query match themselves (escaped with `\`,
+    // named in the query, not left to the default).
     let pattern = format!(
         "%{}%",
         query
@@ -125,7 +126,7 @@ pub(super) async fn search(
         r#"
         SELECT id, display_name
         FROM users
-        WHERE disabled_at IS NULL AND COALESCE(display_name, '') ILIKE $1
+        WHERE disabled_at IS NULL AND COALESCE(display_name, '') ILIKE $1 ESCAPE '\'
         ORDER BY display_name NULLS LAST, id
         LIMIT $2
         "#,
