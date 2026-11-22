@@ -37,6 +37,28 @@ void main() {
     expect(options.useWebview, isFalse);
     expect(options.timeout, FlutterWebAuth.timeoutSeconds);
     expect(options.landingPageHtml, '<p>landing</p>');
+    // Coming back to the app without the redirect: the user closed it.
+    expect(options.cancelOnResume, isTrue);
+  });
+
+  test('a loopback sign-in survives the app regaining focus', () async {
+    final seen = <FlutterWebAuth2Options>[];
+    final auth = FlutterWebAuth(
+      landingPageHtml: '',
+      open:
+          ({
+            required url,
+            required callbackUrlScheme,
+            options = const FlutterWebAuth2Options(),
+          }) async {
+            seen.add(options);
+            return 'http://127.0.0.1:43210/auth/done?code=kbc_x';
+          },
+    );
+
+    await auth.authenticate(url: loginUrl, callback: 'http://127.0.0.1:43210');
+
+    expect(seen.single.cancelOnResume, isFalse);
   });
 
   for (final (name, Exception error, Matcher expected) in [

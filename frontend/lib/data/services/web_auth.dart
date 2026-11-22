@@ -73,6 +73,15 @@ class FlutterWebAuth implements WebAuth {
         options: FlutterWebAuth2Options(
           useWebview: false,
           timeout: timeoutSeconds,
+          // A loopback redirect (Windows, Linux) must outlive the app
+          // window regaining focus, which happens while the browser opens
+          // and whenever the user looks back at the app: closing the
+          // server then leaves the browser nowhere to return to. It ends
+          // at [timeoutSeconds], or when the user signs in again (the
+          // plugin closes it for the new one). With the app's scheme
+          // (Android), coming back without the redirect means the user
+          // closed the browser.
+          cancelOnResume: Uri.parse(callback).scheme != 'http',
           landingPageHtml: landingPageHtml,
         ),
       );
