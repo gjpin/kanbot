@@ -35,7 +35,7 @@ void main() {
     var unauthorized = 0;
     final connection = ApiConnection(newHttpClient: backend.client)
       ..connect(Uri.parse('https://kanbot.example.com/'));
-    connection.onUnauthorized = () => unauthorized++;
+    connection.onUnauthorized = (_) => unauthorized++;
     await expectLater(connection.api.users.me(), throwsException);
     expect(unauthorized, 1);
   });

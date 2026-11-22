@@ -18,7 +18,8 @@ import 'package:kanbot/data/services/token_store.dart';
 ///   the web app has no token store, its session is a cookie);
 /// - sends `X-Kanbot-CSRF: 1` on state-changing methods, which the backend
 ///   requires of requests authenticated by the session cookie;
-/// - reports a `401` to [onUnauthorized], so the app can sign the user out;
+/// - reports a `401` to [onUnauthorized], with the token the request
+///   carried, so the app can sign the user out;
 /// - aborts the request when it exceeds [timeout], including reading the
 ///   response body;
 /// - maps non-`2xx` statuses, timeouts and network failures to
@@ -42,8 +43,9 @@ class ApiClient extends http.BaseClient {
   final Uri _baseUrl;
   final TokenStore? _tokenStore;
 
-  /// Called when the API answers `401`: the session is gone.
-  final void Function()? onUnauthorized;
+  /// Called when the API answers `401`: the session of `token` (the one the
+  /// request carried, `null` when none) is gone.
+  final void Function(String? token)? onUnauthorized;
 
   /// Methods that change state: they carry the CSRF header.
   static const Set<String> _stateChanging = {'POST', 'PUT', 'PATCH', 'DELETE'};
@@ -109,7 +111,7 @@ class ApiClient extends http.BaseClient {
       span.setIntAttribute('http.response.status_code', response.statusCode);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         _fail(span, '${response.statusCode}');
-        if (response.statusCode == 401) onUnauthorized?.call();
+        if (response.statusCode == 401) onUnauthorized?.call(token);
         throw ApiErrorResponse.fromResponse(
           statusCode: response.statusCode,
           contentType: response.headers['content-type'],
@@ -197,7 +199,8 @@ class ApiClient extends http.BaseClient {
         (segment) => segment.contains('/') || segment.contains(r'\'),
       );
 
-  /// The stored token, or `null` when signed out or when secure storage
+  /// The token stored for this server, or `null` when signed out (or
+  /// signed in at another server), or when secure storage
   /// cannot be read (for example a keychain restored onto another device).
   /// The request then goes out unauthenticated, and a `401` leads the user
   /// through the re-auth flow, which writes a fresh token.
@@ -205,7 +208,7 @@ class ApiClient extends http.BaseClient {
     final store = _tokenStore;
     if (store == null) return null;
     try {
-      return await store.read();
+      return await store.read(server: _baseUrl);
     } on Exception {
       return null;
     }

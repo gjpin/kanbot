@@ -31,7 +31,12 @@ class OrganizationViewModel extends ViewModel {
 
   Loadable<OrganizationDetails> get details => _details;
 
+  /// Bumped by [load]: an answer that arrives after a newer load started
+  /// is dropped, so the page never goes back to older data.
+  int _generation = 0;
+
   Future<void> load() async {
+    final generation = ++_generation;
     if (_details is! Loaded) {
       _details = const Loading();
       notifyListeners();
@@ -41,6 +46,7 @@ class OrganizationViewModel extends ViewModel {
     final adminsLoad = _organizations.admins(id);
     final linksLoad = _organizations.teamLinks(id);
     await Future.wait([organizationLoad, adminsLoad, linksLoad]);
+    if (generation != _generation) return;
     final organization = await organizationLoad;
     final admins = await adminsLoad;
     final links = await linksLoad;
@@ -62,13 +68,26 @@ class OrganizationViewModel extends ViewModel {
   int get revision => _revision;
   int _revision = 0;
 
+  /// Whether a change (and the reload after it) is running: the page
+  /// disables the controls that start one meanwhile, so a double tap sends
+  /// one request.
+  bool get busy => _changes > 0;
+  int _changes = 0;
+
   /// Runs [change], then reloads, on failure too: a control may show a
   /// choice the server refused.
   Future<Result<T>> _change<T>(Future<Result<T>> change) async {
-    final result = await change;
-    _revision++;
-    await load();
-    return result;
+    _changes++;
+    notifyListeners();
+    try {
+      final result = await change;
+      _revision++;
+      await load();
+      return result;
+    } finally {
+      _changes--;
+      notifyListeners();
+    }
   }
 
   Future<Result<Organization>> rename(String slug, String name) =>

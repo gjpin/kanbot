@@ -151,8 +151,10 @@ class _OrganizationPageState extends State<OrganizationPage> {
             if (canLink && workspace != null)
               ShadButton.ghost(
                 size: ShadButtonSize.sm,
-                onPressed: () async =>
-                    _report(await _viewModel.unlinkOpenShellWorkspace()),
+                onPressed: _viewModel.busy
+                    ? null
+                    : () async =>
+                          _report(await _viewModel.unlinkOpenShellWorkspace()),
                 child: const Text(Messages.unlink),
               ),
           ],
@@ -218,8 +220,11 @@ class _OrganizationPageState extends State<OrganizationPage> {
                         ))
                           ShadButton.ghost(
                             size: ShadButtonSize.sm,
-                            onPressed: () async =>
-                                _report(await _viewModel.removeAdmin(admin)),
+                            onPressed: _viewModel.busy
+                                ? null
+                                : () async => _report(
+                                    await _viewModel.removeAdmin(admin),
+                                  ),
                             child: const Text(Messages.remove),
                           ),
                       ],
@@ -254,6 +259,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
                                   _viewModel.revision,
                                 )),
                                 value: link.access,
+                                enabled: !_viewModel.busy,
                                 onChanged: (access) async => _report(
                                   await _viewModel.linkTeam(
                                     link.team.id,
@@ -263,9 +269,13 @@ class _OrganizationPageState extends State<OrganizationPage> {
                               ),
                               ShadButton.ghost(
                                 size: ShadButtonSize.sm,
-                                onPressed: () async => _report(
-                                  await _viewModel.unlinkTeam(link.team.id),
-                                ),
+                                onPressed: _viewModel.busy
+                                    ? null
+                                    : () async => _report(
+                                        await _viewModel.unlinkTeam(
+                                          link.team.id,
+                                        ),
+                                      ),
                                 child: const Text(Messages.remove),
                               ),
                             ]
@@ -298,13 +308,20 @@ String _access(Access access) => switch (access) {
 
 /// Chooses `read` or `write`.
 class AccessSelect extends StatelessWidget {
-  const AccessSelect({super.key, required this.value, required this.onChanged});
+  const AccessSelect({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
 
   final Access value;
   final ValueChanged<Access> onChanged;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => ShadSelect<Access>(
+    enabled: enabled,
     initialValue: value,
     options: [
       for (final access in Access.values)

@@ -83,6 +83,25 @@ void main() {
     expect(gate.enabled, isTrue);
   });
 
+  test('enabling again for the same session drops nothing', () async {
+    final gate = exporters();
+    var flushed = 0;
+    gate.flushBuffered = () async => flushed++;
+    final endpoint = Uri.parse('https://kanbot.example.com/telemetry');
+
+    await gate.enable(endpoint, {'authorization': 'Bearer kbs_a'});
+    await gate.enable(endpoint, {'authorization': 'Bearer kbs_a'});
+    expect(created, hasLength(1));
+    expect(flushed, 1);
+    expect(created.single.$3.shutdowns, 0);
+
+    // Another session: what was buffered was not recorded for it.
+    await gate.enable(endpoint, {'authorization': 'Bearer kbs_b'});
+    expect(created, hasLength(2));
+    expect(flushed, 2);
+    expect(created.first.$3.shutdowns, 2);
+  });
+
   /// A session for [user], with telemetry consent watching it.
   Future<(TelemetryConsent, TelemetryExporters, AppDependencies)> watch(
     FakeBackend backend, {
@@ -100,7 +119,9 @@ void main() {
     final dependencies = testDependencies(
       backend: backend,
       web: web,
-      storage: web ? const {} : const {'auth_token': 'kbs_secret'},
+      storage: web
+          ? const {}
+          : {'auth_token': TokenStore.entry(testServer, 'kbs_secret')},
     );
     final gate = exporters();
     final consent = TelemetryConsent(

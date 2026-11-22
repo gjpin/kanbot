@@ -170,10 +170,10 @@ class AuthRepository extends ChangeNotifier {
       _navigate(server.loginUrl.replace(queryParameters: {'platform': 'web'}));
       return const Ok(null);
     }
-    return _signInNative(server.loginUrl);
+    return _signInNative(server.loginUrl, baseUrl);
   }
 
-  Future<Result<void>> _signInNative(Uri loginUrl) async {
+  Future<Result<void>> _signInNative(Uri loginUrl, Uri baseUrl) async {
     final pkce = Pkce.generate();
     final NativeRedirect redirect;
     final Uri result;
@@ -220,7 +220,7 @@ class AuthRepository extends ChangeNotifier {
         return Failure(error);
       case Ok(:final value):
         try {
-          await _tokenStore?.write(value.sessionToken);
+          await _tokenStore?.write(value.sessionToken, server: baseUrl);
         } on Exception catch (_) {
           return const Failure(SignInFailedException());
         }
@@ -307,9 +307,25 @@ class AuthRepository extends ChangeNotifier {
     }
   }
 
-  /// The server answered `401`: the session is gone.
-  void _sessionEnded() {
+  /// The server answered `401` to a request that carried [token]: that
+  /// session is gone. A late answer to a request of an earlier session
+  /// (the user signed in again meanwhile) leaves the current one alone.
+  void _sessionEnded(String? token) {
     if (_status != AuthStatus.signedIn) return;
+    final store = _tokenStore;
+    final baseUrl = _connection.baseUrl;
+    if (store == null || token == null || baseUrl == null) {
+      _endSession();
+      return;
+    }
+    store.read(server: baseUrl).then((current) {
+      if (current == token && _status == AuthStatus.signedIn) {
+        _endSession();
+      }
+    }, onError: (Object _) => _endSession()).ignore();
+  }
+
+  void _endSession() {
     // Best effort: the token is useless now; a failed delete only leaves a
     // dead token, refused again on the next start.
     _tokenStore?.clear().ignore();

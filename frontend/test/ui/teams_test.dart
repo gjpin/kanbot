@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
@@ -164,6 +165,32 @@ void main() {
 
     await tester.tap(find.text(Messages.remove));
     await tester.pumpAndSettle();
+    expect(
+      backend.sent('DELETE', '/teams/$teamId/members/$bobId'),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('a double tap on remove sends one request', (tester) async {
+    final removed = Completer<void>();
+    final backend = backendFor(permissions: ['manage', 'manage_members'])
+      ..handle('DELETE', '/teams/$teamId/members/$bobId', (_) async {
+        await removed.future;
+        return http.Response('', 204);
+      });
+    await pumpApp(
+      tester,
+      await signedIn(backend),
+      location: Routes.team(teamId),
+    );
+
+    await tester.tap(find.text(Messages.remove));
+    await tester.pump();
+    await tester.tap(find.text(Messages.remove), warnIfMissed: false);
+    await tester.pump();
+    removed.complete();
+    await tester.pumpAndSettle();
+
     expect(
       backend.sent('DELETE', '/teams/$teamId/members/$bobId'),
       hasLength(1),

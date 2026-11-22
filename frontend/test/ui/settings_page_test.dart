@@ -81,7 +81,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(LoginPage), findsOneWidget);
-    expect(await TokenStore().read(), isNull);
+    expect(await TokenStore().read(server: testServer), isNull);
   });
 
   testWidgets('changing server signs out and asks for one', (tester) async {

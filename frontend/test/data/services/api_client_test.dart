@@ -18,7 +18,8 @@ void main() {
 
   setUp(() {
     tokenStore = MockTokenStore();
-    when(tokenStore.read()).thenAnswer((_) async => null);
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => null);
   });
 
   ApiClient client(
@@ -97,7 +98,8 @@ void main() {
 
   test('refuses URLs outside the base URL, without sending', () async {
     final (httpClient, requests) = recording();
-    when(tokenStore.read()).thenAnswer((_) async => 'abc');
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => 'abc');
 
     for (final outside in [
       'https://evil.example.com/v1/boards',
@@ -152,7 +154,8 @@ void main() {
   });
 
   test('sends the stored token as a bearer token', () async {
-    when(tokenStore.read()).thenAnswer((_) async => 'abc');
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => 'abc');
     final (httpClient, requests) = recording();
 
     await client(httpClient).get(url('boards'));
@@ -161,7 +164,8 @@ void main() {
   });
 
   test('replaces an authorization header set by the caller', () async {
-    when(tokenStore.read()).thenAnswer((_) async => 'abc');
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => 'abc');
     final (httpClient, requests) = recording();
 
     await client(httpClient)
@@ -182,7 +186,7 @@ void main() {
   });
 
   test('sends no authorization header when secure storage fails', () async {
-    when(tokenStore.read())
+    when(tokenStore.read(server: anyNamed('server')))
         .thenAnswer((_) async => throw Exception('keychain unavailable'));
     final (httpClient, requests) = recording();
 
@@ -337,23 +341,50 @@ void main() {
   });
 
   test('reports 401 to onUnauthorized, and only 401', () async {
-    var calls = 0;
+    final reported = <String?>[];
     ApiClient reporting(int status) => ApiClient(
       httpClient: respond(status),
       baseUrl: baseUrl,
       tokenStore: tokenStore,
-      onUnauthorized: () => calls++,
+      onUnauthorized: reported.add,
     );
     await expectLater(
       reporting(401).get(url('me')),
       throwsA(isA<ApiUnauthorizedException>()),
     );
-    expect(calls, 1);
+    expect(reported, [null]);
     await expectLater(
       reporting(403).get(url('me')),
       throwsA(isA<ApiForbiddenException>()),
     );
-    expect(calls, 1);
+    expect(reported, [null]);
+  });
+
+  test('reports a 401 with the token the request carried', () async {
+    final reported = <String?>[];
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => 'abc');
+    await expectLater(
+      ApiClient(
+        httpClient: respond(401),
+        baseUrl: baseUrl,
+        tokenStore: tokenStore,
+        onUnauthorized: reported.add,
+      ).get(url('me')),
+      throwsA(isA<ApiUnauthorizedException>()),
+    );
+    expect(reported, ['abc']);
+  });
+
+  test('asks the token store for the token of its own server', () async {
+    final (httpClient, requests) = recording();
+    when(tokenStore.read(server: anyNamed('server')))
+        .thenAnswer((_) async => null);
+    when(tokenStore.read(server: baseUrl)).thenAnswer((_) async => 'abc');
+
+    await client(httpClient).get(url('boards'));
+
+    expect(requests.single.headers['authorization'], 'Bearer abc');
   });
 
   test('without a token store (web), sends no token', () async {

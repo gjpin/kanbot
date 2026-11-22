@@ -90,14 +90,20 @@ void main() {
         ..on('GET', '/me', problem(503, 'unavailable'), status: 503);
       final dependencies = testDependencies(
         backend: backend,
-        storage: {'auth_token': 'kbs_old-server-token'},
+        storage: {
+          'auth_token': TokenStore.entry(testServer, 'kbs_old-server-token'),
+        },
       );
       await dependencies.auth.refresh();
       await pumpApp(tester, dependencies, location: Routes.login);
       await tester.tap(find.text(Messages.changeServer));
       await tester.pumpAndSettle();
       expect(find.byType(ServerPage), findsOneWidget);
-      expect(await TokenStore().read(), isNull, reason: 'forgotten');
+      expect(
+        await TokenStore().read(server: testServer),
+        isNull,
+        reason: 'forgotten',
+      );
 
       backend.requests.clear();
       await tester.enterText(
@@ -186,7 +192,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(webAuth.opened, hasLength(1));
-      expect(await TokenStore().read(), 'kbs_new');
+      expect(await TokenStore().read(server: testServer), 'kbs_new');
       expect(find.byType(OrganizationsPage), findsOneWidget);
     });
 

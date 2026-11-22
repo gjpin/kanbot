@@ -20,7 +20,12 @@ class TeamViewModel extends ViewModel {
 
   Loadable<TeamDetails> get details => _details;
 
+  /// Bumped by [load]: an answer that arrives after a newer load started
+  /// is dropped, so the page never goes back to older data.
+  int _generation = 0;
+
   Future<void> load() async {
+    final generation = ++_generation;
     if (_details is! Loaded) {
       _details = const Loading();
       notifyListeners();
@@ -29,6 +34,7 @@ class TeamViewModel extends ViewModel {
     final teamLoad = _teams.get(id);
     final membersLoad = _teams.members(id);
     await Future.wait([teamLoad, membersLoad]);
+    if (generation != _generation) return;
     final team = await teamLoad;
     final members = await membersLoad;
     _details = switch ((team, members)) {
@@ -45,7 +51,11 @@ class TeamViewModel extends ViewModel {
 
   bool _loadingMore = false;
 
-  /// Appends the next page of members, if there is one.
+  /// Whether the next page of members is loading.
+  bool get loadingMore => _loadingMore;
+
+  /// Appends the next page of members, if there is one. A page that
+  /// arrives after a reload is dropped: the reload has newer data.
   Future<Result<void>> loadMore() async {
     final current = _details;
     if (_loadingMore || current is! Loaded<TeamDetails>) {
@@ -53,9 +63,15 @@ class TeamViewModel extends ViewModel {
     }
     final after = current.value.next;
     if (after == null) return const Ok(null);
+    final generation = _generation;
     _loadingMore = true;
+    notifyListeners();
     final page = await _teams.members(id, after: after);
     _loadingMore = false;
+    if (generation != _generation) {
+      notifyListeners();
+      return const Ok(null);
+    }
     switch (page) {
       case Ok(:final value):
         _details = Loaded((
@@ -66,6 +82,7 @@ class TeamViewModel extends ViewModel {
         notifyListeners();
         return const Ok(null);
       case Failure(:final error):
+        notifyListeners();
         return Failure(error);
     }
   }
@@ -75,13 +92,26 @@ class TeamViewModel extends ViewModel {
   int get revision => _revision;
   int _revision = 0;
 
+  /// Whether a change (and the reload after it) is running: the page
+  /// disables the controls that start one meanwhile, so a double tap sends
+  /// one request.
+  bool get busy => _changes > 0;
+  int _changes = 0;
+
   /// Runs [change], then reloads, on failure too: a control may show a
   /// choice the server refused.
   Future<Result<T>> _change<T>(Future<Result<T>> change) async {
-    final result = await change;
-    _revision++;
-    await load();
-    return result;
+    _changes++;
+    notifyListeners();
+    try {
+      final result = await change;
+      _revision++;
+      await load();
+      return result;
+    } finally {
+      _changes--;
+      notifyListeners();
+    }
   }
 
   Future<Result<Team>> rename(String slug, String name) =>

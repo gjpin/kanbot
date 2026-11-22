@@ -26,7 +26,12 @@ void main() {
   }
 
   setUp(() {
-    FlutterSecureStorage.setMockInitialValues({'auth_token': 'abc'});
+    FlutterSecureStorage.setMockInitialValues({
+      'auth_token': TokenStore.entry(
+        Uri.parse('https://api.example.com/v1/'),
+        'abc',
+      ),
+    });
   });
 
   test('calls the API below the base URL, with the token', () async {

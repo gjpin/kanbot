@@ -34,17 +34,18 @@ class MockTokenStore extends _i1.Mock implements _i2.TokenStore {
   }
 
   @override
-  _i3.Future<String?> read() => (super.noSuchMethod(
-    Invocation.method(#read, []),
+  _i3.Future<String?> read({required Uri? server}) => (super.noSuchMethod(
+    Invocation.method(#read, [], {#server: server}),
     returnValue: _i3.Future<String?>.value(),
   ) as _i3.Future<String?>);
 
   @override
-  _i3.Future<void> write(String? token) => (super.noSuchMethod(
-    Invocation.method(#write, [token]),
-    returnValue: _i3.Future<void>.value(),
-    returnValueForMissingStub: _i3.Future<void>.value(),
-  ) as _i3.Future<void>);
+  _i3.Future<void> write(String? token, {required Uri? server}) =>
+      (super.noSuchMethod(
+        Invocation.method(#write, [token], {#server: server}),
+        returnValue: _i3.Future<void>.value(),
+        returnValueForMissingStub: _i3.Future<void>.value(),
+      ) as _i3.Future<void>);
 
   @override
   _i3.Future<void> clear() => (super.noSuchMethod(

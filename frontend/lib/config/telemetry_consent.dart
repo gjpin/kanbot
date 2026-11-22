@@ -51,7 +51,7 @@ class TelemetryConsent {
         return;
       }
       final store = _tokenStore;
-      final token = store == null ? null : await store.read();
+      final token = store == null ? null : await store.read(server: baseUrl);
       // Signed out meanwhile, or (natively) no session token to send it
       // with: nothing goes out.
       if (!_allowed || (store != null && token == null)) {

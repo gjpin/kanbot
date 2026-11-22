@@ -5,6 +5,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// an `HttpOnly` cookie). Secure storage is: Keychain on iOS/macOS,
 /// Keystore-backed ciphers on Android, libsecret on Linux and DPAPI on
 /// Windows. Never store tokens anywhere else.
+///
+/// The token is stored together with the server that issued it, in one
+/// entry, and [read] gives it only to that server: whatever path changes
+/// the server (the user choosing another one, a stored server that is no
+/// longer valid, storage that could not be read), the token never reaches
+/// another one.
 class TokenStore {
   TokenStore({this._storage = defaultStorage});
 
@@ -29,11 +35,25 @@ class TokenStore {
 
   final FlutterSecureStorage _storage;
 
-  /// The stored token, or `null` when signed out.
-  Future<String?> read() => _storage.read(key: _tokenKey);
+  /// The stored value for [token] issued by [server]: the server's API base
+  /// URL, a space (which a URL never contains unencoded) and the token.
+  /// Tests use it to set up storage.
+  static String entry(Uri server, String token) => '$server $token';
 
-  Future<void> write(String token) =>
-      _storage.write(key: _tokenKey, value: token);
+  /// The token [server] issued, or `null` when signed out, or when the
+  /// stored token belongs to another server.
+  Future<String?> read({required Uri server}) async {
+    final stored = await _storage.read(key: _tokenKey);
+    if (stored == null) return null;
+    final separator = stored.indexOf(' ');
+    if (separator < 0) return null;
+    if (stored.substring(0, separator) != server.toString()) return null;
+    return stored.substring(separator + 1);
+  }
+
+  /// Stores [token], issued by [server], in place of any other.
+  Future<void> write(String token, {required Uri server}) =>
+      _storage.write(key: _tokenKey, value: entry(server, token));
 
   /// Deletes the token. Call on logout. The chosen server (`ServerStore`)
   /// stays.

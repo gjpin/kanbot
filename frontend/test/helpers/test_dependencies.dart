@@ -2,6 +2,7 @@ import 'package:dartastic_opentelemetry/dartastic_opentelemetry.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/config/telemetry.dart';
+import 'package:kanbot/data/services/token_store.dart';
 import 'package:kanbot/data/services/web_auth.dart';
 
 import 'fake_backend.dart';
@@ -89,7 +90,9 @@ Future<AppDependencies> signedIn(
   final dependencies = testDependencies(
     backend: backend,
     web: web,
-    storage: web ? const {} : const {'auth_token': 'kbs_test'},
+    storage: web
+        ? const {}
+        : {'auth_token': TokenStore.entry(testServer, 'kbs_test')},
   );
   await dependencies.auth.refresh();
   return dependencies;

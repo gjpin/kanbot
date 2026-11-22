@@ -58,7 +58,7 @@ void main() {
         ..on('GET', '/me', problem(401, 'unauthorized'), status: 401);
       final auth = testDependencies(
         backend: backend,
-        storage: {'auth_token': 'kbs_old'},
+        storage: {'auth_token': TokenStore.entry(testServer, 'kbs_old')},
       ).auth;
 
       expect(await auth.refresh(), isA<Ok<void>>());
@@ -66,7 +66,34 @@ void main() {
       expect(auth.status, AuthStatus.signedOut);
       expect(auth.user, isNull);
       expect(auth.lastError, isNull);
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
+    });
+
+    test('a late 401 to an earlier session keeps the current one', () async {
+      final backend = FakeBackend();
+      final dependencies = await signedIn(backend);
+      expect(dependencies.auth.status, AuthStatus.signedIn);
+      // The request carries the old token; meanwhile the user signed in
+      // again (a new token); then the old session's 401 arrives.
+      backend.handle('GET', '/me', (request) async {
+        expect(request.headers['authorization'], 'Bearer kbs_test');
+        await TokenStore().write('kbs_new', server: testServer);
+        return http.Response(
+          '{"type":"about:blank","title":"x","status":401,'
+          '"code":"unauthorized"}',
+          401,
+          headers: {'content-type': 'application/problem+json'},
+        );
+      });
+
+      await expectLater(
+        dependencies.connection.api.users.me(),
+        throwsA(isA<ApiUnauthorizedException>()),
+      );
+      await pumpEventQueue();
+
+      expect(dependencies.auth.status, AuthStatus.signedIn);
+      expect(await TokenStore().read(server: testServer), 'kbs_new');
     });
 
     test('an unreachable server signs out with the reason', () async {
@@ -78,7 +105,7 @@ void main() {
         );
       final auth = testDependencies(
         backend: backend,
-        storage: {'auth_token': 'kbs_kept'},
+        storage: {'auth_token': TokenStore.entry(testServer, 'kbs_kept')},
       ).auth;
 
       final result = await auth.refresh();
@@ -87,7 +114,7 @@ void main() {
       expect(auth.status, AuthStatus.signedOut);
       expect(auth.lastError, isA<ApiNetworkException>());
       // The token may still be good once the server is back.
-      expect(await TokenStore().read(), 'kbs_kept');
+      expect(await TokenStore().read(server: testServer), 'kbs_kept');
     });
 
     test('a failing GET /me signs out with the reason', () async {
@@ -211,7 +238,7 @@ void main() {
         'code_challenge': isA<String>(),
         'code_challenge_method': 'S256',
       });
-      expect(await TokenStore().read(), 'kbs_new');
+      expect(await TokenStore().read(server: testServer), 'kbs_new');
       expect(auth.status, AuthStatus.signedIn);
       // The session token, not an IdP token, authenticates from now on.
       expect(
@@ -240,7 +267,7 @@ void main() {
         ),
       );
       expect(backend.sent('POST', '/auth/token'), isEmpty);
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     });
 
     test('a redirect elsewhere is refused', () async {
@@ -327,7 +354,7 @@ void main() {
           isA<ApiBadRequestException>(),
         ),
       );
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     });
 
     test('a server that cannot be asked is a failure', () async {
@@ -361,7 +388,7 @@ void main() {
           isA<NotKanbotServerException>(),
         ),
       );
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     });
 
     test(
@@ -501,7 +528,7 @@ void main() {
       await dependencies.auth.signOut();
 
       expect(dependencies.auth.status, AuthStatus.signedOut);
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     });
 
     test('JSON that breaks the contract', () async {
@@ -513,7 +540,7 @@ void main() {
       await expectLater(dependencies.auth.signOut(), throwsA(isA<TypeError>()));
 
       expect(dependencies.auth.status, AuthStatus.signedOut);
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     });
   });
 
@@ -531,7 +558,7 @@ void main() {
       await dependencies.auth.signOut();
 
       expect(dependencies.auth.status, AuthStatus.signedOut);
-      expect(await TokenStore().read(), isNull);
+      expect(await TokenStore().read(server: testServer), isNull);
     },
   );
 
@@ -544,7 +571,7 @@ void main() {
     await pumpEventQueue();
 
     expect(dependencies.auth.status, AuthStatus.signedOut);
-    expect(await TokenStore().read(), isNull);
+    expect(await TokenStore().read(server: testServer), isNull);
   });
 
   test('telemetry consent goes to the server', () async {

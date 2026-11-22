@@ -20,8 +20,9 @@ class ApiConnection extends ChangeNotifier {
   final http.Client Function() _newHttpClient;
   final TokenStore? _tokenStore;
 
-  /// Called when the server answers `401` (see [ApiClient.onUnauthorized]).
-  void Function()? onUnauthorized;
+  /// Called when the server answers `401`, with the token the request
+  /// carried (see [ApiClient.onUnauthorized]).
+  void Function(String? token)? onUnauthorized;
 
   ApiClient? _client;
   KanbotApi? _api;
@@ -54,7 +55,7 @@ class ApiConnection extends ChangeNotifier {
       httpClient: _newHttpClient(),
       baseUrl: baseUrl,
       tokenStore: _tokenStore,
-      onUnauthorized: () => onUnauthorized?.call(),
+      onUnauthorized: (token) => onUnauthorized?.call(token),
     );
     _client = client;
     _api = KanbotApi(client, baseUrl: client.baseUrl);

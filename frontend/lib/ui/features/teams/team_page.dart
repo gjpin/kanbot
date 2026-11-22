@@ -183,6 +183,7 @@ class _TeamPageState extends State<TeamPage> {
                           if (manage &&
                               member.source == MembershipSource.manual) ...[
                             ShadSelect<TeamRole>(
+                              enabled: !_viewModel.busy,
                               key: ValueKey((
                                 member.user.id,
                                 _viewModel.revision,
@@ -208,9 +209,13 @@ class _TeamPageState extends State<TeamPage> {
                             ),
                             ShadButton.ghost(
                               size: ShadButtonSize.sm,
-                              onPressed: () async => _report(
-                                await _viewModel.removeMember(member.user),
-                              ),
+                              onPressed: _viewModel.busy
+                                  ? null
+                                  : () async => _report(
+                                      await _viewModel.removeMember(
+                                        member.user,
+                                      ),
+                                    ),
                               child: const Text(Messages.remove),
                             ),
                           ] else ...[
@@ -226,8 +231,9 @@ class _TeamPageState extends State<TeamPage> {
                       ),
                     if (value.next != null)
                       ShadButton.ghost(
-                        onPressed: () async =>
-                            _report(await _viewModel.loadMore()),
+                        onPressed: _viewModel.loadingMore
+                            ? null
+                            : () async => _report(await _viewModel.loadMore()),
                         child: const Text(Messages.moreMembers),
                       ),
                   ],

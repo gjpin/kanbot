@@ -79,6 +79,9 @@ class TelemetryExporters {
   final OtlpExporterFactory _create;
   ({SpanExporter spans, LogRecordExporter logs})? _active;
 
+  /// Where [_active] sends, and with which headers.
+  ({Uri endpoint, Map<String, String> headers})? _target;
+
   late final SpanExporter spans = _GatedSpanExporter(this);
   late final LogRecordExporter logs = _GatedLogRecordExporter(this);
 
@@ -91,17 +94,27 @@ class TelemetryExporters {
 
   /// Sends from now on to [endpoint] with [headers]. Telemetry recorded
   /// before (still buffered by the SDK) is dropped first: it predates the
-  /// user's consent.
+  /// user's consent. Already sending there with the same headers (the same
+  /// session), nothing changes, and nothing buffered is dropped.
   Future<void> enable(Uri endpoint, Map<String, String> headers) async {
+    final target = _target;
+    if (_active != null &&
+        target != null &&
+        target.endpoint == endpoint &&
+        mapEquals(target.headers, headers)) {
+      return;
+    }
     await disable();
     await flushBuffered?.call();
     _active = _create(endpoint, headers);
+    _target = (endpoint: endpoint, headers: Map.of(headers));
   }
 
   /// Drops everything from now on.
   Future<void> disable() async {
     final active = _active;
     _active = null;
+    _target = null;
     if (active == null) return;
     await active.spans.shutdown();
     await active.logs.shutdown();

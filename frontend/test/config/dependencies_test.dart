@@ -8,6 +8,7 @@ import 'package:kanbot/config/dependencies.dart';
 import 'package:kanbot/config/telemetry.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
 import 'package:kanbot/data/services/server_store.dart';
+import 'package:kanbot/data/services/token_store.dart';
 import 'package:kanbot/data/services/web_auth.dart';
 import 'package:kanbot/utils/result.dart';
 import 'package:mockito/annotations.dart';
@@ -83,7 +84,10 @@ void main() {
       final dependencies = testDependencies(
         backend: backend,
         connected: false,
-        storage: {'server_url': testServer.toString(), 'auth_token': 'kbs_x'},
+        storage: {
+          'server_url': testServer.toString(),
+          'auth_token': TokenStore.entry(testServer, 'kbs_x'),
+        },
         defaultServer: _other,
       );
 
@@ -116,6 +120,30 @@ void main() {
       expect(await ServerStore().read(release: false), isNull);
       expect(dependencies.auth.status, AuthStatus.signedOut);
       expect(backend.sent('GET', '/auth/config').single.url.host, _other.host);
+    });
+
+    test('never sends the token of a forgotten server to another', () async {
+      // The stored server is no longer valid, but its session token is
+      // still stored: the default server must not receive it.
+      final stale = Uri.parse('http://kanbot.example.com/');
+      final backend = _signedOutBackend();
+      final dependencies = testDependencies(
+        backend: backend,
+        connected: false,
+        storage: {
+          'server_url': stale.toString(),
+          'auth_token': TokenStore.entry(stale, 'kbs_old'),
+        },
+        defaultServer: _other,
+      );
+
+      await dependencies.start();
+
+      expect(dependencies.connection.baseUrl, _other);
+      expect(backend.requests, isNotEmpty);
+      for (final request in backend.requests) {
+        expect(request.headers.containsKey('authorization'), isFalse);
+      }
     });
 
     test('without a stored or default server, asks for one', () async {
@@ -265,7 +293,7 @@ void main() {
       final backend = FakeBackend()..on('GET', '/auth/config', authConfig());
       final dependencies = testDependencies(
         backend: backend,
-        storage: {'auth_token': 'kbs_secret'},
+        storage: {'auth_token': TokenStore.entry(testServer, 'kbs_secret')},
       );
 
       final probe = dependencies.newConnection()..connect(testServer);
@@ -290,7 +318,7 @@ void main() {
         ..on('GET', '/me', me(telemetryOptIn: true));
       final dependencies = testDependencies(
         backend: backend,
-        storage: {'auth_token': 'kbs_x'},
+        storage: {'auth_token': TokenStore.entry(testServer, 'kbs_x')},
         telemetry: exporters,
       );
 
