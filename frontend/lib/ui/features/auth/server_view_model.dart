@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:kanbot/config/api_config.dart';
 import 'package:kanbot/data/repositories/api_result.dart';
 import 'package:kanbot/data/repositories/auth_repository.dart';
@@ -70,21 +72,36 @@ class ServerViewModel extends ViewModel {
   }
 
   /// `GET /auth/config` on [probe]. A server that answers, but not like
-  /// kanbot (another site's page, a `404`), is [NotKanbotServerException].
+  /// kanbot (another site's page or JSON, a `404`), is
+  /// [NotKanbotServerException].
   static Future<Result<void>> _probe(ApiConnection probe) async {
+    final answered = await apiResult(() => probe.getUndecoded('auth/config'));
+    return switch (answered) {
+      Ok(:final value) when _isAuthConfig(value.body) => const Ok(null),
+      Ok() || Failure(error: ApiNotFoundException()) => const Failure(
+        NotKanbotServerException(),
+      ),
+      Failure(:final error) => Failure(error),
+    };
+  }
+
+  /// Whether [body] is what kanbot answers to `GET /auth/config`.
+  static bool _isAuthConfig(String body) {
+    final Object? json;
     try {
-      final checked = await apiResult(probe.api.auth.config);
-      return switch (checked) {
-        Ok() => const Ok(null),
-        Failure(error: ApiNotFoundException()) => const Failure(
-          NotKanbotServerException(),
-        ),
-        Failure(:final error) => Failure(error),
-      };
-    } on Object {
-      // Not this API's contract: some other server answered 200.
-      return const Failure(NotKanbotServerException());
+      json = jsonDecode(body);
+    } on FormatException {
+      return false;
     }
+    return switch (json) {
+      {
+        'login_url': String _,
+        'telemetry_available': bool _,
+        'version': String _,
+      } =>
+        true,
+      _ => false,
+    };
   }
 
   void _set({required bool busy, required Exception? error}) {

@@ -57,9 +57,23 @@ void main() {
       expect(dependencies.connection.isConnected, isFalse);
       expect(await ServerStore().read(release: false), isNull);
 
-      // Some other site answering 200 with its own JSON: the same, and the
-      // page can be used again.
+      // Some other site answering 200 with its own JSON, or with a page:
+      // the same, and the page can be used again.
       backend.on('GET', '/auth/config', {'hello': 'world'});
+      await tester.tap(find.text(Messages.connect));
+      await tester.pumpAndSettle();
+      expect(find.text(Messages.notKanbot), findsOneWidget);
+      expect(dependencies.connection.isConnected, isFalse);
+
+      backend.handle(
+        'GET',
+        '/auth/config',
+        (_) => http.Response(
+          '<!doctype html><title>Welcome</title>',
+          200,
+          headers: {'content-type': 'text/html'},
+        ),
+      );
       await tester.tap(find.text(Messages.connect));
       await tester.pumpAndSettle();
       expect(find.text(Messages.notKanbot), findsOneWidget);

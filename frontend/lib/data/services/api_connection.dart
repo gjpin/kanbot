@@ -37,6 +37,16 @@ class ApiConnection extends ChangeNotifier {
   /// that needs the API until a server is chosen.
   KanbotApi get api => _api ?? (throw StateError('no server chosen'));
 
+  /// `GET` [path] (relative to the base URL) through the same client as
+  /// [api], with the answer left undecoded: for a server not yet known to
+  /// be kanbot, whose answer is input to check by hand rather than a
+  /// contract for the generated decoders (AGENTS.md §5). Throws like
+  /// [ApiClient.send].
+  Future<http.Response> getUndecoded(String path) {
+    final client = _client ?? (throw StateError('no server chosen'));
+    return client.get(client.baseUrl.resolve(path));
+  }
+
   /// Talks to [baseUrl] from now on (an API base URL ending in `/`).
   void connect(Uri baseUrl) {
     _client?.close();
